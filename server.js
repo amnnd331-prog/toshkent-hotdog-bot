@@ -1039,7 +1039,7 @@ const WRITEOFF_REASONS = {
   muddati_otdi: "Muddati o'tdi / buzilgan",
   boshqa: 'Boshqa sabab'
 };
-const ORDER_TYPES = { olib_ketish: 'Olib ketish', dostavka: 'Dostavka', zal: 'Zal' };
+const ORDER_TYPES = { olib_ketish: 'Olib ketish', dostavka: 'Dostavka', zal: 'Zal', tashqari: 'Tashqari' };
 // "zal" turi faqat kassir/ega tomonidan (zalda o'tirgan mijoz uchun) yaratiladi —
 // mijozning botdagi buyurtma oynasida bu tur ko'rsatilmaydi (pastda CUSTOMER_ORDER_TYPES'ga qarang).
 const CUSTOMER_ORDER_TYPES = { olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
