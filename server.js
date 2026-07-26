@@ -928,6 +928,56 @@ function comboAutoPrice(owner, itemIds) {
   }, 0);
 }
 
+// Bitta taomning bir nechta narxi (masalan: kichik/katta) bo'lishi mumkin.
+// menuItem.prices — [{ id, label, price }] massivi. Agar u mavjud bo'lsa,
+// buyurtma vaqtida mijoz/kassir aynan qaysi narx variantini tanlaganini
+// (priceId) ko'rsatishi shart.
+function resolveMenuItemPriceOption(menuItem, priceId) {
+  const options = Array.isArray(menuItem.prices) ? menuItem.prices : [];
+  if (!options.length) {
+    return { ok: true, price: menuItem.price, label: null, priceId: null };
+  }
+  const wanted = priceId !== undefined && priceId !== null ? String(priceId) : null;
+  const found = wanted ? options.find(p => p.id === wanted) : (options.length === 1 ? options[0] : null);
+  if (!found) {
+    return { ok: false, reason: `"${menuItem.name}" uchun narx variantini tanlang.` };
+  }
+  return { ok: true, price: found.price, label: found.label, priceId: found.id };
+}
+
+// Admin panel'dan kelgan "bir nechta narx" ro'yxatini tekshiradi va tozalaydi.
+// Kutilayotgan format: [{ label, price, id? }, ...]
+function normalizeMenuItemPrices(rawPrices) {
+  if (rawPrices === undefined || rawPrices === null || rawPrices === '') {
+    return { ok: true, list: [] };
+  }
+  let arr = rawPrices;
+  if (typeof arr === 'string') {
+    try { arr = JSON.parse(arr); } catch (e) { return { ok: false, reason: 'Narxlar ro\'yxati noto\'g\'ri.' }; }
+  }
+  if (!Array.isArray(arr)) return { ok: false, reason: 'Narxlar ro\'yxati noto\'g\'ri.' };
+  if (!arr.length) return { ok: true, list: [] };
+  if (arr.length < 2) return { ok: false, reason: 'Kamida 2 ta narx variantini kiriting yoki bittalik narxdan foydalaning.' };
+
+  const list = [];
+  const seenLabels = new Set();
+  for (const raw of arr) {
+    const label = String((raw && raw.label) || '').trim();
+    const priceNum = Number(raw && raw.price);
+    if (!label) return { ok: false, reason: 'Har bir narx varianti uchun nom kiriting (masalan: Kichik, Katta).' };
+    if (!Number.isFinite(priceNum) || priceNum <= 0) return { ok: false, reason: `"${label}" uchun narxni to\'g\'ri kiriting.` };
+    const labelKey = label.toLowerCase();
+    if (seenLabels.has(labelKey)) return { ok: false, reason: `"${label}" nomi takrorlangan — har bir variant nomi boshqacha bo\'lsin.` };
+    seenLabels.add(labelKey);
+    list.push({
+      id: (raw && raw.id && String(raw.id)) || crypto.randomBytes(4).toString('hex'),
+      label,
+      price: priceNum
+    });
+  }
+  return { ok: true, list };
+}
+
 function comboStockNeeds(owner, combo, comboQty) {
   const needs = [];
   for (const entry of ((combo && combo.itemIds) || [])) {
@@ -3840,7 +3890,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/menu-add') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const { initData, name, price, category, description, imageUrl, directStockId } = payload;
+      const { initData, name, price, prices, category, description, imageUrl, directStockId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -3852,9 +3902,18 @@ const server = http.createServer((req, res) => {
       if (!ctx.isAdminActing && !ownerCanUseFeature(owner, 'menu-manage')) return sendJSON(res, 200, featureBlockedResult('menu-manage'));
 
       const nameTrim = String(name || '').trim();
-      const priceNum = Number(price);
       if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Taom nomini kiriting.' });
-      if (!Number.isFinite(priceNum) || priceNum <= 0) return sendJSON(res, 200, { ok: false, reason: 'Narxni to\'g\'ri kiriting.' });
+
+      const pricesResult = normalizeMenuItemPrices(prices);
+      if (!pricesResult.ok) return sendJSON(res, 200, { ok: false, reason: pricesResult.reason });
+
+      let priceNum;
+      if (pricesResult.list.length) {
+        priceNum = Math.min(...pricesResult.list.map(p => p.price));
+      } else {
+        priceNum = Number(price);
+        if (!Number.isFinite(priceNum) || priceNum <= 0) return sendJSON(res, 200, { ok: false, reason: 'Narxni to\'g\'ri kiriting.' });
+      }
       const imageTrim = String(imageUrl || '').trim();
       if (!isValidImageValue(imageTrim)) {
         return sendJSON(res, 200, { ok: false, reason: 'Rasm noto\'g\'ri formatda yoki hajmi katta (rasmni kichikroq tanlang).' });
@@ -3872,6 +3931,7 @@ const server = http.createServer((req, res) => {
         id: crypto.randomBytes(4).toString('hex'),
         name: nameTrim,
         price: priceNum,
+        prices: pricesResult.list.length ? pricesResult.list : undefined,
         category: String(category || '').trim() || null,
         description: String(description || '').trim() || null,
         imageUrl: imageTrim || null,
@@ -3890,7 +3950,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/menu-update') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const { initData, id, name, price, category, description, imageUrl, available, directStockId } = payload;
+      const { initData, id, name, price, prices, category, description, imageUrl, available, directStockId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -3910,10 +3970,20 @@ const server = http.createServer((req, res) => {
         if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Taom nomini kiriting.' });
         item.name = nameTrim;
       }
+      if (prices !== undefined) {
+        const pricesResult = normalizeMenuItemPrices(prices);
+        if (!pricesResult.ok) return sendJSON(res, 200, { ok: false, reason: pricesResult.reason });
+        if (pricesResult.list.length) {
+          item.prices = pricesResult.list;
+          item.price = Math.min(...pricesResult.list.map(p => p.price));
+        } else {
+          item.prices = undefined;
+        }
+      }
       if (price !== undefined) {
         const priceNum = Number(price);
         if (!Number.isFinite(priceNum) || priceNum <= 0) return sendJSON(res, 200, { ok: false, reason: 'Narxni to\'g\'ri kiriting.' });
-        item.price = priceNum;
+        if (!Array.isArray(item.prices) || !item.prices.length) item.price = priceNum;
       }
       if (category !== undefined) item.category = String(category || '').trim() || null;
       if (description !== undefined) item.description = String(description || '').trim() || null;
@@ -5429,7 +5499,9 @@ const server = http.createServer((req, res) => {
         }
         const menuItem = menu.find(m => m.id === it.id);
         if (!menuItem) return sendJSON(res, 200, { ok: false, reason: 'Menyuda mavjud bo\'lmagan taom tanlangan.' });
-        orderItems.push({ id: menuItem.id, name: menuItem.name, price: menuItem.price, qty, directStockId: menuItem.directStockId || null });
+        const priceOpt = resolveMenuItemPriceOption(menuItem, it.priceId);
+        if (!priceOpt.ok) return sendJSON(res, 200, { ok: false, reason: priceOpt.reason });
+        orderItems.push({ id: menuItem.id, name: priceOpt.label ? `${menuItem.name} (${priceOpt.label})` : menuItem.name, price: priceOpt.price, priceId: priceOpt.priceId, qty, directStockId: menuItem.directStockId || null });
       }
       const subtotal = orderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
 
@@ -5741,7 +5813,9 @@ const server = http.createServer((req, res) => {
         }
         const menuItem = menu.find(m => m.id === it.id);
         if (!menuItem) return sendJSON(res, 200, { ok: false, reason: 'Menyuda mavjud bo\'lmagan taom tanlangan.' });
-        orderItems.push({ id: menuItem.id, name: menuItem.name, price: menuItem.price, qty, directStockId: menuItem.directStockId || null });
+        const priceOpt = resolveMenuItemPriceOption(menuItem, it.priceId);
+        if (!priceOpt.ok) return sendJSON(res, 200, { ok: false, reason: priceOpt.reason });
+        orderItems.push({ id: menuItem.id, name: priceOpt.label ? `${menuItem.name} (${priceOpt.label})` : menuItem.name, price: priceOpt.price, priceId: priceOpt.priceId, qty, directStockId: menuItem.directStockId || null });
       }
       const total = orderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
 
@@ -5897,7 +5971,9 @@ const server = http.createServer((req, res) => {
         }
         const menuItem = menu.find(m => m.id === it.id);
         if (!menuItem) return sendJSON(res, 200, { ok: false, reason: 'Menyuda mavjud bo\'lmagan taom tanlangan.' });
-        newOrderItems.push({ id: menuItem.id, name: menuItem.name, price: menuItem.price, qty, directStockId: menuItem.directStockId || null });
+        const priceOpt = resolveMenuItemPriceOption(menuItem, it.priceId);
+        if (!priceOpt.ok) return sendJSON(res, 200, { ok: false, reason: priceOpt.reason });
+        newOrderItems.push({ id: menuItem.id, name: priceOpt.label ? `${menuItem.name} (${priceOpt.label})` : menuItem.name, price: priceOpt.price, priceId: priceOpt.priceId, qty, directStockId: menuItem.directStockId || null });
       }
       const newTotal = newOrderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
 
