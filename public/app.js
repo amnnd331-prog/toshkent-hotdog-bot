@@ -218,6 +218,35 @@ const tg = window.Telegram && window.Telegram.WebApp;
     return Number(n || 0).toLocaleString('ru-RU').replace(/,/g, ' ');
   }
 
+  // Bitta taomning bir nechta narxi (masalan: Kichik/Katta) bo'lsa, savat
+  // kaliti "itemId__priceId" ko'rinishida bo'ladi; oddiy taomlarda esa
+  // kalit shunchaki itemId (eski xatti-harakat o'zgarmagan).
+  function cartKeyFor(itemId, priceId) {
+    return priceId ? `${itemId}__${priceId}` : itemId;
+  }
+  function cartKeyParts(key) {
+    const idx = key.indexOf('__');
+    if (idx === -1) return { itemId: key, priceId: null };
+    return { itemId: key.slice(0, idx), priceId: key.slice(idx + 2) };
+  }
+  function menuItemPriceForCartKey(menuList, key) {
+    const { itemId, priceId } = cartKeyParts(key);
+    const m = (menuList || []).find(x => x.id === itemId);
+    if (!m) return 0;
+    if (priceId && Array.isArray(m.prices)) {
+      const opt = m.prices.find(p => p.id === priceId);
+      return opt ? opt.price : 0;
+    }
+    return m.price;
+  }
+  function menuPriceFromLabel(m) {
+    if (Array.isArray(m.prices) && m.prices.length) {
+      const min = Math.min(...m.prices.map(p => p.price));
+      return `${fmtNum(min)} so'm dan`;
+    }
+    return `${fmtNum(m.price)} so'm`;
+  }
+
   function isUzPhone(str) {
     const cleaned = String(str || '').trim().replace(/[\s\-()]/g, '');
     // Faqat O'zbekiston raqamlarini qabul qilamiz: +998 (yoki 998) va undan keyin 9 ta raqam
@@ -3812,7 +3841,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <div>
           <div class="m-name">${escapeHtml(m.name)} ${m.available === false ? '<span class="badge unpaid">Nofaol</span>' : ''}</div>
           ${m.category ? `<div class="m-cat">${escapeHtml(m.category)}</div>` : ''}
-          <div class="m-price">${fmtNum(m.price)} so'm${m.directStockId ? ` · to'g'ridan sklad ${icon('check', 'icon-xs icon-success')}` : (m.recipe && m.recipe.length ? ` · retsept ${icon('check', 'icon-xs icon-success')}` : '')}</div>
+          <div class="m-price">${Array.isArray(m.prices) && m.prices.length ? m.prices.map(p => `${escapeHtml(p.label)}: ${fmtNum(p.price)} so'm`).join(' · ') : `${fmtNum(m.price)} so'm`}${m.directStockId ? ` · to'g'ridan sklad ${icon('check', 'icon-xs icon-success')}` : (m.recipe && m.recipe.length ? ` · retsept ${icon('check', 'icon-xs icon-success')}` : '')}</div>
         </div>
         <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
           <button data-edit-menu-id="${escapeHtml(m.id)}" class="row-action-btn brand">Tahrirlash</button>
@@ -3824,13 +3853,54 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `).join('');
   }
 
+  function priceOptionRowHtml(label, price) {
+    return `
+      <div class="price-option-row" style="display:flex; gap:6px; margin-top:6px;">
+        <input type="text" class="price-option-label" placeholder="Nomi (masalan: Katta)" value="${escapeHtml(label || '')}" style="flex:1;">
+        <input type="text" class="price-option-price" placeholder="Narx" inputmode="numeric" value="${escapeHtml(price != null ? String(price) : '')}" style="width:110px;">
+        <button type="button" class="row-action-btn price-option-remove-btn">✕</button>
+      </div>
+    `;
+  }
+
+  function attachPriceOptionsHandlers(containerId, addBtnId) {
+    const container = document.getElementById(containerId);
+    document.getElementById(addBtnId).addEventListener('click', () => {
+      container.insertAdjacentHTML('beforeend', priceOptionRowHtml('', ''));
+    });
+    container.addEventListener('click', (e) => {
+      const btn = e.target.closest('.price-option-remove-btn');
+      if (!btn) return;
+      btn.closest('.price-option-row').remove();
+    });
+  }
+
+  // Konteynerdagi to'ldirilgan narx variant qatorlarini yig'ib qaytaradi.
+  // Bo'sh bo'lsa — [], noto'g'ri bo'lsa — null (xatolik bor degani).
+  function collectPriceOptions(containerId) {
+    const rows = document.querySelectorAll(`#${containerId} .price-option-row`);
+    const list = [];
+    for (const row of rows) {
+      const label = row.querySelector('.price-option-label').value.trim();
+      const price = row.querySelector('.price-option-price').value.trim();
+      if (!label && !price) continue;
+      if (!label || !price || !/^\d+$/.test(price) || parseInt(price, 10) <= 0) return null;
+      list.push({ label, price: parseInt(price, 10) });
+    }
+    return list;
+  }
+
   function menuAddSectionHtml() {
     return `
       <div class="section-label">${icon('restaurant', 'icon-xs')} Menyu</div>
       <div class="kartochka">
         <h2>Menyuga taom qo'shish</h2>
         <input type="text" id="menuNameInput" placeholder="Taom nomi">
-        <input type="text" id="menuPriceInput" placeholder="Narxi (so'm)" inputmode="numeric">
+        <input type="text" id="menuPriceInput" placeholder="Narxi (so'm) — bitta narx bo'lsa" inputmode="numeric">
+        <label class="field-label" style="margin-top:10px;">Bir nechta narx (masalan: Kichik / Katta) — ixtiyoriy</label>
+        <div class="staff-hint">Bo'lsa, yuqoridagi yakka narx o'rniga shu variantlar ishlatiladi va mijoz tanlab buyurtma beradi.</div>
+        <div id="menuPriceOptionsAdd"></div>
+        <button type="button" class="row-action-btn" id="addPriceOptionAddBtn" style="margin-top:6px;">+ Narx varianti qo'shish</button>
         <label class="field-label">Bo'lim (ixtiyoriy)</label>
         <select id="menuCategoryInput"><option value="">— Bo'lim tanlanmagan —</option></select>
         <textarea id="menuDescriptionInput" placeholder="Tavsif (ixtiyoriy, mijozlar menyusida ko'rinadi)"></textarea>
@@ -3884,6 +3954,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
       if (isDirect) loadMenuDirectStockOptions();
     });
 
+    attachPriceOptionsHandlers('menuPriceOptionsAdd', 'addPriceOptionAddBtn');
+
     document.getElementById('addMenuBtn').addEventListener('click', async () => {
       const name = document.getElementById('menuNameInput').value.trim();
       const price = document.getElementById('menuPriceInput').value.trim();
@@ -3893,19 +3965,36 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const menuType = document.getElementById('menuTypeInput').value;
       const directStockId = menuType === 'direct' ? document.getElementById('menuDirectStockInput').value : '';
       const msgEl = document.getElementById('menuMsg');
-      if (!name || !price || !/^\d+$/.test(price) || parseInt(price, 10) <= 0) {
+      const priceOptions = collectPriceOptions('menuPriceOptionsAdd');
+      if (priceOptions === null) {
+        msgEl.textContent = 'Narx variantlarini to\'g\'ri kiriting (nomi va narxi).';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      if (priceOptions.length === 1) {
+        msgEl.textContent = 'Kamida 2 ta narx variantini kiriting yoki bittasini o\'chirib, yakka narxdan foydalaning.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      if (!priceOptions.length && (!name || !price || !/^\d+$/.test(price) || parseInt(price, 10) <= 0)) {
         msgEl.textContent = 'Taom nomi va to\'g\'ri narx kiriting.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      if (!name) {
+        msgEl.textContent = 'Taom nomini kiriting.';
         msgEl.className = 'xabar err';
         return;
       }
       msgEl.textContent = 'Qo\'shilmoqda...';
       msgEl.className = 'xabar';
-      const res = await apiPost('/api/menu-add', { initData, name, price, category, description, imageUrl, directStockId });
+      const res = await apiPost('/api/menu-add', { initData, name, price, prices: priceOptions, category, description, imageUrl, directStockId });
       if (res.ok) {
         msgEl.textContent = 'Qo\'shildi.';
         msgEl.className = 'xabar ok';
         document.getElementById('menuNameInput').value = '';
         document.getElementById('menuPriceInput').value = '';
+        document.getElementById('menuPriceOptionsAdd').innerHTML = '';
         document.getElementById('menuCategoryInput').value = '';
         document.getElementById('menuDescriptionInput').value = '';
         document.getElementById('menuImageInput').value = '';
@@ -4153,7 +4242,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   };
 
   function cashierCartTotal() {
-    return cashierState.menu.reduce((sum, m) => sum + (cashierState.cart[m.id] || 0) * m.price, 0);
+    return Object.entries(cashierState.cart).reduce((sum, [key, qty]) => sum + (qty || 0) * menuItemPriceForCartKey(cashierState.menu, key), 0);
   }
 
   function cashierTabRowHtml() {
@@ -4377,6 +4466,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   function cashierItemRowHtml(m) {
+    const hasVariants = Array.isArray(m.prices) && m.prices.length > 0;
     const qty = cashierState.cart[m.id] || 0;
     const thumbHtml = m.imageUrl
       ? `<img class="menu-item-thumb" src="${escapeHtml(m.imageUrl)}" onerror="this.style.display='none'">`
@@ -4389,7 +4479,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
             ${thumbHtml}
             <div>
               <div class="m-name">${escapeHtml(m.name)} <span class="badge warning">Tugagan</span></div>
-              <div class="m-price">${fmtNum(m.price)} so'm</div>
+              <div class="m-price">${menuPriceFromLabel(m)}</div>
             </div>
           </div>
           <div class="qty-controls">
@@ -4400,6 +4490,34 @@ const tg = window.Telegram && window.Telegram.WebApp;
         </div>
       `;
     }
+
+    if (hasVariants) {
+      return `
+        <div class="menu-item" style="flex-direction:column; align-items:stretch;">
+          <div class="menu-item-info">
+            ${thumbHtml}
+            <div class="m-name">${escapeHtml(m.name)}</div>
+          </div>
+          <div class="price-variant-list">
+            ${m.prices.map(p => {
+              const key = cartKeyFor(m.id, p.id);
+              const vQty = cashierState.cart[key] || 0;
+              return `
+                <div class="price-variant-row">
+                  <span class="price-variant-label">${escapeHtml(p.label)} — ${fmtNum(p.price)} so'm</span>
+                  <div class="qty-controls">
+                    <button data-qty-minus="${escapeHtml(key)}">-</button>
+                    <span class="qty-val">${vQty}</span>
+                    <button data-qty-plus="${escapeHtml(key)}">+</button>
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        </div>
+      `;
+    }
+
     return `
       <div class="menu-item">
         <div class="menu-item-info">
@@ -4475,7 +4593,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const sendBtn = document.getElementById('sendOrderBtn');
     const cartItems = Object.entries(cashierState.cart)
       .filter(([, qty]) => qty > 0)
-      .map(([id, qty]) => ({ id, qty }));
+      .map(([key, qty]) => {
+        const { itemId, priceId } = cartKeyParts(key);
+        return priceId ? { id: itemId, qty, priceId } : { id: itemId, qty };
+      });
     // Tahrirlash rejimida combo'lar kassir savatida ko'rinmaydi (kassir UI faqat
     // oddiy menyu bandlarini boshqaradi) - shuning uchun ular o'zgartirilmagan
     // holda saqlanib, yangilangan buyurtmaga qaytadan qo'shiladi.
@@ -4864,7 +4985,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
         cashierState.cart = {};
         (order.items || []).forEach(it => {
           if (it.isCombo) return;
-          cashierState.cart[it.id] = (cashierState.cart[it.id] || 0) + it.qty;
+          const key = it.priceId ? cartKeyFor(it.id, it.priceId) : it.id;
+          cashierState.cart[key] = (cashierState.cart[key] || 0) + it.qty;
         });
         cashierState.editingComboItems = (order.items || []).filter(it => it.isCombo);
         renderCashierScreen(restaurantName, onReturn);
@@ -7813,7 +7935,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
       <div class="modal" style="max-width:380px; max-height:85vh; overflow:auto;">
         <h3>Taomni tahrirlash</h3>
         <input type="text" id="editMenuNameInput" placeholder="Taom nomi" value="${escapeHtml(menuItem.name || '')}">
-        <input type="text" id="editMenuPriceInput" placeholder="Narxi (so'm)" inputmode="numeric" value="${escapeHtml(String(menuItem.price || ''))}">
+        <input type="text" id="editMenuPriceInput" placeholder="Narxi (so'm) — bitta narx bo'lsa" inputmode="numeric" value="${escapeHtml(String(menuItem.price || ''))}">
+        <label class="field-label" style="margin-top:10px;">Bir nechta narx (masalan: Kichik / Katta) — ixtiyoriy</label>
+        <div class="staff-hint">Bo'lsa, yuqoridagi yakka narx o'rniga shu variantlar ishlatiladi va mijoz tanlab buyurtma beradi.</div>
+        <div id="editMenuPriceOptionsWrap">${(Array.isArray(menuItem.prices) ? menuItem.prices : []).map(p => priceOptionRowHtml(p.label, p.price)).join('')}</div>
+        <button type="button" class="row-action-btn" id="addPriceOptionEditBtn" style="margin-top:6px;">+ Narx varianti qo'shish</button>
         <label class="field-label">Bo'lim (ixtiyoriy)</label>
         <select id="editMenuCategoryInput">${categoryOptionsHtml}</select>
         <textarea id="editMenuDescriptionInput" placeholder="Tavsif (ixtiyoriy)">${escapeHtml(menuItem.description || '')}</textarea>
@@ -7841,6 +7967,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
     document.body.appendChild(overlay);
 
     document.getElementById('editMenuCancelBtn').onclick = () => overlay.remove();
+
+    attachPriceOptionsHandlers('editMenuPriceOptionsWrap', 'addPriceOptionEditBtn');
 
     document.getElementById('editMenuTypeInput').addEventListener('change', (e) => {
       document.getElementById('editMenuDirectStockWrap').classList.toggle('hidden', e.target.value !== 'direct');
@@ -7871,15 +7999,31 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const menuType = document.getElementById('editMenuTypeInput').value;
       const directStockId = menuType === 'direct' ? document.getElementById('editMenuDirectStockInput').value : '';
       const msgEl = document.getElementById('editMenuMsg');
-      if (!name || !price || !/^\d+$/.test(price) || parseInt(price, 10) <= 0) {
+      const priceOptions = collectPriceOptions('editMenuPriceOptionsWrap');
+      if (priceOptions === null) {
+        msgEl.textContent = 'Narx variantlarini to\'g\'ri kiriting (nomi va narxi).';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      if (priceOptions.length === 1) {
+        msgEl.textContent = 'Kamida 2 ta narx variantini kiriting yoki bittasini o\'chirib, yakka narxdan foydalaning.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      if (!priceOptions.length && (!name || !price || !/^\d+$/.test(price) || parseInt(price, 10) <= 0)) {
         msgEl.textContent = 'Taom nomi va to\'g\'ri narx kiriting.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      if (!name) {
+        msgEl.textContent = 'Taom nomini kiriting.';
         msgEl.className = 'xabar err';
         return;
       }
       msgEl.textContent = 'Saqlanmoqda...';
       msgEl.className = 'xabar';
       const res = await apiPost('/api/menu-update', {
-        initData, id: menuItem.id, name, price, category, description, imageUrl: pendingImage, directStockId
+        initData, id: menuItem.id, name, price, prices: priceOptions, category, description, imageUrl: pendingImage, directStockId
       });
       if (res.ok) {
         overlay.remove();
@@ -7968,7 +8112,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   function customerCartTotal() {
-    return customerState.menu.reduce((sum, m) => sum + (customerState.cart[m.id] || 0) * m.price, 0);
+    return Object.entries(customerState.cart).reduce((sum, [key, qty]) => sum + (qty || 0) * menuItemPriceForCartKey(customerState.menu, key), 0);
   }
 
   function customerCartQty() {
@@ -8054,6 +8198,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   function customerItemCardHtml(m) {
+    const hasVariants = Array.isArray(m.prices) && m.prices.length > 0;
     const qty = customerState.cart[m.id] || 0;
     const isFav = customerState.favorites.includes(m.id);
 
@@ -8067,12 +8212,46 @@ const tg = window.Telegram && window.Telegram.WebApp;
             <div class="m-name">${escapeHtml(m.name)} <span class="badge warning">Tugagan</span></div>
             ${m.description ? `<div class="catalog-desc">${escapeHtml(m.description)}</div>` : ''}
             <div class="catalog-bottom-row">
-              <div class="m-price">${fmtNum(m.price)} so'm</div>
+              <div class="m-price">${menuPriceFromLabel(m)}</div>
             </div>
           </div>
         </div>
       `;
     }
+
+    if (hasVariants) {
+      return `
+        <div class="catalog-item">
+          <div class="catalog-img-wrap">
+            ${m.imageUrl ? `<img class="catalog-img" src="${escapeHtml(m.imageUrl)}" onerror="this.style.display='none'">` : `<div class="catalog-img-empty"></div>`}
+            <button class="fav-btn" data-fav-id="${escapeHtml(m.id)}">${icon('heart', isFav ? 'icon-danger icon-filled' : 'icon-muted')}</button>
+          </div>
+          <div class="catalog-body">
+            <div class="m-name">${escapeHtml(m.name)}</div>
+            ${m.description ? `<div class="catalog-desc">${escapeHtml(m.description)}</div>` : ''}
+            <div class="price-variant-list">
+              ${m.prices.map(p => {
+                const key = cartKeyFor(m.id, p.id);
+                const vQty = customerState.cart[key] || 0;
+                return `
+                  <div class="price-variant-row">
+                    <span class="price-variant-label">${escapeHtml(p.label)} — ${fmtNum(p.price)} so'm</span>
+                    ${vQty > 0 ? `
+                      <div class="qty-controls">
+                        <button data-cqty-minus="${escapeHtml(key)}">-</button>
+                        <span class="qty-val">${vQty}</span>
+                        <button data-cqty-plus="${escapeHtml(key)}">+</button>
+                      </div>
+                    ` : `<button type="button" class="qty-add-btn" data-cqty-plus="${escapeHtml(key)}">+</button>`}
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
     return `
       <div class="catalog-item">
         <div class="catalog-img-wrap">
@@ -9116,9 +9295,16 @@ const tg = window.Telegram && window.Telegram.WebApp;
       let skipped = 0;
       order.items.forEach(it => {
         if (it.isCombo) { skipped++; return; }
-        const stillOnMenu = customerState.menu.find(m => m.id === it.id && !m.outOfStock);
-        if (stillOnMenu) newCart[it.id] = (newCart[it.id] || 0) + it.qty;
-        else skipped++;
+        const menuItem = customerState.menu.find(m => m.id === it.id && !m.outOfStock);
+        if (!menuItem) { skipped++; return; }
+        if (it.priceId) {
+          const stillHasVariant = Array.isArray(menuItem.prices) && menuItem.prices.some(p => p.id === it.priceId);
+          if (!stillHasVariant) { skipped++; return; }
+          const key = cartKeyFor(it.id, it.priceId);
+          newCart[key] = (newCart[key] || 0) + it.qty;
+        } else {
+          newCart[it.id] = (newCart[it.id] || 0) + it.qty;
+        }
       });
       if (!Object.keys(newCart).length) {
         btn.disabled = false;
@@ -9216,7 +9402,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const sendBtn = overlay ? overlay.querySelector('#cSendOrderBtn') : document.getElementById('cSendOrderBtn');
     const items = Object.entries(customerState.cart)
       .filter(([, qty]) => qty > 0)
-      .map(([id, qty]) => ({ id, qty }));
+      .map(([key, qty]) => {
+        const { itemId, priceId } = cartKeyParts(key);
+        return priceId ? { id: itemId, qty, priceId } : { id: itemId, qty };
+      });
 
     if (!items.length) {
       msgEl.textContent = 'Savat bo\'sh. Kamida bitta taom tanlang.';
