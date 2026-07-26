@@ -4561,20 +4561,35 @@ const tg = window.Telegram && window.Telegram.WebApp;
     el.querySelectorAll('[data-qty-plus]').forEach(btn => btn.onclick = () => {
       const id = btn.getAttribute('data-qty-plus');
       cashierState.cart[id] = (cashierState.cart[id] || 0) + 1;
-      el.innerHTML = cashierMenuHtml();
-      attachQtyHandlers(restaurantName);
-      attachSectionedMenuTabHandlers('cashierCatRow');
-      attachSectionedMenuScrollSpy('cashierCatRow', 'cashierMenuList');
+      updateCashierQtyDisplay(id);
       updateCartTotal();
     });
     el.querySelectorAll('[data-qty-minus]').forEach(btn => btn.onclick = () => {
       const id = btn.getAttribute('data-qty-minus');
       cashierState.cart[id] = Math.max(0, (cashierState.cart[id] || 0) - 1);
-      el.innerHTML = cashierMenuHtml();
-      attachQtyHandlers(restaurantName);
-      attachSectionedMenuTabHandlers('cashierCatRow');
-      attachSectionedMenuScrollSpy('cashierCatRow', 'cashierMenuList');
+      updateCashierQtyDisplay(id);
       updateCartTotal();
+    });
+  }
+
+  // Miqdor +/- bosilganda BUTUN menyuni qayta chizib yubormaslik uchun — bu
+  // fokusdagi tugmani yo'q qilib, brauzerni sahifa boshiga aylantirib yuborardi
+  // (har bo'limni o'zgartirgach yuqoriga otilib ketish muammosi shundan edi).
+  // Endi faqat tegishli miqdor yozuvi joyida yangilanadi, qolgan DOM va scroll
+  // holati tegilmaydi.
+  function updateCashierQtyDisplay(key) {
+    const el = document.getElementById('cashierMenu');
+    if (!el) return;
+    const qty = cashierState.cart[key] || 0;
+    el.querySelectorAll('[data-qty-plus]').forEach(btn => {
+      if (btn.getAttribute('data-qty-plus') !== key) return;
+      const qtyEl = btn.previousElementSibling;
+      if (qtyEl && qtyEl.classList.contains('qty-val')) qtyEl.textContent = String(qty);
+    });
+    el.querySelectorAll('[data-qty-minus]').forEach(btn => {
+      if (btn.getAttribute('data-qty-minus') !== key) return;
+      const qtyEl = btn.nextElementSibling;
+      if (qtyEl && qtyEl.classList.contains('qty-val')) qtyEl.textContent = String(qty);
     });
   }
 
