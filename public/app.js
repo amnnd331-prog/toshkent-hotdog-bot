@@ -7629,6 +7629,13 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <button class="btn" id="zrCreateBtn" style="margin-top:10px;">Bugungi kunni yopish</button>
           <div class="xabar" id="zrMsg"></div>
         </div>
+        ${profile && profile.isSuperAdmin ? `
+        <div class="kartochka" style="margin-top:10px; border-color:#d33;">
+          <h2 style="color:#d33;">${icon('trash', 'icon-xs')} Super admin</h2>
+          <div class="bosh">Barcha savdo, xarajat va Z-hisobotlarni butunlay o'chirib, hisobotlarni yangidan boshlaydi. Bu amalni qaytarib bo'lmaydi.</div>
+          <button class="btn xavfli" id="zrDeleteAllBtn" style="margin-top:10px; background:#d33;">Hammasini o'chirish</button>
+          <div class="xabar" id="zrDeleteAllMsg"></div>
+        </div>` : ''}
         <div class="kartochka chart-card">
           <h2>${icon('trending-up', 'icon-xs')} Sof foyda dinamikasi</h2>
           <div id="zrChart"><div class="bosh">Yuklanmoqda...</div></div>
@@ -7654,6 +7661,26 @@ const tg = window.Telegram && window.Telegram.WebApp;
         msgEl.className = 'xabar err';
       }
     });
+
+    const deleteAllBtn = document.getElementById('zrDeleteAllBtn');
+    if (deleteAllBtn) {
+      deleteAllBtn.addEventListener('click', async () => {
+        if (!confirm("DIQQAT: barcha savdo, xarajat va Z-hisobotlar butunlay, qaytarib bo'lmaydigan tarzda o'chiriladi. Davom etasizmi?")) return;
+        if (!confirm("Tasdiqlang: rostdan ham HAMMASINI o'chirasizmi?")) return;
+        const msgEl = document.getElementById('zrDeleteAllMsg');
+        msgEl.textContent = 'O\'chirilmoqda...';
+        msgEl.className = 'xabar';
+        const res = await apiPost('/api/super-admin-reset-reports', { initData });
+        if (res.ok) {
+          msgEl.textContent = 'Barcha hisobotlar o\'chirildi. Hammasi yangidan boshlandi.';
+          msgEl.className = 'xabar ok';
+          loadZReportList();
+        } else {
+          msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+          msgEl.className = 'xabar err';
+        }
+      });
+    }
 
     loadZReportList();
   }
