@@ -1503,7 +1503,6 @@ function notifyKitchenGroup(owner, order, creatorLabel) {
     const text = `👨‍🍳 <b>Yangi buyurtma</b> (${typeLabel})${creatorLabel ? '\n' + creatorLabel : ''}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm`;
     sendMessage(owner.kitchenGroupId, text, {
       inline_keyboard: [[
-        { text: '✅ Qabul qilish', callback_data: `kgaccept:${owner.id}:${order.id}` },
         { text: '🏁 Tayyor', callback_data: `kgready:${owner.id}:${order.id}` }
       ]]
     }, owner.kitchenGroupThreadId).then(result => {
@@ -1570,7 +1569,14 @@ function syncGroupMessagesForOrder(owner, order) {
 
   for (const t of targets) {
     let kb = { inline_keyboard: [] };
-    if (order.status === 'yangi') {
+    if (t.prefix === 'kg') {
+      // Oshpazlar guruhida "Qabul qilish" bosqichi yo'q — buyurtma "yangi"
+      // yoki "tayyorlanmoqda" bo'lishidan qat'i nazar, faqat "Tayyor"
+      // tugmasi ko'rinadi (bosilganda ikkalasi ham bir yo'la bajariladi).
+      if (order.status === 'yangi' || order.status === 'tayyorlanmoqda') {
+        kb = { inline_keyboard: [[{ text: '🏁 Tayyor', callback_data: `kgready:${owner.id}:${order.id}` }]] };
+      }
+    } else if (order.status === 'yangi') {
       kb = { inline_keyboard: [[
         { text: '✅ Qabul qilish', callback_data: `${t.prefix}accept:${owner.id}:${order.id}` },
         { text: '🏁 Tayyor', callback_data: `${t.prefix}ready:${owner.id}:${order.id}` }
@@ -2665,8 +2671,18 @@ async function handleTelegramUpdate(update) {
         }
 
         if (order.status !== 'tayyorlanmoqda') {
-          await answerCallbackQuery(cq.id, 'Avval "✅ Qabul qilish" tugmasini bosing.', true);
-          return;
+          if (action === 'kgready' && order.status === 'yangi') {
+            // Oshpazlar guruhida "Qabul qilish" bosqichi olib tashlangan —
+            // "Tayyor" to'g'ridan-to'g'ri "yangi"dan bosilsa, qabul qilish
+            // ham shu zahoti (orqa fonda) belgilanadi.
+            order.kitchenGroupStage = 'qabul_qilindi';
+            order.kitchenAcceptedBy = from.id;
+            order.kitchenAcceptedAt = new Date().toISOString();
+            if (!order.startedAt) order.startedAt = order.kitchenAcceptedAt;
+          } else {
+            await answerCallbackQuery(cq.id, 'Avval "✅ Qabul qilish" tugmasini bosing.', true);
+            return;
+          }
         }
         order[stageField] = 'tayyor';
         order[readyByField] = from.id;
