@@ -8410,11 +8410,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
             ${customerState.addresses.map(a => `<div class="cust-addr-chip" data-addr-chip="${escapeHtml(a.id)}">${icon('pin', 'icon-xs')} ${escapeHtml(a.label)}</div>`).join('')}
           </div>
         ` : ''}
-        <button type="button" class="btn ikkinchi" id="cLocationBtn" style="width:100%; margin-bottom:6px;">
+        <textarea id="cAddressNoteInput" placeholder="Manzilni tushuntiring (orientir, qavat, kod va h.k.) - kuryer oson topishi uchun" rows="2">${escapeHtml(customerState.addressNote)}</textarea>
+        <button type="button" class="btn ikkinchi" id="cLocationBtn" style="width:100%; margin-bottom:6px; margin-top:6px;">
           ${customerState.location ? icon('check-circle', 'icon-xs icon-success') + ' Joylashuv aniqlandi (qayta aniqlash)' : icon('pin', 'icon-xs') + ' Joylashuvni aniqlash'}
         </button>
         <div id="cLocationStatus" class="xabar" style="margin-bottom:6px;"></div>
-        <textarea id="cAddressNoteInput" placeholder="Manzilni tushuntiring (orientir, qavat, kod va h.k.) - kuryer oson topishi uchun" rows="2">${escapeHtml(customerState.addressNote)}</textarea>
         <input type="tel" id="cExtraPhoneInput" class="phone-input-lg" placeholder="Qo'shimcha tel. raqam (majburiy)" value="${escapeHtml(customerState.extraPhone)}" inputmode="tel">
       </div>
       <div class="type-row" id="cPaymentTypeRow">
@@ -8823,11 +8823,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <div class="salom" style="font-size:20px;">${existing ? 'Manzilni tahrirlash' : 'Yangi manzil'}</div>
         <button class="btn ikkinchi" id="custAddrFormBackBtn" style="margin-bottom:12px;">← Orqaga</button>
         <input type="text" id="custAddrLabelInput" placeholder="Nomi (masalan: Uy, Ish)" value="${escapeHtml(existing ? existing.label : '')}" style="margin-bottom:8px;">
+        <textarea id="custAddrNoteInput" placeholder="Manzilni tushuntiring (orientir, qavat, kod va h.k.)" rows="2" style="margin-bottom:8px;">${escapeHtml(existing ? (existing.addressNote || '') : '')}</textarea>
         <button type="button" class="btn ikkinchi" id="custAddrLocBtn" style="width:100%; margin-bottom:6px;">
           ${formLoc.current ? icon('check-circle', 'icon-xs icon-success') + ' Joylashuv aniqlandi (qayta aniqlash)' : icon('pin', 'icon-xs') + ' Joylashuvni aniqlash'}
         </button>
         <div id="custAddrLocStatus" class="xabar" style="margin-bottom:6px;"></div>
-        <textarea id="custAddrNoteInput" placeholder="Manzilni tushuntiring (orientir, qavat, kod va h.k.)" rows="2" style="margin-bottom:8px;">${escapeHtml(existing ? (existing.addressNote || '') : '')}</textarea>
         <input type="tel" id="custAddrPhoneInput" class="phone-input-lg" placeholder="Qo'shimcha tel. raqam" value="${escapeHtml(existing ? (existing.extraPhone || '') : '')}" inputmode="tel" style="margin-bottom:8px;">
         <div class="xabar" id="custAddrFormMsg"></div>
         <div class="btn-row">
