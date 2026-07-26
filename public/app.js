@@ -3886,6 +3886,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
   function menuAddSectionHtml() {
     return `
+      <div class="kartochka">
+        <h2>Menyu</h2>
+        <div id="menuList"><div class="bosh">Yuklanmoqda...</div></div>
+      </div>
       <div class="section-label">${icon('restaurant', 'icon-xs')} Menyu</div>
       <div class="kartochka">
         <h2>Menyuga taom qo'shish</h2>
@@ -3915,10 +3919,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
         <button class="btn" id="addMenuBtn" style="margin-top:10px;">Qo'shish</button>
         <div class="xabar" id="menuMsg"></div>
-      </div>
-      <div class="kartochka">
-        <h2>Menyu</h2>
-        <div id="menuList"><div class="bosh">Yuklanmoqda...</div></div>
       </div>
     `;
   }
