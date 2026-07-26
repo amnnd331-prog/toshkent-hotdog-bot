@@ -6987,7 +6987,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <button class="btn" id="addStaffBtn">Xodim qo'shish</button>
           <div class="xabar" id="staffMsg"></div>
           <div class="staff-hint" style="margin-top:14px; border-top:1px solid var(--border-color); padding-top:12px;">
-            Yoki xodimning ID/username'ini bilmasangiz — yuqorida lavozim(lar)ni belgilab, bir martalik havola yarating. Xodim shu havolani bosib botni ochsa, avtomatik shu lavozim(lar) bilan qo'shiladi.
+            Yoki xodimning ID/username'ini bilmasangiz — yuqorida lavozim(lar)ni belgilab, bir martalik havola yarating. Xodim shu havolani bosib botni ochsa, avtomatik shu lavozim(lar) bilan qo'shiladi.<br>
+            <b>Eslatma:</b> "Egasi (hamkor)" huquqi havola orqali berilmaydi — buni faqat yuqorida ID/username kiritib, to'g'ridan-to'g'ri qo'shishda tanlash mumkin.
           </div>
           <button class="btn ikkinchi" id="createStaffInviteBtn" style="margin-top:8px;">${icon('link', 'icon-xs')} Bir martalik havola yaratish</button>
           <div id="staffInviteLinkWrap"></div>
@@ -7059,12 +7060,12 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
 
     document.getElementById('createStaffInviteBtn').addEventListener('click', async () => {
-      const roles = Array.from(document.querySelectorAll('.staffRoleAddCheckbox:checked')).map(cb => cb.value);
+      const roles = Array.from(document.querySelectorAll('.staffRoleAddCheckbox:checked')).map(cb => cb.value).filter(r => r !== 'egasi');
       const branchId = document.getElementById('staffBranchInput').value;
       const msgEl = document.getElementById('staffInviteMsg');
       const wrap = document.getElementById('staffInviteLinkWrap');
       if (!roles.length) {
-        msgEl.textContent = 'Kamida bitta lavozim belgilang.';
+        msgEl.textContent = 'Kamida bitta lavozim belgilang. ("Egasi (hamkor)" havola orqali berilmaydi — buni faqat ID/username orqali qo\'shishda tanlang.)';
         msgEl.className = 'xabar err';
         return;
       }
