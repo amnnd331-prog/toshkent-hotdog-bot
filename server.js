@@ -811,8 +811,11 @@ function removeExtraAdmin(id) {
 }
 
 function isAdminId(userId) {
-  const idStr = String(userId);
-  return idStr === String(ADMIN_ID) || EXTRA_ADMIN_IDS.has(idStr);
+  // Bitta-do'kon rejimi: alohida "admin" roli o'chirilgan — ADMIN_ID endi
+  // oddiy owner sifatida ishlaydi (qarang: ensureAdminIsOwner() pastda).
+  // Shu tufayli /api/verify va boshqa joylardagi barcha "admin" tekshiruvlari
+  // avtomatik false qaytaradi va Mini App to'g'ridan-to'g'ri owner panelini ochadi.
+  return false;
 }
 
 function allAdminIds() {
@@ -9811,11 +9814,51 @@ function seedDefaultTariffsIfEmpty() {
   console.log(`Standart tariflar avtomatik yaratildi: ${tariffs.map(t => t.name).join(', ')}`);
 }
 
+function ensureAdminIsOwner() {
+  if (!ADMIN_ID || ADMIN_ID === 'ADMIN_TELEGRAM_ID_BU_YERGA') return;
+  const owners = loadOwners();
+  const idStr = String(ADMIN_ID);
+  let owner = findOwner(owners, idStr);
+  if (!owner) {
+    owner = {
+      id: idStr,
+      username: null,
+      addedAt: new Date().toISOString(),
+      expiresAt: null,
+      price: 0,
+      paid: true,
+      paidAt: new Date().toISOString(),
+      subscriptionStatus: SUBSCRIPTION_STATUS.ACTIVE,
+      subscriptionUntil: null, // null = muddatsiz, cheklovsiz kirish
+      graceUntil: null,
+      trialGivenAt: null,
+      tariffId: null // tarif yo'q = barcha funksiyalar ochiq (ownerCanUseFeature)
+    };
+    owners.push(owner);
+    saveOwners(owners);
+    console.log(`ADMIN_ID (${idStr}) owner sifatida avtomatik ro'yxatga olindi (cheklovsiz kirish).`);
+  } else if (owner.subscriptionStatus !== SUBSCRIPTION_STATUS.ACTIVE || owner.subscriptionUntil) {
+    // Avval boshqa holatda bo'lsa ham (masalan pending_trial yoki muddati
+    // tugagan), ADMIN_ID doim cheklovsiz faol owner bo'lib qolishi kerak.
+    owner.subscriptionStatus = SUBSCRIPTION_STATUS.ACTIVE;
+    owner.subscriptionUntil = null;
+    owner.graceUntil = null;
+    owner.blockedNotifiedAt = null;
+    saveOwners(owners);
+  }
+}
+
 server.listen(PORT, async () => {
   console.log(`Server ${PORT}-portda ishga tushdi`);
 
   reloadAdminsCache();
   console.log(`Qo'shimcha adminlar soni: ${EXTRA_ADMIN_IDS.size}`);
+
+  try {
+    ensureAdminIsOwner();
+  } catch (e) {
+    console.error('ADMIN_ID ni owner qilishda xatolik:', e.message);
+  }
 
   try {
     seedDefaultTariffsIfEmpty();
