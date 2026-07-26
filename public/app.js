@@ -8738,126 +8738,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     renderCheckoutModalBody(overlay);
   }
 
-  // ---- Jonli navbat taxtasi (live board): "Tayyorlanmoqda" / "Tayyor" ustunlari ----
-  let liveBoardState = { pollTimer: null, myOrderIds: [], lastPreparingIds: [], pendingPaymentOrderId: null, pendingPaymentMsgEl: null };
-
-  function stopLiveBoardPolling() {
-    if (liveBoardState.pollTimer) { clearInterval(liveBoardState.pollTimer); liveBoardState.pollTimer = null; }
-  }
-
-  function liveBoardBannerHtml(activeCount) {
-    if (!activeCount) return '';
-    return `
-      <button type="button" class="live-board-open-btn" id="liveBoardOpenBtn">
-        <span class="live-board-open-icon">${icon('clock', 'icon-md')}</span>
-        <span class="live-board-open-text">
-          <span class="live-board-open-title">Navbatni ko'rish</span>
-          <span class="live-board-open-sub">${activeCount} ta faol buyurtma — jonli holatni kuzating</span>
-        </span>
-        <span class="live-board-open-arrow">›</span>
-      </button>
-    `;
-  }
-
-  function liveBoardColumnHtml(title, iconName, orders, myOrderIds, emptyText) {
-    return `
-      <div class="live-board-col">
-        <div class="live-board-col-head">
-          ${icon(iconName, 'icon-sm')}
-          <span>${escapeHtml(title)}</span>
-          <span class="live-board-col-count">${orders.length}</span>
-        </div>
-        <div class="live-board-col-body">
-          ${orders.length ? orders.map(o => `
-            <div class="live-board-chip${myOrderIds.includes(o.id) ? ' mine' : ''}" data-board-id="${escapeHtml(o.id)}">#${escapeHtml(String(o.number || o.id))}</div>
-          `).join('') : `<div class="live-board-empty">${escapeHtml(emptyText)}</div>`}
-        </div>
-      </div>
-    `;
-  }
-
-  function liveBoardBodyHtml(data) {
-    if (!data) return `<div class="bosh">Yuklanmoqda...</div>`;
-    return `
-      <div class="live-board-cols">
-        ${liveBoardColumnHtml('Tayyorlanmoqda', 'chef-hat', data.preparing || [], data.myOrderIds || [], "Hozircha tayyorlanayotgan buyurtma yo'q")}
-        ${liveBoardColumnHtml('Tayyor', 'cloche', data.ready || [], data.myOrderIds || [], "Hozircha tayyor buyurtma yo'q")}
-      </div>
-    `;
-  }
-
-  async function refreshLiveBoard() {
-    const bodyEl = document.getElementById('liveBoardBody');
-    if (!bodyEl) { stopLiveBoardPolling(); return; }
-    const res = await apiPost('/api/live-board', { initData, ownerId: customerState.ownerId });
-    const bodyEl2 = document.getElementById('liveBoardBody');
-    if (!bodyEl2) return;
-    if (res.networkError) { renderNetworkErrorInline(bodyEl2, res.reason, refreshLiveBoard); return; }
-    if (!res.ok) {
-      bodyEl2.innerHTML = `<div class="bosh">Navbat yuklanmadi.</div>`;
-      return;
-    }
-    liveBoardState.myOrderIds = res.myOrderIds || [];
-
-    // "To'lov tasdiqlash kutilmoqda" xabari - to'lov tasdiqlangach (yoki rad
-    // etilgach) shu buyurtma myPendingPaymentOrderIds ro'yxatidan chiqib
-    // ketadi, shunda xabarni o'zi olib tashlaymiz.
-    if (liveBoardState.pendingPaymentOrderId) {
-      const stillPending = (res.myPendingPaymentOrderIds || []).includes(liveBoardState.pendingPaymentOrderId);
-      if (!stillPending) {
-        const el = liveBoardState.pendingPaymentMsgEl;
-        if (el && el.parentNode) {
-          el.innerHTML = `${icon('check-circle', 'icon-xs icon-success')} To'lov holati yangilandi.`;
-          setTimeout(() => { if (el.parentNode) el.remove(); }, 4000);
-        }
-        liveBoardState.pendingPaymentOrderId = null;
-        liveBoardState.pendingPaymentMsgEl = null;
-      }
-    }
-
-    const prevPreparingIds = liveBoardState.lastPreparingIds || [];
-    bodyEl2.innerHTML = liveBoardBodyHtml(res);
-    (res.ready || []).forEach(o => {
-      if (prevPreparingIds.includes(o.id)) {
-        const chip = bodyEl2.querySelector(`[data-board-id="${CSS && CSS.escape ? CSS.escape(o.id) : o.id}"]`);
-        if (chip) {
-          chip.classList.add('live-board-chip-new');
-          if (liveBoardState.myOrderIds.includes(o.id) && tg && tg.HapticFeedback && tg.HapticFeedback.notificationOccurred) {
-            try { tg.HapticFeedback.notificationOccurred('success'); } catch (e) {}
-          }
-        }
-      }
-    });
-    liveBoardState.lastPreparingIds = (res.preparing || []).map(o => o.id);
-  }
-
-  function startLiveBoardPolling() {
-    stopLiveBoardPolling();
-    liveBoardState.lastPreparingIds = [];
-    liveBoardState.pendingPaymentOrderId = null;
-    liveBoardState.pendingPaymentMsgEl = null;
-    refreshLiveBoard();
-    liveBoardState.pollTimer = setInterval(refreshLiveBoard, 4000);
-  }
-
-  function renderLiveBoardScreen(onBack) {
-    ekran(`
-      <div class="panel live-board-panel">
-        <div class="live-board-header">
-          <button class="btn ikkinchi live-board-back" id="liveBoardBackBtn">← Orqaga</button>
-          <div class="live-board-title">${icon('clock', 'icon-sm')} Jonli navbat</div>
-        </div>
-        <div class="bosh live-board-hint">Buyurtma raqamingiz "Tayyorlanmoqda"dan "Tayyor" ustuniga o'zi o'tadi — hech narsa bosish shart emas.</div>
-        <div id="liveBoardBody" class="live-board-body">${liveBoardBodyHtml(null)}</div>
-      </div>
-    `);
-    document.getElementById('liveBoardBackBtn').addEventListener('click', () => {
-      stopLiveBoardPolling();
-      onBack();
-    });
-    startLiveBoardPolling();
-  }
-
   function renderCheckoutModalBody(overlay) {
     const modalEl = overlay.querySelector('.modal');
     modalEl.innerHTML = customerCheckoutModalBodyHtml();
@@ -9353,19 +9233,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     listEl2.innerHTML = orders.length ? orders.map(customerOrderHistoryCardHtml).join('') : `<div class="bosh">Hali buyurtmalar yo'q.</div>`;
     attachCustomerHistoryHandlers(listEl2, orders);
 
-    const bannerWrap = document.getElementById('liveBoardBannerWrap');
-    if (bannerWrap) {
-      const activeCount = orders.filter(o => o.status === 'yangi' || o.status === 'tayyorlanmoqda').length;
-      bannerWrap.innerHTML = liveBoardBannerHtml(activeCount);
-      const openBtn = document.getElementById('liveBoardOpenBtn');
-      if (openBtn) {
-        openBtn.addEventListener('click', () => {
-          stopCustomerHistoryPolling();
-          renderLiveBoardScreen(() => renderCustomerHistoryTab());
-        });
-      }
-    }
-
     if (changedIds.length) {
       if (tg && tg.HapticFeedback && tg.HapticFeedback.notificationOccurred) {
         try { tg.HapticFeedback.notificationOccurred('success'); } catch (e) {}
@@ -9388,7 +9255,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
       <div class="panel">
         ${customerHeaderHtml()}
         ${customerTabRowHtml()}
-        <div id="liveBoardBannerWrap"></div>
         <div id="customerHistoryList"><div class="bosh">Yuklanmoqda...</div></div>
       </div>
     `);
@@ -9468,19 +9334,16 @@ const tg = window.Telegram && window.Telegram.WebApp;
         successMsgHtml = `${icon('check-circle', 'icon-xs icon-success')} Buyurtma qabul qilindi (${fmtNum(res.total)} so'm)${res.pointsEarned ? ` · +${res.pointsEarned} bonus ball` : ''}`;
       }
 
-      renderLiveBoardScreen(() => renderCustomerMenuTab());
+      customerState.tab = 'tarix';
+      renderCustomerHistoryTab();
       const topMsg = document.createElement('div');
       topMsg.className = 'xabar ok';
       topMsg.innerHTML = successMsgHtml;
-      const panelEl = document.querySelector('.live-board-panel');
-      const hintEl = panelEl && panelEl.querySelector('.live-board-hint');
-      if (panelEl && hintEl) panelEl.insertBefore(topMsg, hintEl);
+      const panelEl = document.querySelector('.panel');
+      const listWrap = document.getElementById('customerHistoryList');
+      if (panelEl && listWrap) panelEl.insertBefore(topMsg, listWrap);
       else if (panelEl) panelEl.prepend(topMsg);
-
-      if (res.paymentPending) {
-        liveBoardState.pendingPaymentOrderId = res.orderId;
-        liveBoardState.pendingPaymentMsgEl = topMsg;
-      }
+      setTimeout(() => { if (topMsg.parentNode) topMsg.remove(); }, 6000);
 
       if (needsPaymentProofModal) showPaymentProofModal();
     } else {
