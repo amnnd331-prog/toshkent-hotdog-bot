@@ -996,7 +996,7 @@ function ownerAverageRating(owner) {
 }
 
 const STOCK_UNITS = { kg: 'kg', g: 'g', l: 'l', ml: 'ml', dona: 'dona' };
-const ORDER_TYPES = { stol: 'Stolga', olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
+const ORDER_TYPES = { olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
 const PAYMENT_TYPES = { naqd: 'Naqd', karta: 'Karta', dostavka_orqali: 'Dostavka orqali' };
 
 function orderIncomeAmount(o) {
@@ -1407,9 +1407,8 @@ function notifyDeliveryGroup(owner, order, creatorLabel) {
     order.extraPhone ? `📞 Qo'shimcha tel: ${escapeHtmlServer(order.extraPhone)}` : null,
   ].filter(Boolean).join('\n');
   const typeLabel = ORDER_TYPES[order.orderType] || order.orderType;
-  const headerEmoji = order.orderType === 'dostavka' ? '🚚' : (order.orderType === 'stol' ? '🍽' : '🥡');
-  const tableLine = order.tableNumber ? ` — stol ${escapeHtmlServer(order.tableNumber)}` : '';
-  const text = `${headerEmoji} <b>Yangi buyurtma</b> (${typeLabel}${tableLine})${creatorLabel ? '\n' + creatorLabel : ''}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm\nTo'lov: ${PAYMENT_TYPES[order.paymentType] || order.paymentType}` +
+  const headerEmoji = order.orderType === 'dostavka' ? '🚚' : '🥡';
+  const text = `${headerEmoji} <b>Yangi buyurtma</b> (${typeLabel})${creatorLabel ? '\n' + creatorLabel : ''}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm\nTo'lov: ${PAYMENT_TYPES[order.paymentType] || order.paymentType}` +
     (addressLines ? `\n\n${addressLines}` : '');
   sendMessage(owner.deliveryGroupId, text, {
     inline_keyboard: [[
@@ -1437,8 +1436,7 @@ function notifyKitchenGroup(owner, order, creatorLabel) {
   try {
     const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
     const typeLabel = ORDER_TYPES[order.orderType] || order.orderType;
-    const tableLine = order.tableNumber ? ` — stol ${escapeHtmlServer(order.tableNumber)}` : '';
-    const text = `👨‍🍳 <b>Yangi buyurtma</b> (${typeLabel}${tableLine})${creatorLabel ? '\n' + creatorLabel : ''}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm`;
+    const text = `👨‍🍳 <b>Yangi buyurtma</b> (${typeLabel})${creatorLabel ? '\n' + creatorLabel : ''}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm`;
     sendMessage(owner.kitchenGroupId, text, {
       inline_keyboard: [[
         { text: '✅ Qabul qilish', callback_data: `kgaccept:${owner.id}:${order.id}` },
@@ -2269,8 +2267,7 @@ async function handleTelegramUpdate(update) {
     const itemsText = targetOrder.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
     const caption = `💳 <b>To'lov tasdiqlash so'raladi</b>\n` +
       `${orderCustomerContactLabel(targetOrder)}\n${itemsText}\n\n` +
-      `Jami: ${fmtNum(targetOrder.total)} so'm\n${ORDER_TYPES[targetOrder.orderType] || targetOrder.orderType}` +
-      `${targetOrder.tableNumber ? ' — stol ' + escapeHtmlServer(targetOrder.tableNumber) : ''}`;
+      `Jami: ${fmtNum(targetOrder.total)} so'm\n${ORDER_TYPES[targetOrder.orderType] || targetOrder.orderType}`;
     const approveKb = {
       inline_keyboard: [[
         { text: '✅ Tasdiqlash', callback_data: `payok:${targetOwner.id}:${targetOrder.id}` },
@@ -2586,7 +2583,7 @@ async function handleTelegramUpdate(update) {
 
         {
           const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
-          const orderLabel = `${ORDER_TYPES[order.orderType] || order.orderType}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''}`;
+          const orderLabel = `${ORDER_TYPES[order.orderType] || order.orderType}`;
           const readyText = `✅ <b>Buyurtma tayyor</b> (${orderLabel})\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm`;
           const staffList = owner.staff || [];
           const targetRoles = order.orderType === 'dostavka' ? ['kassir', 'dostavka'] : ['kassir'];
@@ -2638,7 +2635,7 @@ async function handleTelegramUpdate(update) {
         saveOwners(owners);
 
         const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
-        const notifyText = `🆕 <b>Yangi mijoz buyurtmasi</b> (${ORDER_TYPES[order.orderType]}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''})\n` +
+        const notifyText = `🆕 <b>Yangi mijoz buyurtmasi</b> (${ORDER_TYPES[order.orderType]})\n` +
           `${orderCustomerContactLabel(order)}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm\nTo'lov: ${PAYMENT_TYPES[order.paymentType]} (✅ tasdiqlangan)`;
         const notifyTargets = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'oshpaz') || staffHasRole(s, 'kassir')).map(s => s.id))];
         await notifyStaffList(owner, notifyTargets, notifyText, `Buyurtma #${order.id} (to'lov tasdiqlangach)`, 'newOrder');
@@ -5347,7 +5344,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/customer-order') {
     readBody(req, async (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const { initData, ownerId, items, orderType, tableNumber, paymentType, promoId, usePoints, location, addressNote, extraPhone, requestId } = payload;
+      const { initData, ownerId, items, orderType, paymentType, promoId, usePoints, location, addressNote, extraPhone, requestId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -5376,10 +5373,6 @@ const server = http.createServer((req, res) => {
       if (!Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, paymentType)) {
         return sendJSON(res, 200, { ok: false, reason: 'To\'lov turini tanlang.' });
       }
-      if (orderType === 'stol' && !String(tableNumber || '').trim()) {
-        return sendJSON(res, 200, { ok: false, reason: 'Stol raqamini kiriting.' });
-      }
-
       if (orderType === 'dostavka' && paymentType === 'naqd') {
         return sendJSON(res, 200, { ok: false, reason: 'Dostavka buyurtmalarida naqd to\'lov mavjud emas. Karta yoki dostavka orqali to\'lovni tanlang.' });
       }
@@ -5527,15 +5520,14 @@ const server = http.createServer((req, res) => {
         pointsEarned,
         total,
         orderType,
-        tableNumber: orderType === 'stol' ? String(tableNumber).trim() : null,
         location: deliveryLocation,
         addressNote: addressNoteFinal,
         extraPhone: extraPhoneFinal,
         paymentType,
         status: 'yangi',
 
-        paymentProofStatus: (paymentType === 'karta' || (orderType === 'stol' && paymentType === 'naqd')) ? 'kutilmoqda' : null,
-        paymentConfirmMethod: paymentType === 'karta' ? 'skrinshot' : (orderType === 'stol' && paymentType === 'naqd') ? 'naqd_kassa' : null,
+        paymentProofStatus: (paymentType === 'karta') ? 'kutilmoqda' : null,
+        paymentConfirmMethod: paymentType === 'karta' ? 'skrinshot' : null,
         paymentProofFileId: null,
 
         courierCashCollected: (orderType === 'dostavka' && paymentType === 'dostavka_orqali') ? false : true,
@@ -5562,30 +5554,9 @@ const server = http.createServer((req, res) => {
           '💳 Buyurtmangiz qabul qilindi, lekin hali <b>TASDIQLANMAGAN</b>.' + cardLine + '\n\n' +
           'Iltimos, to\'lov chekining (skrinshotning) RASMINI shu botga yuboring - ' +
           'kassir yoki oshxona egasi tekshirib tasdiqlagach, buyurtmangiz oshxonaga yuboriladi.');
-      } else if (order.paymentConfirmMethod === 'naqd_kassa') {
-
-        await sendMessage(userId,
-          `🍽 Buyurtmangiz qabul qilindi!\n\n` +
-          `Iltimos, xohishingiz bo'lsa avval kassaga borib to'lovni amalga oshiring - ` +
-          `to'lov qabul qilingach, taomingiz tayyorlanishni boshlaydi. Rahmat! 🙏`);
-
-        const itemsText = orderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
-        const confirmCaption = `💵 <b>Naqd to'lov tasdiqlash kerak</b>\n` +
-          `Stol: ${escapeHtmlServer(order.tableNumber || '-')}\n${orderCustomerContactLabel(order)}\n${itemsText}\n\n` +
-          `Jami: ${fmtNum(total)} so'm\n\nMijoz kassaga to'lov qilgach, shu yerda tasdiqlang - shundan keyin oshpazga ketadi.`;
-        const confirmKb = {
-          inline_keyboard: [[
-            { text: '✅ To\'lov qabul qilindi', callback_data: `payok:${owner.id}:${order.id}` },
-            { text: '❌ Bekor qilish', callback_data: `payrej:${owner.id}:${order.id}` }
-          ]]
-        };
-        const cashApprovers = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'kassir')).map(s => s.id))];
-        for (const approverId of new Set(cashApprovers.map(String))) {
-          sendMessage(approverId, confirmCaption, confirmKb);
-        }
       } else {
         const itemsText = orderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
-        const notifyText = `🆕 <b>Yangi mijoz buyurtmasi</b> (${ORDER_TYPES[orderType]}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''})\n` +
+        const notifyText = `🆕 <b>Yangi mijoz buyurtmasi</b> (${ORDER_TYPES[orderType]})\n` +
           `${orderCustomerContactLabel(order)}\n${itemsText}\n\nJami: ${fmtNum(total)} so'm\nTo'lov: ${PAYMENT_TYPES[paymentType]}`;
         const notifyTargets = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'oshpaz') || staffHasRole(s, 'kassir')).map(s => s.id))];
         await notifyStaffList(owner, notifyTargets, notifyText, `Buyurtma #${order.id} (mijoz)`, 'newOrder');
@@ -5713,7 +5684,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/create-order') {
     readBody(req, async (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const { initData, items, orderType, tableNumber, paymentType, requestId } = payload;
+      const { initData, items, orderType, paymentType, requestId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -5736,9 +5707,6 @@ const server = http.createServer((req, res) => {
       }
       if (!Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, paymentType)) {
         return sendJSON(res, 200, { ok: false, reason: 'To\'lov turini tanlang.' });
-      }
-      if (orderType === 'stol' && !String(tableNumber || '').trim()) {
-        return sendJSON(res, 200, { ok: false, reason: 'Stol raqamini kiriting.' });
       }
       if (orderType === 'dostavka' && paymentType === 'naqd') {
         return sendJSON(res, 200, { ok: false, reason: 'Dostavka buyurtmalarida naqd to\'lov mavjud emas. Karta yoki dostavka orqali to\'lovni tanlang.' });
@@ -5833,7 +5801,6 @@ const server = http.createServer((req, res) => {
         items: orderItems,
         total,
         orderType,
-        tableNumber: orderType === 'stol' ? String(tableNumber).trim() : null,
         paymentType,
         status: 'yangi',
         branchId: orderBranchId,
@@ -5847,7 +5814,7 @@ const server = http.createServer((req, res) => {
       saveOwners(owners);
 
       const itemsText = orderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
-      const notifyText = `🆕 <b>Yangi buyurtma</b> (${ORDER_TYPES[orderType]}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''})\n` +
+      const notifyText = `🆕 <b>Yangi buyurtma</b> (${ORDER_TYPES[orderType]})\n` +
         `${itemsText}\n\nJami: ${fmtNum(total)} so'm\nTo'lov: ${PAYMENT_TYPES[paymentType]}`;
       const notifyTargets = [ctx.owner.id, ...((ctx.owner.staff || []).filter(s => staffHasRole(s, 'oshpaz')).map(s => s.id))];
       await notifyStaffList(ctx.owner, notifyTargets, notifyText, `Buyurtma #${order.id} (kassir)`, 'newOrder');
@@ -5963,7 +5930,6 @@ const server = http.createServer((req, res) => {
         items: o.items,
         total: o.total,
         orderType: o.orderType,
-        tableNumber: o.tableNumber,
         paymentType: o.paymentType,
         status: o.status,
         createdAt: o.createdAt,
@@ -6110,7 +6076,6 @@ const server = http.createServer((req, res) => {
         return [
           sana,
           ORDER_TYPES[o.orderType] || o.orderType,
-          o.tableNumber || '',
           PAYMENT_TYPES[o.paymentType] || o.paymentType,
           ORDER_STATUSES[o.status] || o.status,
           itemsText,
@@ -6120,7 +6085,7 @@ const server = http.createServer((req, res) => {
       });
 
       if (format === 'csv') {
-        const headers = ['Sana', 'Turi', 'Stol', "To'lov", 'Holat', 'Taomlar', 'Summa', 'Xodim'];
+        const headers = ['Sana', 'Turi', "To'lov", 'Holat', 'Taomlar', 'Summa', 'Xodim'];
         let csv = headers.map(csvEscapeCell).join(',') + '\r\n';
         csv += rows.map(r => r.map(csvEscapeCell).join(',')).join('\r\n');
         csv += `\r\n\r\n${csvEscapeCell('Jami: ' + rows.length + ' ta buyurtma, ' + totalSum + ' so\'m')}\r\n`;
@@ -6132,7 +6097,7 @@ const server = http.createServer((req, res) => {
 
       const headers = ['Sana', 'Turi', "To'lov", 'Holat', 'Summa', 'Xodim'];
       const colWidths = [95, 65, 65, 70, 75, 145];
-      const pdfRows = rows.map(r => [r[0], r[1], r[3], r[4], r[6] + " so'm", r[7]]);
+      const pdfRows = rows.map(r => [r[0], r[1], r[2], r[3], r[5] + " so'm", r[6]]);
       const pdfBuffer = buildSimplePdfReport(
         `${restaurantName} — Buyurtmalar tarixi (${rows.length} ta, ${totalSum} so'm)`,
         nowLabel, headers, colWidths, pdfRows
@@ -6311,7 +6276,7 @@ const server = http.createServer((req, res) => {
 
       if (status === 'tayyor') {
         const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
-        const orderLabel = `${ORDER_TYPES[order.orderType] || order.orderType}${order.tableNumber ? ' — stol ' + escapeHtmlServer(order.tableNumber) : ''}`;
+        const orderLabel = `${ORDER_TYPES[order.orderType] || order.orderType}`;
         const readyText = `✅ <b>Buyurtma tayyor</b> (${orderLabel})\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm`;
 
         const staffList = ctx.owner.staff || [];
