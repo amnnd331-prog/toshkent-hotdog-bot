@@ -945,11 +945,12 @@ function normalizeMenuItemPrices(rawPrices) {
   for (const raw of arr) {
     const label = String((raw && raw.label) || '').trim();
     const priceNum = Number(raw && raw.price);
-    if (!label) return { ok: false, reason: 'Har bir narx varianti uchun nom kiriting (masalan: Kichik, Katta).' };
-    if (!Number.isFinite(priceNum) || priceNum <= 0) return { ok: false, reason: `"${label}" uchun narxni to\'g\'ri kiriting.` };
-    const labelKey = label.toLowerCase();
-    if (seenLabels.has(labelKey)) return { ok: false, reason: `"${label}" nomi takrorlangan — har bir variant nomi boshqacha bo\'lsin.` };
-    seenLabels.add(labelKey);
+    if (!Number.isFinite(priceNum) || priceNum <= 0) return { ok: false, reason: `${label ? '"' + label + '"' : 'Narx varianti'} uchun narxni to\'g\'ri kiriting.` };
+    if (label) {
+      const labelKey = label.toLowerCase();
+      if (seenLabels.has(labelKey)) return { ok: false, reason: `"${label}" nomi takrorlangan — har bir variant nomi boshqacha bo\'lsin.` };
+      seenLabels.add(labelKey);
+    }
     list.push({
       id: (raw && raw.id && String(raw.id)) || crypto.randomBytes(4).toString('hex'),
       label,
