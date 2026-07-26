@@ -8055,6 +8055,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     location: null,
     addressNote: '',
     extraPhone: '',
+    comment: '',
     tab: 'menyu',
     category: 'hammasi',
     promoId: '',
@@ -8545,6 +8546,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           Bonus ballaridan foydalanish (${customerState.bonusPoints} ball mavjud)
         </label>
       ` : ''}
+      <textarea id="cCommentInput" placeholder="Izoh (ixtiyoriy) — masalan: kam achchiq, piyozsiz, ko'proq sous..." rows="2">${escapeHtml(customerState.comment || '')}</textarea>
       <div class="cart-total"><span>Jami:</span><span id="cCartTotalVal">${fmtNum(customerCartTotal())} so'm</span></div>
       <div class="xabar" id="cOrderMsg"></div>
       <div class="btn-row">
@@ -8813,6 +8815,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
     const pointsCheckbox = modalEl.querySelector('#cUsePoints');
     if (pointsCheckbox) pointsCheckbox.addEventListener('change', (e) => { customerState.usePoints = e.target.checked; });
+
+    const commentInput = modalEl.querySelector('#cCommentInput');
+    if (commentInput) commentInput.addEventListener('input', (e) => { customerState.comment = e.target.value; });
 
     modalEl.querySelector('#cSendOrderBtn').addEventListener('click', () => sendCustomerOrder(overlay));
   }
@@ -9295,6 +9300,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       location: customerState.orderType === 'dostavka' ? customerState.location : null,
       addressNote: customerState.orderType === 'dostavka' ? customerState.addressNote : '',
       extraPhone: customerState.orderType === 'dostavka' ? customerState.extraPhone : '',
+      comment: customerState.comment || '',
       requestId: customerState.lastOrderRequestId
     });
 
@@ -9305,6 +9311,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       customerState.location = null;
       customerState.addressNote = '';
       customerState.extraPhone = '';
+      customerState.comment = '';
       customerState.lastOrderRequestId = null;
       if (overlay) overlay.remove();
 
