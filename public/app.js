@@ -4225,6 +4225,24 @@ const tg = window.Telegram && window.Telegram.WebApp;
     editingOrderId: null, editingOrderNumber: null, editingComboItems: null, editingReturn: null
   };
 
+  // "Zal"/"Dostavka"/"Olib ketish" yoki "Naqd"/"Karta"/"Click" bosilganda BUTUN
+  // ekranni qayta chizib yubormaslik uchun (bu menyuni qayta yuklab, sahifani
+  // boshiga scroll qilib yuborardi) — faqat shu ikki qatorni yangilaymiz.
+  function updateCashierTypeRows() {
+    const orderRow = document.getElementById('orderTypeRow');
+    if (orderRow) {
+      orderRow.innerHTML = Object.entries(ORDER_TYPE_LABELS).map(([k, label]) => `
+        <div class="type-opt ${cashierState.orderType === k ? 'selected' : ''}" data-order-type="${k}">${label}</div>
+      `).join('');
+    }
+    const paymentRow = document.getElementById('paymentTypeRow');
+    if (paymentRow) {
+      paymentRow.innerHTML = visiblePaymentTypeEntries(cashierState.orderType).map(([k, label]) => `
+        <div class="type-opt ${cashierState.paymentType === k ? 'selected' : ''}" data-payment-type="${k}">${label}</div>
+      `).join('');
+    }
+  }
+
   function cashierCartTotal() {
     return Object.entries(cashierState.cart).reduce((sum, [key, qty]) => sum + (qty || 0) * menuItemPriceForCartKey(cashierState.menu, key), 0);
   }
@@ -4310,13 +4328,13 @@ const tg = window.Telegram && window.Telegram.WebApp;
       if (!t) return;
       cashierState.orderType = t;
       ensureValidPaymentType(cashierState);
-      renderCashierScreen(restaurantName, onBack);
+      updateCashierTypeRows();
     });
     document.getElementById('paymentTypeRow').addEventListener('click', (e) => {
       const t = e.target.getAttribute('data-payment-type');
       if (!t) return;
       cashierState.paymentType = t;
-      renderCashierScreen(restaurantName, onBack);
+      updateCashierTypeRows();
     });
     document.getElementById('sendOrderBtn').addEventListener('click', () => sendCashierOrder(restaurantName, onBack));
     document.getElementById('orderCommentInput').addEventListener('input', (e) => {
