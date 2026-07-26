@@ -6060,6 +6060,13 @@ const tg = window.Telegram && window.Telegram.WebApp;
   function cashflowStatsHtml(cf) {
     const bucket = cf[cashflowState.period];
     const netClass = bucket.net >= 0 ? 'positive' : 'negative';
+    const paymentRows = Object.entries(bucket.paymentBreakdown || {})
+      .filter(([, sum]) => sum > 0)
+      .map(([key, sum]) => `
+        <button type="button" class="profile-row cf-payment-row" data-cf-payment-type="${escapeHtml(key)}" style="width:100%; text-align:left; cursor:pointer; background:none; border:none;">
+          <b>${escapeHtml(PAYMENT_TYPE_LABELS[key] || key)}:</b> ${cfFormatSum(sum)}
+        </button>
+      `).join('');
     return `
       <div class="cf-stats">
         <div class="cf-stat income">
@@ -6077,9 +6084,15 @@ const tg = window.Telegram && window.Telegram.WebApp;
       </div>
       <div class="kartochka" style="margin-top:10px;">
         <h2>Kassa va dostavka (alohida)</h2>
-        <div class="profile-row"><b>Kassadagi pul</b> (stolga/olib ketish): ${cfFormatSum(bucket.kassaIncome)}</div>
+        <div class="profile-row"><b>Kassadagi pul</b> (olib ketish): ${cfFormatSum(bucket.kassaIncome)}</div>
         <div class="profile-row"><b>Kuryer qo'lidagi pul:</b> ${cfFormatSum(bucket.dostavkaIncome)} (${bucket.dostavkaOrderCount} ta buyurtma)</div>
       </div>
+      ${paymentRows ? `
+      <div class="kartochka" style="margin-top:10px;">
+        <h2>To'lov turi bo'yicha</h2>
+        <div class="bosh" style="margin-bottom:6px;">Buyurtmalar tarixini shu turda ko'rish uchun bosing.</div>
+        ${paymentRows}
+      </div>` : ''}
       <div class="bosh" style="margin-top:8px;">Buyurtmalar soni: ${bucket.orderCount}</div>
       ${cfCategoryBreakdownHtml(bucket.byCategory)}
     `;
@@ -6187,7 +6200,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       if (res.ok) {
         document.getElementById('cfAmountInput').value = '';
         document.getElementById('cfNoteInput').value = '';
-        loadCashflowData();
+        loadCashflowData(profile, onBack);
       } else {
         handleFeatureBlocked(res);
         msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
@@ -6195,7 +6208,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       }
     });
 
-    loadCashflowData();
+    loadCashflowData(profile, onBack);
     loadCfTrendChart();
     if (branchState.branches.length) loadBranchReportAndRender();
   }
@@ -6239,14 +6252,14 @@ const tg = window.Telegram && window.Telegram.WebApp;
     el.innerHTML = branchReportHtml(res.ok ? res.report : []);
   }
 
-  async function loadCashflowData() {
+  async function loadCashflowData(profile, onBack) {
     const statsEl = document.getElementById('cfStats');
     const listEl = document.getElementById('cfExpenseList');
     const msgEl = document.getElementById('cfExpenseMsg');
     if (!statsEl || !listEl) return;
     const res = await apiPost('/api/cashflow', { initData });
     if (res.networkError) {
-      renderNetworkErrorInline(statsEl, res.reason, loadCashflowData);
+      renderNetworkErrorInline(statsEl, res.reason, () => loadCashflowData(profile, onBack));
       listEl.innerHTML = '';
       return;
     }
@@ -6259,11 +6272,19 @@ const tg = window.Telegram && window.Telegram.WebApp;
     statsEl.innerHTML = cashflowStatsHtml(res.cashflow);
     listEl.innerHTML = cashflowExpensesHtml(res.expenses);
 
+    statsEl.querySelectorAll('[data-cf-payment-type]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const pt = btn.getAttribute('data-cf-payment-type');
+        orderHistoryState = { dateFrom: '', dateTo: '', employeeId: '', paymentType: pt, orderType: '', page: 1 };
+        renderOrderHistoryScreen(profile, () => renderCashflowScreen(profile, onBack));
+      });
+    });
+
     listEl.querySelectorAll('[data-remove-expense]').forEach(btn => {
       btn.addEventListener('click', async () => {
         btn.disabled = true;
         await apiPost('/api/expense-remove', { initData, id: btn.getAttribute('data-remove-expense') });
-        loadCashflowData();
+        loadCashflowData(profile, onBack);
       });
     });
   }
@@ -6999,16 +7020,16 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <select id="ohEmployee"><option value="">Yuklanmoqda...</option></select>
           <div class="profile-row"><b>To'lov turi</b></div>
           <select id="ohPaymentType">
-            <option value="">Barcha to'lov turlari</option>
-            <option value="naqd">Naqd</option>
-            <option value="karta">Karta</option>
-            <option value="dostavka_orqali">Dostavka orqali</option>
+            <option value="" ${!orderHistoryState.paymentType ? 'selected' : ''}>Barcha to'lov turlari</option>
+            <option value="naqd" ${orderHistoryState.paymentType === 'naqd' ? 'selected' : ''}>Naqd</option>
+            <option value="karta" ${orderHistoryState.paymentType === 'karta' ? 'selected' : ''}>Karta</option>
+            <option value="dostavka_orqali" ${orderHistoryState.paymentType === 'dostavka_orqali' ? 'selected' : ''}>Dostavka orqali</option>
           </select>
           <div class="profile-row"><b>Buyurtma turi</b></div>
           <select id="ohOrderType">
-            <option value="">Barcha turlar</option>
-            <option value="olib_ketish">Olib ketish</option>
-            <option value="dostavka">Dostavka</option>
+            <option value="" ${!orderHistoryState.orderType ? 'selected' : ''}>Barcha turlar</option>
+            <option value="olib_ketish" ${orderHistoryState.orderType === 'olib_ketish' ? 'selected' : ''}>Olib ketish</option>
+            <option value="dostavka" ${orderHistoryState.orderType === 'dostavka' ? 'selected' : ''}>Dostavka</option>
           </select>
           <button class="btn" id="ohApplyBtn" style="margin-top:10px;">Filtrlash</button>
           <button class="btn ikkinchi" id="ohResetBtn" style="margin-top:8px;">Tozalash</button>
