@@ -3672,7 +3672,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (!statusEl) return;
     const res = await apiPost('/api/delivery-group-status', { initData });
     if (res.ok && res.bound) {
-      statusEl.innerHTML = `${icon('check', 'icon-xs icon-success')} Biriktirilgan: <b>${escapeHtml(res.groupTitle || 'guruh')}</b>`;
+      statusEl.innerHTML = `${icon('check', 'icon-xs icon-success')} Biriktirilgan: <b>${escapeHtml(res.groupTitle || 'guruh')}</b>${res.threadBound ? ' <span style="opacity:0.7;">📌 (mavzuga bog\'langan)</span>' : ''}`;
       if (removeBtn) removeBtn.classList.remove('hidden');
     } else {
       statusEl.textContent = '— Hali admin guruhi biriktirilmagan.';
@@ -3686,7 +3686,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (!statusEl) return;
     const res = await apiPost('/api/kitchen-group-status', { initData });
     if (res.ok && res.bound) {
-      statusEl.innerHTML = `${icon('check', 'icon-xs icon-success')} Biriktirilgan: <b>${escapeHtml(res.groupTitle || 'guruh')}</b>`;
+      statusEl.innerHTML = `${icon('check', 'icon-xs icon-success')} Biriktirilgan: <b>${escapeHtml(res.groupTitle || 'guruh')}</b>${res.threadBound ? ' <span style="opacity:0.7;">📌 (mavzuga bog\'langan)</span>' : ''}`;
       if (removeBtn) removeBtn.classList.remove('hidden');
     } else {
       statusEl.textContent = '— Hali Oshpazlar guruhi biriktirilmagan.';
