@@ -7153,31 +7153,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
           ${c.username ? `<div class="owner-username">@${escapeHtml(c.username)}</div>` : ''}
           <div class="owner-expiry">Buyurtmalar: ${c.orderCount} ta</div>
           <div class="owner-price">Jami pul: ${cfFormatSum(c.totalAmount)}</div>
-          ${c.pendingAmount > 0 ? `
-            <div class="owner-expiry" style="color:var(--rang-xato,#e04b4b);">Kuryer qo'lida (kassaga qaytarilmagan): ${cfFormatSum(c.pendingAmount)}</div>
-            <button class="btn ikkinchi" style="margin-top:6px; padding:6px 10px; font-size:13px;" data-cr-collect="${escapeHtml(c.id)}">Kassaga qaytarildi</button>
-          ` : ''}
         </div>
         <div class="rating-badge">${cfFormatSum(c.commission)}<div class="rating-unit">komissiya</div></div>
       </div>
     `).join('');
-  }
-
-  function courierCashHistoryHtml(movements) {
-    if (!movements || !movements.length) return `<div class="bosh">Hali kassaga qaytarilgan pul yo'q.</div>`;
-    return movements.map(m => {
-      const d = new Date(m.createdAt);
-      const sana = d.toLocaleString('uz-UZ', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' });
-      return `
-        <div class="owner-item">
-          <div>
-            <div class="owner-id">${m.courierUsername ? '@' + escapeHtml(m.courierUsername) : escapeHtml(m.courierId)}</div>
-            <div class="owner-expiry">${m.orderCount} ta buyurtma · ${sana}</div>
-          </div>
-          <div class="rating-badge" style="color:var(--rang-ok,#2ecc71);">${cfFormatSum(m.amount)}<div class="rating-unit">kassaga qaytdi</div></div>
-        </div>
-      `;
-    }).join('');
   }
 
   function renderCourierReportScreen(profile, onBack, isOwnerView = true) {
@@ -7202,10 +7181,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <div class="kartochka">
           <h2>Kuryerlar</h2>
           <div id="crList" class="owner-list"><div class="bosh">Yuklanmoqda...</div></div>
-        </div>
-        <div class="kartochka">
-          <h2>Kassaga qaytarish tarixi</h2>
-          <div id="crHistory" class="owner-list"><div class="bosh">Yuklanmoqda...</div></div>
         </div>
       </div>
     `);
@@ -7253,33 +7228,12 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, () => loadCourierReport(isOwnerView)); return; }
     if (!res.ok) {
       listEl.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
-      const historyElOnErr = document.getElementById('crHistory');
-      if (historyElOnErr) historyElOnErr.innerHTML = '';
       return;
     }
     if (commissionInput && document.activeElement !== commissionInput) {
       commissionInput.value = res.commissionPercent;
     }
     listEl.innerHTML = courierReportRowsHtml(res.report);
-
-    const historyEl = document.getElementById('crHistory');
-    if (historyEl) historyEl.innerHTML = courierCashHistoryHtml(res.recentMovements);
-
-    listEl.querySelectorAll('[data-cr-collect]').forEach(btn => {
-      btn.addEventListener('click', async () => {
-        const courierId = btn.getAttribute('data-cr-collect');
-        btn.disabled = true;
-        btn.textContent = 'Yuklanmoqda...';
-        const cRes = await apiPost('/api/courier-collect-cash', { initData, courierId });
-        if (cRes.ok) {
-          loadCourierReport(isOwnerView);
-        } else {
-          btn.disabled = false;
-          btn.textContent = 'Kassaga qaytarildi';
-          alert(cRes.reason || 'Xatolik yuz berdi.');
-        }
-      });
-    });
   }
 
   let orderHistoryState = { dateFrom: '', dateTo: '', employeeId: '', paymentType: '', orderType: '', page: 1 };
