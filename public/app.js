@@ -7375,11 +7375,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
   function zReportCardHtml(z) {
     const netClass = z.net >= 0 ? 'positive' : 'negative';
-    const kb = z.kassaBreakdown || {};
-    const kassaParts = ['naqd', 'karta', 'click']
-      .filter(key => kb[key] > 0)
-      .map(key => `${PAYMENT_TYPE_LABELS[key] || key}: ${cfFormatSum(kb[key])}`)
-      .join(', ');
     return `
       <div class="kartochka">
         <h2>${escapeHtml(z.date)}</h2>
@@ -7397,7 +7392,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
             <div class="cf-val">${cfFormatSum(z.net)}</div>
           </div>
         </div>
-        <div class="bosh" style="margin-top:8px;">Buyurtmalar soni: ${z.orderCount} | Kassa: ${cfFormatSum(z.kassaIncome)}${kassaParts ? ` (${kassaParts})` : ''} | Dostavka: ${cfFormatSum(z.dostavkaIncome)}</div>
+        <div class="profile-row" style="margin-top:8px;"><b>Kassa:</b> ${cfFormatSum(z.kassaIncome)}</div>
+        ${cfKassaBreakdownHtml(z.kassaBreakdown)}
+        <div class="profile-row"><b>Dostavka:</b> ${cfFormatSum(z.dostavkaIncome)}</div>
+        <div class="bosh" style="margin-top:8px;">Buyurtmalar soni: ${z.orderCount}</div>
       </div>
     `;
   }
