@@ -3654,8 +3654,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = pruneExpiredOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi ko\'ra oladi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi ko\'ra oladi'));
+      const owner = ownerCtx.owner;
 
       return sendJSON(res, 200, { ok: true, staff: owner.staff || [] });
     });
@@ -3671,8 +3672,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi xodim qo\'sha oladi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi xodim qo\'sha oladi'));
+      const owner = ownerCtx.owner;
 
       const rolesArr = Array.isArray(roles) ? roles : (role ? [role] : []);
       const uniqueRoles = [...new Set(rolesArr)].filter(isValidRole)
@@ -3736,8 +3738,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi havola yarata oladi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi havola yarata oladi'));
+      const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'staff-invite')) return sendJSON(res, 200, featureBlockedResult('staff-invite'));
 
       const rolesArr = Array.isArray(roles) ? roles : (role ? [role] : []);
@@ -3793,8 +3796,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
+      const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'staff-roles')) return sendJSON(res, 200, featureBlockedResult('staff-roles'));
       if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
 
@@ -3824,8 +3828,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
+      const owner = ownerCtx.owner;
       if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
 
       const staff = (owner.staff || []).find(s => String(s.id) === String(id));
@@ -3853,8 +3858,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
+      const owner = ownerCtx.owner;
       if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
 
       owner.staff = (owner.staff || []).filter(s => String(s.id) !== String(id));
@@ -3890,8 +3896,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi filial qo\'sha oladi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi filial qo\'sha oladi'));
+      const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'branch-manage')) return sendJSON(res, 200, featureBlockedResult('branch-manage'));
 
       const trimmedName = String(name || '').trim();
@@ -3936,8 +3943,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
+      const owner = ownerCtx.owner;
       if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
 
       const branch = findBranch(owner, id);
@@ -3967,8 +3975,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
+      const owner = ownerCtx.owner;
       if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
 
       owner.branches = (owner.branches || []).filter(b => String(b.id) !== String(id));
@@ -4284,8 +4293,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi combo boshqara oladi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi combo boshqara oladi'));
+      const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'combo-manage')) return sendJSON(res, 200, featureBlockedResult('combo-manage'));
 
       const nameTrim = String(name || '').trim();
@@ -4346,8 +4356,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi combo boshqara oladi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi combo boshqara oladi'));
+      const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'combo-manage')) return sendJSON(res, 200, featureBlockedResult('combo-manage'));
       if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
 
@@ -4409,8 +4420,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
+      const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'combo-manage')) return sendJSON(res, 200, featureBlockedResult('combo-manage'));
       if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
 
@@ -4449,8 +4461,9 @@ const server = http.createServer((req, res) => {
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi ko\'ra oladi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi ko\'ra oladi'));
+      const owner = ownerCtx.owner;
       if (!BOT_USERNAME || BOT_USERNAME === 'BOT_USERNAME_BU_YERGA') {
         return sendJSON(res, 200, { ok: false, reason: 'Serverda BOT_USERNAME sozlanmagan.' });
       }
@@ -4467,8 +4480,9 @@ const server = http.createServer((req, res) => {
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi ko\'ra oladi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi ko\'ra oladi'));
+      const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'delivery-group')) return sendJSON(res, 200, featureBlockedResult('delivery-group'));
       return sendJSON(res, 200, {
         ok: true,
@@ -4487,8 +4501,9 @@ const server = http.createServer((req, res) => {
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
+      const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'delivery-group')) return sendJSON(res, 200, featureBlockedResult('delivery-group'));
       owner.deliveryGroupId = null;
       owner.deliveryGroupTitle = null;
@@ -4506,8 +4521,9 @@ const server = http.createServer((req, res) => {
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi ko\'ra oladi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi ko\'ra oladi'));
+      const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'kitchen-group')) return sendJSON(res, 200, featureBlockedResult('kitchen-group'));
       return sendJSON(res, 200, {
         ok: true,
@@ -4526,8 +4542,9 @@ const server = http.createServer((req, res) => {
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
+      const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'kitchen-group')) return sendJSON(res, 200, featureBlockedResult('kitchen-group'));
       owner.kitchenGroupId = null;
       owner.kitchenGroupTitle = null;
@@ -4545,8 +4562,9 @@ const server = http.createServer((req, res) => {
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi ko\'ra oladi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi ko\'ra oladi'));
+      const owner = ownerCtx.owner;
       return sendJSON(res, 200, { ok: true, promotions: owner.promotions || [] });
     });
     return;
@@ -4560,8 +4578,9 @@ const server = http.createServer((req, res) => {
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi qo\'sha oladi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi qo\'sha oladi'));
+      const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'promo-manage')) return sendJSON(res, 200, featureBlockedResult('promo-manage'));
 
       const titleTrim = String(title || '').trim();
@@ -4602,8 +4621,9 @@ const server = http.createServer((req, res) => {
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
+      const owner = ownerCtx.owner;
 
       const promo = (owner.promotions || []).find(p => p.id === id);
       if (!promo) return sendJSON(res, 200, { ok: false, reason: 'Aksiya topilmadi.' });
@@ -4622,8 +4642,9 @@ const server = http.createServer((req, res) => {
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
+      const owner = ownerCtx.owner;
       if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
 
       owner.promotions = (owner.promotions || []).filter(p => p.id !== id);
@@ -4653,8 +4674,9 @@ const server = http.createServer((req, res) => {
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi ko\'ra oladi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi ko\'ra oladi'));
+      const owner = ownerCtx.owner;
       return sendJSON(res, 200, { ok: true, banners: owner.banners || [] });
     });
     return;
@@ -4668,8 +4690,9 @@ const server = http.createServer((req, res) => {
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi qo\'sha oladi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi qo\'sha oladi'));
+      const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'banner-manage')) return sendJSON(res, 200, featureBlockedResult('banner-manage'));
 
       const imageTrim = String(imageUrl || '').trim();
@@ -4723,8 +4746,9 @@ const server = http.createServer((req, res) => {
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
+      const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'banner-manage')) return sendJSON(res, 200, featureBlockedResult('banner-manage'));
 
       const banner = (owner.banners || []).find(b => b.id === id);
@@ -4780,8 +4804,9 @@ const server = http.createServer((req, res) => {
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
+      const owner = ownerCtx.owner;
 
       const banner = (owner.banners || []).find(b => b.id === id);
       if (!banner) return sendJSON(res, 200, { ok: false, reason: 'Banner topilmadi.' });
@@ -4800,8 +4825,9 @@ const server = http.createServer((req, res) => {
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
+      const owner = ownerCtx.owner;
       if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
 
       owner.banners = (owner.banners || []).filter(b => b.id !== id);
@@ -4818,8 +4844,9 @@ const server = http.createServer((req, res) => {
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi ko\'ra oladi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi ko\'ra oladi'));
+      const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'bonus-settings')) return sendJSON(res, 200, featureBlockedResult('bonus-settings'));
       return sendJSON(res, 200, { ok: true, settings: owner.bonusSettings || { enabled: false, earnPercent: 5 } });
     });
@@ -4834,8 +4861,9 @@ const server = http.createServer((req, res) => {
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi saqlay oladi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi saqlay oladi'));
+      const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'bonus-settings')) return sendJSON(res, 200, featureBlockedResult('bonus-settings'));
 
       const percentNum = Number(earnPercent);
@@ -5440,8 +5468,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi adminga yoza oladi.' });
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi adminga yoza oladi.' });
+      const owner = ownerCtx.owner;
 
       const textTrim = String(text || '').trim().slice(0, 1000);
       if (!textTrim) return sendJSON(res, 200, { ok: false, reason: 'Xabar matni bo\'sh bo\'lmasligi kerak.' });
@@ -5477,8 +5506,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi ko\'ra oladi.' });
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi ko\'ra oladi.' });
+      const owner = ownerCtx.owner;
 
       const msgs = loadAdminSupportMessages();
       let changed = false;
@@ -7143,8 +7173,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi transfer qila oladi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi transfer qila oladi'));
+      const owner = ownerCtx.owner;
 
       if (!branchId) return sendJSON(res, 200, { ok: false, reason: 'Qaysi filialga o\'tkazishni tanlang.' });
       const branch = findBranch(owner, branchId);
@@ -7443,8 +7474,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi xarajat kirita oladi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi xarajat kirita oladi'));
+      const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'expense-manage')) return sendJSON(res, 200, featureBlockedResult('expense-manage'));
 
       const amountNum = Number(amount);
@@ -7481,8 +7513,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
+      const owner = ownerCtx.owner;
       if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
 
       const before = (owner.expenses || []).length;
@@ -7502,8 +7535,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = pruneExpiredOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'cashflow')) return sendJSON(res, 200, featureBlockedResult('cashflow'));
 
       const cashflow = computeCashflow(owner);
@@ -7522,8 +7556,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = pruneExpiredOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'dashboard')) return sendJSON(res, 200, featureBlockedResult('dashboard'));
 
       const now = new Date();
@@ -7574,8 +7609,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = pruneExpiredOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'dashboard')) return sendJSON(res, 200, featureBlockedResult('dashboard'));
 
       const now = new Date();
@@ -7611,8 +7647,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = pruneExpiredOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'dashboard')) return sendJSON(res, 200, featureBlockedResult('dashboard'));
 
       const alerts = [];
@@ -7679,8 +7716,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = pruneExpiredOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const owner = ownerCtx.owner;
 
       const fromDate = resolvePeriodStart(period);
       const orders = (owner.orders || []).filter(o => new Date(o.createdAt) >= fromDate);
@@ -7718,8 +7756,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const owner = ownerCtx.owner;
 
       const customers = [];
       for (const c of (owner.customers || [])) {
@@ -7790,8 +7829,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const owner = ownerCtx.owner;
 
       if (!customerId) return sendJSON(res, 200, { ok: false, reason: 'Mijoz tanlanmagan.' });
       if (!Array.isArray(owner.cardOnlyOverrides)) owner.cardOnlyOverrides = [];
@@ -7868,8 +7908,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'z-report')) return sendJSON(res, 200, featureBlockedResult('z-report'));
 
       const dateKey = tzDateKey(new Date());
@@ -7904,8 +7945,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = pruneExpiredOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const owner = ownerCtx.owner;
 
       const reports = (owner.zReports || []).slice().sort((a, b) => b.date.localeCompare(a.date)).slice(0, 30);
       return sendJSON(res, 200, { ok: true, reports });
@@ -8057,8 +8099,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = pruneExpiredOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'ai-analytics')) return sendJSON(res, 200, featureBlockedResult('ai-analytics'));
 
       const fromDate = resolvePeriodStart(period || 'week');
@@ -8088,8 +8131,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = pruneExpiredOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'z-report')) return sendJSON(res, 200, featureBlockedResult('z-report'));
 
       const yesterdayKey = aiDirDateKey(new Date(Date.now() - 86400000));
@@ -8112,8 +8156,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'z-report')) return sendJSON(res, 200, featureBlockedResult('z-report'));
 
       sendDailyReportDigest(owner, true).then(() => {
@@ -8133,8 +8178,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'z-report')) return sendJSON(res, 200, featureBlockedResult('z-report'));
 
       owner.dailyReportEnabled = !!enabled;
@@ -8152,8 +8198,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = pruneExpiredOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'ai-director')) return sendJSON(res, 200, featureBlockedResult('ai-director'));
 
       return sendJSON(res, 200, {
@@ -8175,8 +8222,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'ai-director')) return sendJSON(res, 200, featureBlockedResult('ai-director'));
 
       sendAiDirectorDigest(owner, true).then(() => {
@@ -8196,8 +8244,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'ai-director')) return sendJSON(res, 200, featureBlockedResult('ai-director'));
 
       owner.aiDirectorEnabled = !!enabled;
@@ -8215,8 +8264,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = pruneExpiredOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'ai-director')) return sendJSON(res, 200, featureBlockedResult('ai-director'));
 
       return sendJSON(res, 200, {
@@ -8239,8 +8289,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'ai-director')) return sendJSON(res, 200, featureBlockedResult('ai-director'));
 
       sendAiWeeklyDirectorDigest(owner, true).then(() => {
@@ -8260,8 +8311,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'ai-director')) return sendJSON(res, 200, featureBlockedResult('ai-director'));
 
       owner.aiWeeklyEnabled = !!enabled;
@@ -8280,8 +8332,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = pruneExpiredOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'ai-analytics')) return sendJSON(res, 200, featureBlockedResult('ai-analytics'));
 
       const qTrim = String(question || '').trim();
@@ -8323,8 +8376,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = pruneExpiredOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const owner = ownerCtx.owner;
 
       const staffById = new Map((owner.staff || []).map(s => [String(s.id), s]));
       let log = owner.staffActionLog || [];
@@ -8354,8 +8408,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = pruneExpiredOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'notification-log')) return sendJSON(res, 200, featureBlockedResult('notification-log'));
 
       return sendJSON(res, 200, { ok: true, entries: owner.notificationErrors || [] });
@@ -8372,8 +8427,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'notification-log')) return sendJSON(res, 200, featureBlockedResult('notification-log'));
 
       owner.notificationErrors = [];
@@ -8391,8 +8447,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = pruneExpiredOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const owner = ownerCtx.owner;
 
       const prefs = {};
       for (const key of Object.keys(NOTIFICATION_CATEGORIES)) {
@@ -8415,8 +8472,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const owner = ownerCtx.owner;
 
       const incoming = payload.prefs && typeof payload.prefs === 'object' ? payload.prefs : {};
       if (!owner.notificationPrefs) owner.notificationPrefs = {};
@@ -8442,8 +8500,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = pruneExpiredOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const owner = ownerCtx.owner;
 
       return sendJSON(res, 200, { ok: true, card: owner.customerPaymentCard || { cardNumber: '', cardHolder: '' } });
     });
@@ -8458,8 +8517,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const owner = ownerCtx.owner;
 
       const cardNumber = String(payload.cardNumber || '').trim().slice(0, 40);
       const cardHolder = String(payload.cardHolder || '').trim().slice(0, 80);
@@ -8480,8 +8540,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = pruneExpiredOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'staff-performance')) return sendJSON(res, 200, featureBlockedResult('staff-performance'));
 
       const fromDate = resolvePeriodStart(period || 'month');
@@ -8522,8 +8583,9 @@ const server = http.createServer((req, res) => {
       if (isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Admin uchun profil mavjud emas' });
 
       const owners = pruneExpiredOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q yoki muddati tugagan'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q yoki muddati tugagan'));
+      const owner = ownerCtx.owner;
 
       let tariffInfo = null;
       if (owner.tariffId) {
@@ -8575,8 +8637,9 @@ const server = http.createServer((req, res) => {
       if (isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Admin uchun profil mavjud emas' });
 
       const owners = pruneExpiredOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q yoki muddati tugagan'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q yoki muddati tugagan'));
+      const owner = ownerCtx.owner;
 
       const nameTrim = String(name || '').trim();
       const addressTrim = String(address || '').trim();
@@ -9290,8 +9353,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = pruneExpiredOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q yoki muddati tugagan'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q yoki muddati tugagan'));
+      const owner = ownerCtx.owner;
 
       if (!owner.login || !owner.passwordHash) {
 
@@ -9314,8 +9378,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = pruneExpiredOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q yoki muddati tugagan'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q yoki muddati tugagan'));
+      const owner = ownerCtx.owner;
 
       if (!owner.login || !owner.passwordHash) {
         return sendJSON(res, 200, { ok: false, reason: 'Sizga hali login/parol biriktirilmagan. Administrator bilan bog\'laning.' });
@@ -9353,8 +9418,9 @@ const server = http.createServer((req, res) => {
 
       const userId = String(check.user && check.user.id);
       const owners = pruneExpiredOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q yoki muddati tugagan'));
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q yoki muddati tugagan'));
+      const owner = ownerCtx.owner;
 
       if (!owner.login || !owner.passwordHash) {
 
@@ -9815,8 +9881,9 @@ const server = http.createServer((req, res) => {
       const userId = String(check.user && check.user.id);
 
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Faqat do\'kon egasi uchun.' });
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, { ok: false, reason: 'Faqat do\'kon egasi uchun.' });
+      const owner = ownerCtx.owner;
 
       const access = getOwnerSubscriptionAccess(owner);
       const requisites = loadPaymentRequisites();
@@ -9852,8 +9919,9 @@ const server = http.createServer((req, res) => {
       const userId = String(check.user && check.user.id);
 
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Faqat do\'kon egasi uchun.' });
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, { ok: false, reason: 'Faqat do\'kon egasi uchun.' });
+      const owner = ownerCtx.owner;
 
       const history = loadPayments()
         .filter(p => String(p.ownerId) === String(owner.id) && p.source === 'subscription')
@@ -9873,8 +9941,9 @@ const server = http.createServer((req, res) => {
       const userId = String(check.user && check.user.id);
 
       const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Faqat do\'kon egasi uchun.' });
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, { ok: false, reason: 'Faqat do\'kon egasi uchun.' });
+      const owner = ownerCtx.owner;
 
       const plan = loadSubscriptionPlans()[payload.planId];
       if (!plan) return sendJSON(res, 200, { ok: false, reason: 'Tarif topilmadi.' });
