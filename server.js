@@ -1473,6 +1473,7 @@ function notifyDeliveryGroup(owner, order, creatorLabel) {
     mapsLink ? `📍 Joylashuv: ${mapsLink}` : null,
     order.addressNote ? `📝 Manzil izohi: ${escapeHtmlServer(order.addressNote)}` : null,
     order.extraPhone ? `📞 Qo'shimcha tel: ${escapeHtmlServer(order.extraPhone)}` : null,
+    order.comment ? `💬 Izoh: ${escapeHtmlServer(order.comment)}` : null,
   ].filter(Boolean).join('\n');
   const typeLabel = ORDER_TYPES[order.orderType] || order.orderType;
   const headerEmoji = order.orderType === 'dostavka' ? '🚚' : '🥡';
@@ -1504,7 +1505,8 @@ function notifyKitchenGroup(owner, order, creatorLabel) {
   try {
     const itemsText = orderItemsTextWithPrices(order);
     const typeLabel = ORDER_TYPES[order.orderType] || order.orderType;
-    const text = `👨‍🍳 <b>Yangi buyurtma</b> (${typeLabel})${creatorLabel ? '\n' + creatorLabel : ''}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm`;
+    const commentLine = order.comment ? `\n💬 Izoh: ${escapeHtmlServer(order.comment)}` : '';
+    const text = `👨‍🍳 <b>Yangi buyurtma</b> (${typeLabel})${creatorLabel ? '\n' + creatorLabel : ''}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm${commentLine}`;
     sendMessage(owner.kitchenGroupId, text, {
       inline_keyboard: [[
         { text: '🏁 Tayyor', callback_data: `kgready:${owner.id}:${order.id}` }
@@ -5967,7 +5969,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/create-order') {
     readBody(req, async (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const { initData, items, orderType, paymentType, requestId } = payload;
+      const { initData, items, orderType, paymentType, requestId, comment } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -6080,6 +6082,7 @@ const server = http.createServer((req, res) => {
 
       if (!ctx.owner.orders) ctx.owner.orders = [];
       const orderBranchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
+      const commentFinal = String(comment || '').trim().slice(0, 300) || null;
       const order = {
         id: crypto.randomBytes(4).toString('hex'),
         orderNumber: getNextOrderNumber(ctx.owner),
@@ -6087,6 +6090,7 @@ const server = http.createServer((req, res) => {
         total,
         orderType,
         paymentType,
+        comment: commentFinal,
         status: 'yangi',
         branchId: orderBranchId,
 
@@ -6098,8 +6102,9 @@ const server = http.createServer((req, res) => {
       saveOwners(owners);
 
       const itemsText = orderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
+      const commentLine = commentFinal ? `\n📝 Izoh: ${escapeHtmlServer(commentFinal)}` : '';
       const notifyText = `🆕 <b>Yangi buyurtma</b> (${ORDER_TYPES[orderType]})\n` +
-        `${itemsText}\n\nJami: ${fmtNum(total)} so'm\nTo'lov: ${PAYMENT_TYPES[paymentType]}`;
+        `${itemsText}\n\nJami: ${fmtNum(total)} so'm\nTo'lov: ${PAYMENT_TYPES[paymentType]}${commentLine}`;
       const notifyTargets = [ctx.owner.id, ...((ctx.owner.staff || []).filter(s => staffHasRole(s, 'oshpaz')).map(s => s.id))];
       await notifyStaffList(ctx.owner, notifyTargets, notifyText, `Buyurtma #${order.id} (kassir)`, 'newOrder');
       notifyKitchenGroup(ctx.owner, order, `Yaratdi: ${escapeHtmlServer(displayName(check.user))} (kassir)`);
@@ -6119,7 +6124,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/edit-order') {
     readBody(req, async (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const { initData, orderId, items, orderType, paymentType } = payload;
+      const { initData, orderId, items, orderType, paymentType, comment } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -6242,6 +6247,9 @@ const server = http.createServer((req, res) => {
       order.total = newTotal;
       order.orderType = finalOrderType;
       order.paymentType = finalPaymentType;
+      if (Object.prototype.hasOwnProperty.call(payload, 'comment')) {
+        order.comment = String(comment || '').trim().slice(0, 300) || null;
+      }
       order.editedAt = new Date().toISOString();
       order.editedBy = userId;
 
@@ -6249,7 +6257,8 @@ const server = http.createServer((req, res) => {
       saveOwners(owners);
 
       const itemsText = newOrderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
-      const notifyText = `✏️ <b>Buyurtma tahrirlandi</b> (${ORDER_TYPES[finalOrderType]})\n${itemsText}\n\nJami: ${fmtNum(newTotal)} so'm\nTo'lov: ${PAYMENT_TYPES[finalPaymentType]}`;
+      const editCommentLine = order.comment ? `\n📝 Izoh: ${escapeHtmlServer(order.comment)}` : '';
+      const notifyText = `✏️ <b>Buyurtma tahrirlandi</b> (${ORDER_TYPES[finalOrderType]})\n${itemsText}\n\nJami: ${fmtNum(newTotal)} so'm\nTo'lov: ${PAYMENT_TYPES[finalPaymentType]}${editCommentLine}`;
       const notifyTargets = [ctx.owner.id, ...((ctx.owner.staff || []).filter(s => staffHasRole(s, 'oshpaz')).map(s => s.id))];
       await notifyStaffList(ctx.owner, notifyTargets, notifyText, `Buyurtma #${order.id} tahrirlandi`, 'newOrder');
       saveOwners(owners);
