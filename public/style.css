@@ -796,7 +796,7 @@
     padding: 12px 14px;
     border-radius: var(--radius-md);
     border: 1px solid var(--border-color-strong);
-    font-size: var(--fs-body);
+    font-size: 16px;
     font-family: inherit;
     background: var(--surface-0);
     color: var(--text-primary);
