@@ -3053,7 +3053,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     { key: 'oshxona', icon: 'chef-hat', label: 'Oshxona' },
     { key: 'ombor', icon: 'box', label: 'Ombor' },
     { key: 'xodimlar', icon: 'users', label: 'Xodimlar' },
-    { key: 'moliya', icon: 'wallet', label: 'Moliya' },
     { key: 'yetkazibBerish', icon: 'scooter', label: "Yetkazib berish" },
     { key: 'filiallar', icon: 'store', label: 'Filiallar' },
     { key: 'hisobotlar', icon: 'clipboard', label: 'Hisobotlar' },
@@ -3087,7 +3086,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
       oshxona: () => renderKitchenScreen(profile.name, goBack),
       ombor: () => renderStockScreen(profile.name, 'egasi', goBack),
       xodimlar: () => renderStaffControlScreen(profile, goBack),
-      moliya: () => renderCashflowScreen(profile, goBack),
       yetkazibBerish: () => renderDeliveryScreen(profile.name, goBack),
       filiallar: () => {
         const target = document.getElementById('koBranchesSectionLabel');
@@ -3120,7 +3118,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     { key: 'oshxona', icon: 'chef-hat', label: 'Oshxona' },
     { key: 'ombor', icon: 'box', label: 'Ombor' },
     { key: 'xodimlar', icon: 'users', label: 'Xodimlar' },
-    { key: 'moliya', icon: 'wallet', label: 'Moliya' },
     { key: 'yetkazibBerish', icon: 'scooter', label: "Yetkazib berish" },
     { key: 'filiallar', icon: 'store', label: 'Filiallar' },
     { key: 'hisobotlar', icon: 'clipboard', label: 'Hisobotlar' },
@@ -6376,6 +6373,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       <div class="kartochka" style="margin-top:10px;">
         <h2>Kassa va dostavka (alohida)</h2>
         <div class="profile-row"><b>Kassadagi pul</b> (olib ketish + kartali dostavka): ${cfFormatSum(bucket.kassaIncome)}</div>
+        ${cfKassaBreakdownHtml(bucket.kassaBreakdown)}
         <div class="profile-row"><b>Kuryer qo'lidagi naqd pul:</b> ${cfFormatSum(bucket.dostavkaIncome)} (${bucket.dostavkaOrderCount} ta buyurtma)</div>
       </div>
       ${paymentRows ? `
@@ -6387,6 +6385,16 @@ const tg = window.Telegram && window.Telegram.WebApp;
       <div class="bosh" style="margin-top:8px;">Buyurtmalar soni: ${bucket.orderCount}</div>
       ${cfCategoryBreakdownHtml(bucket.byCategory)}
     `;
+  }
+
+  function cfKassaBreakdownHtml(kassaBreakdown) {
+    if (!kassaBreakdown) return '';
+    const rows = Object.entries(kassaBreakdown)
+      .filter(([key, sum]) => key !== 'dostavka_orqali' && sum > 0)
+      .map(([key, sum]) => `<div>${escapeHtml(PAYMENT_TYPE_LABELS[key] || key)}: ${cfFormatSum(sum)}</div>`)
+      .join('');
+    if (!rows) return '';
+    return `<div class="bosh" style="margin:2px 0 8px 0; padding-left:4px;">${rows}</div>`;
   }
 
   function cfCategoryBreakdownHtml(byCategory) {
