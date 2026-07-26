@@ -4195,7 +4195,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
     bodyEl.innerHTML = myStatsBodyHtml(res.stats);
   }
 
-  const ORDER_TYPE_LABELS = { olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
+  const ORDER_TYPE_LABELS = { olib_ketish: 'Olib ketish', dostavka: 'Dostavka', zal: 'Zal' };
+  // Mijozning bot ichidagi buyurtma oynasida "Zal" turi ko'rsatilmaydi —
+  // bu tur faqat kassir/ega tomonidan zalda o'tirgan mijoz uchun yaratiladi.
+  const CUSTOMER_ORDER_TYPE_LABELS = { olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
   const PAYMENT_TYPE_LABELS = { naqd: 'Naqd', karta: 'Karta', click: 'Click', dostavka_orqali: "Dostavka orqali" };
 
   function visiblePaymentTypeEntries(orderType) {
@@ -7240,6 +7243,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
             <option value="" ${!orderHistoryState.orderType ? 'selected' : ''}>Barcha turlar</option>
             <option value="olib_ketish" ${orderHistoryState.orderType === 'olib_ketish' ? 'selected' : ''}>Olib ketish</option>
             <option value="dostavka" ${orderHistoryState.orderType === 'dostavka' ? 'selected' : ''}>Dostavka</option>
+            <option value="zal" ${orderHistoryState.orderType === 'zal' ? 'selected' : ''}>Zal</option>
           </select>
           <button class="btn" id="ohApplyBtn" style="margin-top:10px;">Filtrlash</button>
           <button class="btn ikkinchi" id="ohResetBtn" style="margin-top:8px;">Tozalash</button>
@@ -8460,7 +8464,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     return `
       <h3>Buyurtmani rasmiylashtirish</h3>
       <div class="type-row" id="cOrderTypeRow">
-        ${Object.entries(ORDER_TYPE_LABELS).map(([k, label]) => `
+        ${Object.entries(CUSTOMER_ORDER_TYPE_LABELS).map(([k, label]) => `
           <div class="type-opt ${customerState.orderType === k ? 'selected' : ''}" data-corder-type="${k}">${label}</div>
         `).join('')}
       </div>
