@@ -3056,6 +3056,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     { key: 'yetkazibBerish', icon: 'scooter', label: "Yetkazib berish" },
     { key: 'filiallar', icon: 'store', label: 'Filiallar' },
     { key: 'hisobotlar', icon: 'clipboard', label: 'Hisobotlar' },
+    { key: 'tolovKartasi', icon: 'card', label: "To'lov kartasi" },
     { key: 'yordam', icon: 'message-circle', label: "Yordam so'rovlari" },
     { key: 'aiTavsiyalar', icon: 'ai', label: 'AI Tavsiyalar' },
     { key: 'adminChat', icon: 'send', label: "Admin bilan bog'lanish" },
@@ -3096,6 +3097,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       aiTavsiyalar: () => renderAiScreen(profile, goBack),
       bildirishnomalar: () => renderNotificationsScreen(profile, goBack),
       profil: () => renderOwnerProfileScreen(profile, goBack),
+      tolovKartasi: () => renderOwnerPaymentCardScreen(goBack),
       adminChat: () => openOwnerAdminSupportChat(),
       sozlamalar: () => renderProfileForm(profile)
     };
@@ -3125,6 +3127,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     { key: 'aiTavsiyalar', icon: 'ai', label: 'AI Tavsiyalar' },
     { key: 'bildirishnomalar', icon: 'bell', label: 'Bildirishnomalar' },
     { key: 'profil', icon: 'user', label: 'Profil' },
+    { key: 'tolovKartasi', icon: 'card', label: "To'lov kartasi" },
     { key: 'adminChat', icon: 'send', label: "Admin bilan bog'lanish" },
     { key: 'sozlamalar', icon: 'settings', label: 'Sozlamalar' }
   ];
