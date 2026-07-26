@@ -3831,7 +3831,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <div>
           <div class="m-name">${escapeHtml(m.name)} ${m.available === false ? '<span class="badge unpaid">Nofaol</span>' : ''}</div>
           ${m.category ? `<div class="m-cat">${escapeHtml(m.category)}</div>` : ''}
-          <div class="m-price">${Array.isArray(m.prices) && m.prices.length ? m.prices.map(p => `${escapeHtml(p.label)}: ${fmtNum(p.price)} so'm`).join(' · ') : `${fmtNum(m.price)} so'm`}${m.directStockId ? ` · to'g'ridan sklad ${icon('check', 'icon-xs icon-success')}` : (m.recipe && m.recipe.length ? ` · retsept ${icon('check', 'icon-xs icon-success')}` : '')}</div>
+          <div class="m-price">${Array.isArray(m.prices) && m.prices.length ? m.prices.map((p, idx) => `${escapeHtml(variantLabel(p, idx))}: ${fmtNum(p.price)} so'm`).join(' · ') : `${fmtNum(m.price)} so'm`}${m.directStockId ? ` · to'g'ridan sklad ${icon('check', 'icon-xs icon-success')}` : (m.recipe && m.recipe.length ? ` · retsept ${icon('check', 'icon-xs icon-success')}` : '')}</div>
         </div>
         <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
           <button data-edit-menu-id="${escapeHtml(m.id)}" class="row-action-btn brand">Tahrirlash</button>
@@ -3867,6 +3867,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
   // Konteynerdagi to'ldirilgan narx variant qatorlarini yig'ib qaytaradi.
   // Bo'sh bo'lsa — [], noto'g'ri bo'lsa — null (xatolik bor degani).
+  function variantLabel(p, idx) {
+    return p.label ? p.label : `${idx + 1}-narx`;
+  }
+
   function collectPriceOptions(containerId) {
     const rows = document.querySelectorAll(`#${containerId} .price-option-row`);
     const list = [];
@@ -3874,7 +3878,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const label = row.querySelector('.price-option-label').value.trim();
       const price = row.querySelector('.price-option-price').value.trim();
       if (!label && !price) continue;
-      if (!label || !price || !/^\d+$/.test(price) || parseInt(price, 10) <= 0) return null;
+      if (!price || !/^\d+$/.test(price) || parseInt(price, 10) <= 0) return null;
       list.push({ label, price: parseInt(price, 10) });
     }
     return list;
@@ -4476,12 +4480,12 @@ const tg = window.Telegram && window.Telegram.WebApp;
             <div class="m-name">${escapeHtml(m.name)}</div>
           </div>
           <div class="price-variant-list">
-            ${m.prices.map(p => {
+            ${m.prices.map((p, idx) => {
               const key = cartKeyFor(m.id, p.id);
               const vQty = cashierState.cart[key] || 0;
               return `
                 <div class="price-variant-row">
-                  <span class="price-variant-label">${escapeHtml(p.label)} — ${fmtNum(p.price)} so'm</span>
+                  <span class="price-variant-label">${escapeHtml(variantLabel(p, idx))} — ${fmtNum(p.price)} so'm</span>
                   <div class="qty-controls">
                     <button data-qty-minus="${escapeHtml(key)}">-</button>
                     <span class="qty-val">${vQty}</span>
@@ -8105,12 +8109,12 @@ const tg = window.Telegram && window.Telegram.WebApp;
             <div class="m-name">${escapeHtml(m.name)}</div>
             ${m.description ? `<div class="catalog-desc">${escapeHtml(m.description)}</div>` : ''}
             <div class="price-variant-list">
-              ${m.prices.map(p => {
+              ${m.prices.map((p, idx) => {
                 const key = cartKeyFor(m.id, p.id);
                 const vQty = customerState.cart[key] || 0;
                 return `
                   <div class="price-variant-row">
-                    <span class="price-variant-label">${escapeHtml(p.label)} — ${fmtNum(p.price)} so'm</span>
+                    <span class="price-variant-label">${escapeHtml(variantLabel(p, idx))} — ${fmtNum(p.price)} so'm</span>
                     ${vQty > 0 ? `
                       <div class="qty-controls">
                         <button data-cqty-minus="${escapeHtml(key)}">-</button>
