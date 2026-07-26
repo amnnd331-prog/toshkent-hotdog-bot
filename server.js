@@ -1040,7 +1040,7 @@ const WRITEOFF_REASONS = {
   boshqa: 'Boshqa sabab'
 };
 const ORDER_TYPES = { olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
-const PAYMENT_TYPES = { naqd: 'Naqd', karta: 'Karta', dostavka_orqali: 'Dostavka orqali' };
+const PAYMENT_TYPES = { naqd: 'Naqd', karta: 'Karta', click: 'Click', dostavka_orqali: 'Dostavka orqali' };
 
 function orderIncomeAmount(o) {
   if (o.status === 'bekor_qilindi') return 0;
