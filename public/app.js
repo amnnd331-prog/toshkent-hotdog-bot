@@ -4146,7 +4146,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }
   }
 
-  let cashierState = { menu: [], cart: {}, orderType: 'olib_ketish', paymentType: 'naqd', tab: 'yaratish', lastOrderRequestId: null };
+  let cashierState = {
+    menu: [], cart: {}, orderType: 'olib_ketish', paymentType: 'naqd', tab: 'yaratish', lastOrderRequestId: null,
+    // Mavjud buyurtmani tahrirlash rejimi uchun: null bo'lsa - yangi buyurtma yaratish rejimi.
+    editingOrderId: null, editingOrderNumber: null, editingComboItems: null, editingReturn: null
+  };
 
   function cashierCartTotal() {
     return cashierState.menu.reduce((sum, m) => sum + (cashierState.cart[m.id] || 0) * m.price, 0);
@@ -4162,23 +4166,36 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
+  function cancelEditOrder(restaurantName, onBack) {
+    const returnFn = cashierState.editingReturn;
+    cashierState.editingOrderId = null;
+    cashierState.editingOrderNumber = null;
+    cashierState.editingComboItems = null;
+    cashierState.editingReturn = null;
+    cashierState.cart = {};
+    if (returnFn) returnFn();
+    else renderCashierScreen(restaurantName, onBack);
+  }
+
   function renderCashierScreen(restaurantName, onBack) {
     stopOrdersPolling();
     disconnectSectionedMenuObserver('cashierCatRow');
-    if (cashierState.tab === 'holat') {
+    const isEditing = !!cashierState.editingOrderId;
+    if (cashierState.tab === 'holat' && !isEditing) {
       renderCashierOrdersTab(restaurantName, onBack);
       return;
     }
-    if (cashierState.tab === 'statistika') {
+    if (cashierState.tab === 'statistika' && !isEditing) {
       renderMyStatsScreen(() => { cashierState.tab = 'yaratish'; renderCashierScreen(restaurantName, onBack); });
       return;
     }
     ekran(`
       <div class="panel">
         <div class="salom" style="font-size:20px;">${escapeHtml(restaurantName || 'Kassir')}</div>
-        ${onBack ? `<button class="btn ikkinchi" id="cashierBackBtn" style="margin-bottom:12px;">← Orqaga</button>` : ''}
-        ${cashierTabRowHtml()}
-        ${shiftWidgetHtml()}
+        ${isEditing ? `<div class="xabar ok" style="margin-bottom:12px;">✏️ Buyurtma${cashierState.editingOrderNumber ? ' #' + escapeHtml(String(cashierState.editingOrderNumber)) : ''} tahrirlanmoqda — mahsulot qo'shing yoki olib tashlang.</div>` : ''}
+        ${isEditing ? `<button class="btn ikkinchi" id="cashierCancelEditBtn" style="margin-bottom:12px;">✕ Tahrirlashni bekor qilish</button>` : (onBack ? `<button class="btn ikkinchi" id="cashierBackBtn" style="margin-bottom:12px;">← Orqaga</button>` : '')}
+        ${isEditing ? '' : cashierTabRowHtml()}
+        ${isEditing ? '' : shiftWidgetHtml()}
         <div class="bosh">Taomni bosib savatga qo'shing.</div>
         <div id="cashierMenu" style="margin-top:14px;"><div class="bosh">Yuklanmoqda...</div></div>
         <div class="cart-bar">
@@ -4193,21 +4210,25 @@ const tg = window.Telegram && window.Telegram.WebApp;
             `).join('')}
           </div>
           <div class="cart-total"><span>Jami:</span><span id="cartTotalVal">${fmtNum(cashierCartTotal())} so'm</span></div>
-          <button class="btn" id="sendOrderBtn">Oshxonaga yuborish</button>
+          <button class="btn" id="sendOrderBtn">${isEditing ? 'Buyurtmani yangilash' : "Oshxonaga yuborish"}</button>
           <div class="xabar" id="orderMsg"></div>
         </div>
       </div>
     `);
 
-    if (onBack) {
+    if (isEditing) {
+      document.getElementById('cashierCancelEditBtn').addEventListener('click', () => cancelEditOrder(restaurantName, onBack));
+    } else if (onBack) {
       document.getElementById('cashierBackBtn').addEventListener('click', () => onBack());
     }
-    document.querySelector('.tab-row').addEventListener('click', (e) => {
-      const t = e.target.getAttribute('data-cashier-tab');
-      if (!t || t === cashierState.tab) return;
-      cashierState.tab = t;
-      renderCashierScreen(restaurantName, onBack);
-    });
+    if (!isEditing) {
+      document.querySelector('.tab-row').addEventListener('click', (e) => {
+        const t = e.target.getAttribute('data-cashier-tab');
+        if (!t || t === cashierState.tab) return;
+        cashierState.tab = t;
+        renderCashierScreen(restaurantName, onBack);
+      });
+    }
 
     document.getElementById('orderTypeRow').addEventListener('click', (e) => {
       const t = e.target.getAttribute('data-order-type');
@@ -4258,12 +4279,18 @@ const tg = window.Telegram && window.Telegram.WebApp;
         el.classList.toggle('selected', el.getAttribute('data-status-chip') === key);
       });
       lastOrdersSnapshot = null;
-      refreshOrdersBoard('kassir');
+      refreshOrdersBoard('kassir', restaurantName, cashierOrdersReturnFn(restaurantName, onBack));
     });
     attachSoundToggleHandler();
     attachShiftWidgetHandler();
     loadShiftWidget();
-    startOrdersPolling('kassir');
+    startOrdersPolling('kassir', restaurantName, cashierOrdersReturnFn(restaurantName, onBack));
+  }
+
+  // Tahrirlashdan qaytganda (yoki bekor qilinganda) kassirning "Buyurtmalar
+  // holati" bo'limiga qayta chiqib kelishi uchun.
+  function cashierOrdersReturnFn(restaurantName, onBack) {
+    return () => { cashierState.tab = 'holat'; renderCashierScreen(restaurantName, onBack); };
   }
 
   function groupMenuItems(items, categories) {
@@ -4446,9 +4473,14 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function sendCashierOrder(restaurantName, onBack) {
     const msgEl = document.getElementById('orderMsg');
     const sendBtn = document.getElementById('sendOrderBtn');
-    const items = Object.entries(cashierState.cart)
+    const cartItems = Object.entries(cashierState.cart)
       .filter(([, qty]) => qty > 0)
       .map(([id, qty]) => ({ id, qty }));
+    // Tahrirlash rejimida combo'lar kassir savatida ko'rinmaydi (kassir UI faqat
+    // oddiy menyu bandlarini boshqaradi) - shuning uchun ular o'zgartirilmagan
+    // holda saqlanib, yangilangan buyurtmaga qaytadan qo'shiladi.
+    const comboItems = (cashierState.editingComboItems || []).map(it => ({ id: it.id, qty: it.qty, isCombo: true }));
+    const items = cartItems.concat(comboItems);
 
     if (!items.length) {
       msgEl.textContent = 'Savat bo\'sh. Kamida bitta taom tanlang.';
@@ -4456,6 +4488,38 @@ const tg = window.Telegram && window.Telegram.WebApp;
       return;
     }
     if (sendBtn) sendBtn.disabled = true;
+
+    if (cashierState.editingOrderId) {
+      msgEl.textContent = 'Yangilanmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/edit-order', {
+        initData,
+        orderId: cashierState.editingOrderId,
+        items,
+        orderType: cashierState.orderType,
+        paymentType: cashierState.paymentType
+      });
+
+      if (res.ok) {
+        const returnFn = cashierState.editingReturn;
+        cashierState.cart = {};
+        cashierState.editingOrderId = null;
+        cashierState.editingOrderNumber = null;
+        cashierState.editingComboItems = null;
+        cashierState.editingReturn = null;
+        lastOrdersSnapshot = null;
+        if (returnFn) {
+          returnFn();
+        } else {
+          renderCashierScreen(restaurantName, onBack);
+        }
+      } else {
+        if (sendBtn) sendBtn.disabled = false;
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+      return;
+    }
 
     if (!cashierState.lastOrderRequestId) {
       cashierState.lastOrderRequestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -4465,7 +4529,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     msgEl.className = 'xabar';
     const res = await apiPost('/api/create-order', {
       initData,
-      items,
+      items: cartItems,
       orderType: cashierState.orderType,
       paymentType: cashierState.paymentType,
       requestId: cashierState.lastOrderRequestId
@@ -4689,6 +4753,14 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
       actionBtn = `<button class="order-action-btn ikkinchi" data-undo-deliver-id="${escapeHtml(order.id)}">Yetkazildi belgisini bekor qilish</button>`;
     }
+
+    // Mijoz qo'shimcha narsa xohlasa yoki buyurtmadan biror narsani olib
+    // tashlashni so'rasa, kassir/ega yangi buyurtma yaratmasdan shu buyurtmani
+    // tahrirlab qo'yishi mumkin (faqat hali "Tayyor" bo'lmagan buyurtmalarda).
+    let editBtn = '';
+    if (!paymentPending && (role === 'kassir' || role === 'egasi') && (order.status === 'yangi' || order.status === 'tayyorlanmoqda')) {
+      editBtn = `<button class="order-action-btn ikkinchi" data-edit-order-id="${escapeHtml(order.id)}">✏️ Tahrirlash</button>`;
+    }
     const deliveredNote = (order.orderType === 'dostavka' && order.deliveredBy)
       ? `<div class="order-time">✅ Yetkazib berilgan (${timeAgo(order.deliveredAt)})</div>`
       : '';
@@ -4716,6 +4788,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         ${paymentPendingNote}
         <div class="order-bottom">
           <span class="order-total">${fmtNum(order.total)} so'm</span>
+          ${editBtn}
           ${actionBtn}
         </div>
       </div>
@@ -4733,7 +4806,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
     return list.map(o => orderCardHtml(o, role)).join('');
   }
 
-  function attachOrdersBoardHandlers(role) {
+  let lastOrdersForBoard = [];
+
+  function attachOrdersBoardHandlers(role, restaurantName, onReturn) {
     const board = document.getElementById('ordersBoard');
     if (!board) return;
     board.querySelectorAll('[data-set-status]').forEach(btn => {
@@ -4746,7 +4821,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           alert(res.reason || 'Xatolik yuz berdi.');
         }
         lastOrdersSnapshot = null;
-        await refreshOrdersBoard(role);
+        await refreshOrdersBoard(role, restaurantName, onReturn);
       });
     });
     board.querySelectorAll('[data-mark-received-id]').forEach(btn => {
@@ -4758,7 +4833,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           alert(res.reason || 'Xatolik yuz berdi.');
         }
         lastOrdersSnapshot = null;
-        await refreshOrdersBoard(role);
+        await refreshOrdersBoard(role, restaurantName, onReturn);
       });
     });
     board.querySelectorAll('[data-undo-deliver-id]').forEach(btn => {
@@ -4771,22 +4846,45 @@ const tg = window.Telegram && window.Telegram.WebApp;
           alert(res.reason || 'Xatolik yuz berdi.');
         }
         lastOrdersSnapshot = null;
-        await refreshOrdersBoard(role);
+        await refreshOrdersBoard(role, restaurantName, onReturn);
+      });
+    });
+    board.querySelectorAll('[data-edit-order-id]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const orderId = btn.getAttribute('data-edit-order-id');
+        const order = lastOrdersForBoard.find(o => o.id === orderId);
+        if (!order) { alert('Buyurtma topilmadi. Ro\'yxatni yangilab qayta urinib ko\'ring.'); return; }
+        stopOrdersPolling();
+        cashierState.tab = 'yaratish';
+        cashierState.editingOrderId = order.id;
+        cashierState.editingOrderNumber = order.orderNumber || null;
+        cashierState.editingReturn = onReturn || null;
+        cashierState.orderType = order.orderType;
+        cashierState.paymentType = order.paymentType;
+        cashierState.cart = {};
+        (order.items || []).forEach(it => {
+          if (it.isCombo) return;
+          cashierState.cart[it.id] = (cashierState.cart[it.id] || 0) + it.qty;
+        });
+        cashierState.editingComboItems = (order.items || []).filter(it => it.isCombo);
+        renderCashierScreen(restaurantName, onReturn);
       });
     });
   }
 
-  async function refreshOrdersBoard(role) {
+  async function refreshOrdersBoard(role, restaurantName, onReturn) {
     const board = document.getElementById('ordersBoard');
     if (!board) { stopOrdersPolling(); return; }
     const res = await apiPost('/api/orders-list', { initData });
     if (!res.ok) {
 
       if (res.networkError && lastOrdersSnapshot === null) {
-        renderNetworkErrorInline(board, res.reason, () => refreshOrdersBoard(role));
+        renderNetworkErrorInline(board, res.reason, () => refreshOrdersBoard(role, restaurantName, onReturn));
       }
       return;
     }
+
+    lastOrdersForBoard = res.orders || [];
 
     const currentIds = new Set((res.orders || []).map(o => o.id));
     if (knownOrderIds && (role === 'oshpaz' || role === 'kassir' || role === 'egasi')) {
@@ -4799,13 +4897,13 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (snapshot === lastOrdersSnapshot) return;
     lastOrdersSnapshot = snapshot;
     board.innerHTML = ordersBoardHtml(res.orders, role);
-    attachOrdersBoardHandlers(role);
+    attachOrdersBoardHandlers(role, restaurantName, onReturn);
   }
 
-  function startOrdersPolling(role) {
+  function startOrdersPolling(role, restaurantName, onReturn) {
     stopOrdersPolling();
-    refreshOrdersBoard(role);
-    ordersPollTimer = setInterval(() => refreshOrdersBoard(role), 4000);
+    refreshOrdersBoard(role, restaurantName, onReturn);
+    ordersPollTimer = setInterval(() => refreshOrdersBoard(role, restaurantName, onReturn), 4000);
   }
 
   function renderKitchenScreen(restaurantName, onBack) {
@@ -4835,7 +4933,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     attachSoundToggleHandler();
     attachShiftWidgetHandler();
     loadShiftWidget();
-    startOrdersPolling(boardRole);
+    startOrdersPolling(boardRole, restaurantName, () => renderKitchenScreen(restaurantName, onBack));
     if (onBack) {
       document.getElementById('kitchenMenuManageBtn').addEventListener('click', () => openKitchenMenuManageMenu(restaurantName, onBack));
     }
