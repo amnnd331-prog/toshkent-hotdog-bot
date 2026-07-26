@@ -1314,9 +1314,10 @@ function telegramApiUploadPhoto(chatId, buffer, mimeType, fields) {
   });
 }
 
-function sendMessage(chatId, text, replyMarkup) {
+function sendMessage(chatId, text, replyMarkup, threadId) {
   const params = { chat_id: chatId, text, parse_mode: 'HTML' };
   if (replyMarkup) params.reply_markup = JSON.stringify(replyMarkup);
+  if (threadId) params.message_thread_id = threadId;
   return telegramApi('sendMessage', params).then(result => {
     if (!result || !result.ok) {
       const reason = (result && result.description) || 'noma\'lum xatolik';
@@ -1474,7 +1475,7 @@ function notifyDeliveryGroup(owner, order, creatorLabel) {
       { text: '✅ Qabul qilish', callback_data: `dgaccept:${owner.id}:${order.id}` },
       { text: '🏁 Tayyor', callback_data: `dgready:${owner.id}:${order.id}` }
     ]]
-  }).then(result => {
+  }, owner.deliveryGroupThreadId).then(result => {
     if (result && result.ok && result.result && result.result.message_id) {
       const owners2 = loadOwners();
       const o2 = findOwner(owners2, owner.id);
@@ -1501,7 +1502,7 @@ function notifyKitchenGroup(owner, order, creatorLabel) {
         { text: '✅ Qabul qilish', callback_data: `kgaccept:${owner.id}:${order.id}` },
         { text: '🏁 Tayyor', callback_data: `kgready:${owner.id}:${order.id}` }
       ]]
-    }).then(result => {
+    }, owner.kitchenGroupThreadId).then(result => {
       if (result && result.ok && result.result && result.result.message_id) {
         const owners2 = loadOwners();
         const o2 = findOwner(owners2, owner.id);
@@ -2048,10 +2049,13 @@ async function handleTelegramUpdate(update) {
       }
       owner.deliveryGroupId = String(chatId);
       owner.deliveryGroupTitle = msg.chat.title || null;
+      owner.deliveryGroupThreadId = msg.message_thread_id || null;
       saveOwners(owners);
       await sendMessage(chatId,
         `✅ Bu guruh <b>${escapeHtmlServer((owner.profile && owner.profile.name) || 'oshxona')}</b> uchun admin guruhi sifatida biriktirildi.\n` +
-        `Endi mijozlar istalgan turda (Stolga, Olib ketish yoki Dostavka) buyurtma bersa, "Qabul qilish" va "Tayyor" tugmali xabarlar shu guruhga keladi.`);
+        `Endi mijozlar istalgan turda (Stolga, Olib ketish yoki Dostavka) buyurtma bersa, "Qabul qilish" va "Tayyor" tugmali xabarlar shu guruhga keladi.` +
+        (owner.deliveryGroupThreadId ? `\n\n📌 Xabarlar aynan shu mavzu (topic)ga yozib boriladi.` : ''),
+        null, owner.deliveryGroupThreadId);
       return;
     }
 
@@ -2061,6 +2065,7 @@ async function handleTelegramUpdate(update) {
       if (owner && String(owner.deliveryGroupId) === String(chatId)) {
         owner.deliveryGroupId = null;
         owner.deliveryGroupTitle = null;
+        owner.deliveryGroupThreadId = null;
         saveOwners(owners);
         await sendMessage(chatId, 'Bu guruh admin guruhi sifatidan olib tashlandi.');
       }
@@ -2082,10 +2087,13 @@ async function handleTelegramUpdate(update) {
       }
       owner.kitchenGroupId = String(chatId);
       owner.kitchenGroupTitle = msg.chat.title || null;
+      owner.kitchenGroupThreadId = msg.message_thread_id || null;
       saveOwners(owners);
       await sendMessage(chatId,
         `✅ Bu guruh <b>${escapeHtmlServer((owner.profile && owner.profile.name) || 'oshxona')}</b> uchun Oshpazlar guruhi sifatida biriktirildi.\n` +
-        `Endi har bir yangi buyurtma (Stolga, Olib ketish yoki Dostavka) shu guruhga ham, "Qabul qilish" va "Tayyor" tugmalari bilan yuboriladi.`);
+        `Endi har bir yangi buyurtma (Stolga, Olib ketish yoki Dostavka) shu guruhga ham, "Qabul qilish" va "Tayyor" tugmalari bilan yuboriladi.` +
+        (owner.kitchenGroupThreadId ? `\n\n📌 Xabarlar aynan shu mavzu (topic)ga yozib boriladi.` : ''),
+        null, owner.kitchenGroupThreadId);
       return;
     }
 
@@ -2095,6 +2103,7 @@ async function handleTelegramUpdate(update) {
       if (owner && String(owner.kitchenGroupId) === String(chatId)) {
         owner.kitchenGroupId = null;
         owner.kitchenGroupTitle = null;
+        owner.kitchenGroupThreadId = null;
         saveOwners(owners);
         await sendMessage(chatId, 'Bu guruh Oshpazlar guruhi sifatidan olib tashlandi.');
       }
@@ -4366,7 +4375,8 @@ const server = http.createServer((req, res) => {
       return sendJSON(res, 200, {
         ok: true,
         bound: !!owner.deliveryGroupId,
-        groupTitle: owner.deliveryGroupTitle || null
+        groupTitle: owner.deliveryGroupTitle || null,
+        threadBound: !!owner.deliveryGroupThreadId
       });
     });
     return;
@@ -4384,6 +4394,7 @@ const server = http.createServer((req, res) => {
       if (!ownerCanUseFeature(owner, 'delivery-group')) return sendJSON(res, 200, featureBlockedResult('delivery-group'));
       owner.deliveryGroupId = null;
       owner.deliveryGroupTitle = null;
+      owner.deliveryGroupThreadId = null;
       saveOwners(owners);
       return sendJSON(res, 200, { ok: true });
     });
@@ -4403,7 +4414,8 @@ const server = http.createServer((req, res) => {
       return sendJSON(res, 200, {
         ok: true,
         bound: !!owner.kitchenGroupId,
-        groupTitle: owner.kitchenGroupTitle || null
+        groupTitle: owner.kitchenGroupTitle || null,
+        threadBound: !!owner.kitchenGroupThreadId
       });
     });
     return;
@@ -4421,6 +4433,7 @@ const server = http.createServer((req, res) => {
       if (!ownerCanUseFeature(owner, 'kitchen-group')) return sendJSON(res, 200, featureBlockedResult('kitchen-group'));
       owner.kitchenGroupId = null;
       owner.kitchenGroupTitle = null;
+      owner.kitchenGroupThreadId = null;
       saveOwners(owners);
       return sendJSON(res, 200, { ok: true });
     });
