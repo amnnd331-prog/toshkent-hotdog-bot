@@ -9926,7 +9926,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }
     if (data.isAdmin) {
       loadOwnersAndRender();
-    } else if (data.isOwner) {
+    } else if (data.isOwner || data.role === 'egasi') {
       maybeGateOwnerWithPassword(data);
     } else if (data.role) {
 
