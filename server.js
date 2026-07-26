@@ -3745,12 +3745,13 @@ const server = http.createServer((req, res) => {
 
       const rolesArr = Array.isArray(roles) ? roles : (role ? [role] : []);
       const uniqueRoles = [...new Set(rolesArr)].filter(isValidRole)
-        // 69-bosqich: 'egasi' boshqa rollar bilan birga tanlangan bo'lsa ham,
-        // har doim ro'yxat boshida bo'lishi kerak — chunki ctx.role (birinchi
-        // rol) 'egasi' bo'lgandagina to'liq egasi huquqi to'g'ri ishlaydi.
-        .sort((a, b) => (a === 'egasi' ? -1 : b === 'egasi' ? 1 : 0));
+        // Havola orqali "Egasi (hamkor)" huquqi berilmaydi — bu faqat
+        // ID/username orqali to'g'ridan-to'g'ri qo'shishda mavjud, chunki
+        // havola har kimga yuborilishi va noto'g'ri odamga to'liq egasi
+        // huquqi tegib qolishi mumkin.
+        .filter(r => r !== 'egasi');
       if (!uniqueRoles.length) {
-        return sendJSON(res, 200, { ok: false, reason: 'Kamida bitta lavozim tanlang.' });
+        return sendJSON(res, 200, { ok: false, reason: 'Kamida bitta lavozim tanlang. Egasi (hamkor) huquqi havola orqali berilmaydi.' });
       }
 
       let branchIdVal = null;
