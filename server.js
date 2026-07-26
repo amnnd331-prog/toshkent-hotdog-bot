@@ -3304,6 +3304,103 @@ async function sendAiWeeklyDirectorDigest(owner, force) {
   return true;
 }
 
+// ---- Kunlik savdo/xarajat hisoboti — avtomatik yuborish (67-bosqich) ----
+// Bu Z-hisobot ("Kunni yopish") bilan bir xil ma'lumotni hisoblaydi, lekin
+// egasi qo'lda tugma bosishini kutmay, har kuni ertalab soat 08:00'da
+// (AI Direktor bilan bir vaqtda) O'TGAN KUNNING to'liq yopilgan
+// ma'lumotini o'zi Telegram'ga yuboradi. Shu bilan birga, agar o'sha kun
+// uchun hali Z-hisobot qo'lda yopilmagan bo'lsa — buni ham avtomatik
+// owner.zReports tarixiga yozib qo'yadi, shunda egasi "Kunni yopish"
+// tugmasini bosishni unutib qo'yса ham tarix uzilib qolmaydi.
+function buildDailyReportData(owner, dateKey) {
+  const dayStart = aiDirDayStartFromKey(dateKey);
+  const dayEnd = new Date(dayStart.getTime() + 86400000);
+
+  const orders = (owner.orders || []).filter(o => {
+    const t = new Date(o.createdAt);
+    return t >= dayStart && t < dayEnd;
+  });
+  const expenses = (owner.expenses || []).filter(e => {
+    const t = new Date(e.createdAt);
+    return t >= dayStart && t < dayEnd;
+  });
+
+  const dostavkaOrders = orders.filter(o => o.orderType === 'dostavka' && o.paymentType === 'dostavka_orqali');
+  const kassaOrders = orders.filter(o => !(o.orderType === 'dostavka' && o.paymentType === 'dostavka_orqali'));
+  const kassaIncome = kassaOrders.reduce((s, o) => s + orderIncomeAmount(o), 0);
+  const dostavkaIncome = dostavkaOrders.reduce((s, o) => s + orderIncomeAmount(o), 0);
+  const income = kassaIncome + dostavkaIncome;
+
+  const paymentBreakdown = {};
+  for (const key of Object.keys(PAYMENT_TYPES)) paymentBreakdown[key] = 0;
+  for (const o of orders) {
+    const pt = Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, o.paymentType) ? o.paymentType : 'naqd';
+    paymentBreakdown[pt] = (paymentBreakdown[pt] || 0) + orderIncomeAmount(o);
+  }
+
+  const expenseByCategory = {};
+  for (const key of Object.keys(EXPENSE_CATEGORIES)) expenseByCategory[key] = 0;
+  for (const e of expenses) {
+    const cat = Object.prototype.hasOwnProperty.call(EXPENSE_CATEGORIES, e.category) ? e.category : 'boshqa';
+    expenseByCategory[cat] = (expenseByCategory[cat] || 0) + (e.amount || 0);
+  }
+  const expense = expenses.reduce((s, e) => s + (e.amount || 0), 0);
+  const cancelledCount = (owner.orders || []).filter(o => {
+    const t = new Date(o.cancelledAt || o.createdAt);
+    return o.status === 'bekor_qilindi' && t >= dayStart && t < dayEnd;
+  }).length;
+
+  return {
+    date: dateKey,
+    income, kassaIncome, dostavkaIncome, orderCount: orders.length, cancelledCount,
+    paymentBreakdown, expense, expenseByCategory, net: income - expense
+  };
+}
+
+function buildDailyReportText(owner, dateKey) {
+  const r = buildDailyReportData(owner, dateKey);
+  const lines = [`📊 <b>Kunlik hisobot</b> — ${r.date}`, ''];
+  lines.push(`💰 Tushum: <b>${fmtNum(r.income)} so'm</b>`);
+  lines.push(`📦 Buyurtmalar: ${r.orderCount} ta` + (r.cancelledCount ? ` (${r.cancelledCount} ta bekor qilingan)` : ''));
+  lines.push('');
+  lines.push('💳 To\'lov turlari bo\'yicha:');
+  for (const key of Object.keys(PAYMENT_TYPES)) {
+    if (r.paymentBreakdown[key]) lines.push(`  • ${PAYMENT_TYPES[key]}: ${fmtNum(r.paymentBreakdown[key])} so'm`);
+  }
+  lines.push('');
+  lines.push(`🧾 Xarajat: <b>${fmtNum(r.expense)} so'm</b>`);
+  for (const key of Object.keys(EXPENSE_CATEGORIES)) {
+    if (r.expenseByCategory[key]) lines.push(`  • ${EXPENSE_CATEGORIES[key]}: ${fmtNum(r.expenseByCategory[key])} so'm`);
+  }
+  lines.push('');
+  lines.push(`📈 Sof foyda: <b>${fmtNum(r.net)} so'm</b>`);
+  return lines.join('\n');
+}
+
+async function sendDailyReportDigest(owner, force) {
+  const yesterdayKey = aiDirDateKey(new Date(Date.now() - 86400000));
+  if (!force && owner.dailyReportLastSent === yesterdayKey) return false;
+  const text = buildDailyReportText(owner, yesterdayKey);
+  await sendMessage(owner.id, text);
+  owner.dailyReportLastSent = yesterdayKey;
+
+  // Agar o'sha kun uchun hali Z-hisobot qo'lda yopilmagan bo'lsa, shu
+  // ma'lumot bilan avtomatik yozib qo'yamiz (tarix uzilib qolmasligi uchun).
+  if (!force) {
+    if (!owner.zReports) owner.zReports = [];
+    if (!owner.zReports.some(z => z.date === yesterdayKey)) {
+      const built = buildDailyReportData(owner, yesterdayKey);
+      owner.zReports.unshift(Object.assign({
+        id: crypto.randomBytes(4).toString('hex'),
+        createdAt: new Date().toISOString(),
+        createdBy: 'auto'
+      }, built));
+      if (owner.zReports.length > 90) owner.zReports.length = 90;
+    }
+  }
+  return true;
+}
+
 setInterval(() => {
   if (aiDirTashkentHour(new Date()) !== AI_DIRECTOR_HOUR) return;
   const isWeeklyDay = aiDirTashkentWeekday(new Date()) === AI_DIRECTOR_WEEKLY_DAY;
@@ -3319,6 +3416,10 @@ setInterval(() => {
       if (isWeeklyDay && owner.aiWeeklyEnabled !== false) {
         const sentWeekly = await sendAiWeeklyDirectorDigest(owner, false);
         if (sentWeekly) changed = true;
+      }
+      if (owner.dailyReportEnabled !== false && ownerCanUseFeature(owner, 'z-report')) {
+        const sentDaily = await sendDailyReportDigest(owner, false);
+        if (sentDaily) changed = true;
       }
     }
     if (changed) saveOwners(owners);
@@ -7844,6 +7945,70 @@ const server = http.createServer((req, res) => {
         topDays: peak.topDays,
         forecast
       });
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/api/daily-report-preview') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = pruneExpiredOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      if (!ownerCanUseFeature(owner, 'z-report')) return sendJSON(res, 200, featureBlockedResult('z-report'));
+
+      const yesterdayKey = aiDirDateKey(new Date(Date.now() - 86400000));
+      return sendJSON(res, 200, {
+        ok: true,
+        text: buildDailyReportText(owner, yesterdayKey),
+        enabled: owner.dailyReportEnabled !== false,
+        sentToday: owner.dailyReportLastSent === yesterdayKey,
+        hour: AI_DIRECTOR_HOUR
+      });
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/api/daily-report-send-now') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      if (!ownerCanUseFeature(owner, 'z-report')) return sendJSON(res, 200, featureBlockedResult('z-report'));
+
+      sendDailyReportDigest(owner, true).then(() => {
+        saveOwners(owners);
+        sendJSON(res, 200, { ok: true });
+      }).catch(() => sendJSON(res, 200, { ok: false, reason: 'Yuborishda xatolik yuz berdi.' }));
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/api/daily-report-toggle') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, enabled } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
+      if (!ownerCanUseFeature(owner, 'z-report')) return sendJSON(res, 200, featureBlockedResult('z-report'));
+
+      owner.dailyReportEnabled = !!enabled;
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true, enabled: owner.dailyReportEnabled });
     });
     return;
   }
