@@ -4920,57 +4920,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (req.method === 'POST' && req.url === '/api/live-board') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const { initData, ownerId } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const owner = findOwner(owners, ownerId);
-      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
-      if (!ownerCanUseFeature(owner, 'customer-account')) return sendJSON(res, 200, featureBlockedResult('customer-account'));
-
-      const allOrders = owner.orders || [];
-      const LIVE_BOARD_MAX = 40;
-      const READY_WINDOW_MS = 15 * 60 * 1000; // "Tayyor" ustunida 15 daqiqagacha ko'rinib turadi
-      const now = Date.now();
-
-      const isRecentlyReady = (o) => o.status === 'tayyor' && o.readyAt && !o.customerReceivedAt && !o.deliveredBy
-        && (now - new Date(o.readyAt).getTime()) <= READY_WINDOW_MS;
-
-      const preparing = allOrders
-        .filter(o => (o.status === 'yangi' || o.status === 'tayyorlanmoqda') && o.paymentProofStatus !== 'kutilmoqda')
-        .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
-        .slice(0, LIVE_BOARD_MAX)
-        .map(o => ({ id: o.id, number: o.orderNumber || null }));
-
-      const ready = allOrders
-        .filter(isRecentlyReady)
-        .sort((a, b) => new Date(b.readyAt) - new Date(a.readyAt))
-        .slice(0, LIVE_BOARD_MAX)
-        .map(o => ({ id: o.id, number: o.orderNumber || null }));
-
-      const myOrderIds = allOrders
-        .filter(o => String(o.customerId) === userId
-          && (o.status === 'yangi' || o.status === 'tayyorlanmoqda' || isRecentlyReady(o)))
-        .map(o => o.id);
-
-      // Mijozning "to'lov tasdiqlash kutilmoqda" xabari qachon olib
-      // tashlanishini frontend shu ro'yxat orqali biladi (qarang: app.js
-      // refreshLiveBoard) - to'lov tasdiqlangan/rad etilgan zahoti bu
-      // ro'yxatdan chiqib ketadi.
-      const myPendingPaymentOrderIds = allOrders
-        .filter(o => String(o.customerId) === userId && o.paymentProofStatus === 'kutilmoqda')
-        .map(o => o.id);
-
-      return sendJSON(res, 200, { ok: true, preparing, ready, myOrderIds, myPendingPaymentOrderIds });
-    });
-    return;
-  }
-
   if (req.method === 'POST' && req.url === '/api/customer-notifications') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
