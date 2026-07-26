@@ -1542,7 +1542,23 @@ function notifyDeliveryGroupOrderReady(owner, order) {
   ].filter(Boolean).join('\n');
   const text = `🚚 <b>Buyurtma tayyor — yetkazishga oling</b>\n${orderCustomerContactLabel(order)}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm\nTo'lov: ${PAYMENT_TYPES[order.paymentType] || order.paymentType}` +
     (addressLines ? `\n\n${addressLines}` : '');
-  sendMessage(owner.deliveryGroupId, text, null, owner.deliveryGroupThreadId);
+  sendMessage(owner.deliveryGroupId, text, {
+    inline_keyboard: [[
+      { text: '✅ Yetkazildi', callback_data: `dgdelivered:${owner.id}:${order.id}` }
+    ]]
+  }, owner.deliveryGroupThreadId).then(result => {
+    if (result && result.ok && result.result && result.result.message_id) {
+      const owners2 = loadOwners();
+      const o2 = findOwner(owners2, owner.id);
+      const ord2 = o2 && (o2.orders || []).find(x => x.id === order.id);
+      if (ord2) {
+        ord2.deliveryReadyGroupMsgId = result.result.message_id;
+        saveOwners(owners2);
+      }
+    }
+  }).catch(err => {
+    console.error(`[notifyDeliveryGroupOrderReady xatosi] owner=${owner.id} order=${order.id}: ${(err && err.message) || err}`);
+  });
 }
 
 function syncGroupMessagesForOrder(owner, order) {
@@ -2690,6 +2706,43 @@ async function handleTelegramUpdate(update) {
         await answerCallbackQuery(cq.id, 'Tayyor deb belgilandi 🏁');
         return;
       }
+    }
+
+    // Dostavka guruhida "✅ Yetkazildi" tugmasi — kuryer mini-ilovani
+    // ochmasdan, to'g'ridan-to'g'ri guruhdan buyurtmani yetkazilgan deb
+    // belgilashi mumkin (qarang: notifyDeliveryGroupOrderReady()). Bu
+    // /api/deliver-order bilan bir xil natijaga olib keladi — mijozga
+    // baho so'rovi ham shu yerdan yuboriladi.
+    if (data.startsWith('dgdelivered:')) {
+      const [, ownerId, orderId] = data.split(':');
+      const owners = loadOwners();
+      const owner = findOwner(owners, ownerId);
+      if (!owner) { await answerCallbackQuery(cq.id, 'Oshxona topilmadi.'); return; }
+      if (await guardCallbackSubscription(cq, owners, ownerId)) return;
+      const order = (owner.orders || []).find(o => o.id === orderId);
+      if (!order) { await answerCallbackQuery(cq.id, 'Buyurtma topilmadi.'); return; }
+      if (order.orderType !== 'dostavka') {
+        await answerCallbackQuery(cq.id, 'Bu buyurtma dostavka turi emas.');
+        return;
+      }
+      if (order.deliveredBy) {
+        await answerCallbackQuery(cq.id, 'Bu buyurtma allaqachon yetkazilgan deb belgilangan.');
+        syncGroupMessagesForOrder(owner, order);
+        return;
+      }
+
+      order.deliveredBy = from.id;
+      order.deliveredAt = new Date().toISOString();
+      logStaffAction(owner, { userId: String(from.id), role: 'dostavka', action: 'yetkazdi', orderId: order.id, note: `${fmtNum(order.total)} so'm — yetkazib berildi (guruhdan)` });
+      saveOwners(owners);
+
+      if (chatId && messageId) {
+        await editMessageText(chatId, messageId,
+          `${cq.message.text || ''}\n\n✅ Yetkazildi — ${displayName(from)}`, null);
+      }
+      sendOrderRatingRequest(owner, order);
+      await answerCallbackQuery(cq.id, 'Yetkazildi deb belgilandi ✅');
+      return;
     }
 
     if (data.startsWith('payok:') || data.startsWith('payrej:')) {
