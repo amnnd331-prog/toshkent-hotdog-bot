@@ -1456,10 +1456,14 @@ function escapeHtmlServer(str) {
   }[c]));
 }
 
+function orderItemsTextWithPrices(order) {
+  return order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty} — ${fmtNum((it.price || 0) * it.qty)} so'm`).join('\n');
+}
+
 function notifyDeliveryGroup(owner, order, creatorLabel) {
   if (!owner.deliveryGroupId) return;
   if (!ownerCanUseFeature(owner, 'delivery-group')) return;
-  const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
+  const itemsText = orderItemsTextWithPrices(order);
   const mapsLink = locationMapsLink(order.location);
   const addressLines = [
     mapsLink ? `📍 Joylashuv: ${mapsLink}` : null,
@@ -1494,7 +1498,7 @@ function notifyKitchenGroup(owner, order, creatorLabel) {
   if (!owner.kitchenGroupId) return;
   if (!ownerCanUseFeature(owner, 'kitchen-group')) return;
   try {
-    const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
+    const itemsText = orderItemsTextWithPrices(order);
     const typeLabel = ORDER_TYPES[order.orderType] || order.orderType;
     const text = `👨‍🍳 <b>Yangi buyurtma</b> (${typeLabel})${creatorLabel ? '\n' + creatorLabel : ''}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm`;
     sendMessage(owner.kitchenGroupId, text, {
@@ -1518,6 +1522,27 @@ function notifyKitchenGroup(owner, order, creatorLabel) {
   } catch (err) {
     console.error(`[notifyKitchenGroup kutilmagan xatosi] owner=${owner.id} order=${order.id}: ${(err && err.message) || err}`);
   }
+}
+
+// Dostavka buyurtmalarida — oshpaz "Tayyor" deb belgilagach, ENDI dostavka
+// guruhiga xabar boradi (avvalroq emas). Bu yerda tugma yo'q — chunki
+// kuryerning o'zi "Yetkazildi"/"Mijoz qabul qilmadi" amallarini mini-ilova
+// orqali (kuryer taxtasidan) bajaradi, shu sabab bu shunchaki xabar beruvchi
+// (informatsion) xabar.
+function notifyDeliveryGroupOrderReady(owner, order) {
+  if (!owner.deliveryGroupId) return;
+  if (!ownerCanUseFeature(owner, 'delivery-group')) return;
+  if (order.orderType !== 'dostavka') return;
+  const itemsText = orderItemsTextWithPrices(order);
+  const mapsLink = locationMapsLink(order.location);
+  const addressLines = [
+    mapsLink ? `📍 Joylashuv: ${mapsLink}` : null,
+    order.addressNote ? `📝 Manzil izohi: ${escapeHtmlServer(order.addressNote)}` : null,
+    order.extraPhone ? `📞 Qo'shimcha tel: ${escapeHtmlServer(order.extraPhone)}` : null,
+  ].filter(Boolean).join('\n');
+  const text = `🚚 <b>Buyurtma tayyor — yetkazishga oling</b>\n${orderCustomerContactLabel(order)}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm\nTo'lov: ${PAYMENT_TYPES[order.paymentType] || order.paymentType}` +
+    (addressLines ? `\n\n${addressLines}` : '');
+  sendMessage(owner.deliveryGroupId, text, null, owner.deliveryGroupThreadId);
 }
 
 function syncGroupMessagesForOrder(owner, order) {
@@ -2642,6 +2667,7 @@ async function handleTelegramUpdate(update) {
             `${cq.message.text || ''}\n\n🏁 Tayyor — ${displayName(from)}`, null);
         }
         syncGroupMessagesForOrder(owner, order);
+        notifyDeliveryGroupOrderReady(owner, order);
         if (order.customerId) {
           const readyMsg = order.orderType === 'dostavka'
             ? '🏁 Buyurtmangiz tayyor, kuryer yo\'lda!'
@@ -2708,7 +2734,7 @@ async function handleTelegramUpdate(update) {
         const notifyTargets = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'oshpaz') || staffHasRole(s, 'kassir')).map(s => s.id))];
         await notifyStaffList(owner, notifyTargets, notifyText, `Buyurtma #${order.id} (to'lov tasdiqlangach)`, 'newOrder');
         saveOwners(owners);
-        notifyDeliveryGroup(owner, order, orderCustomerContactLabel(order));
+        if (order.orderType !== 'dostavka') notifyDeliveryGroup(owner, order, orderCustomerContactLabel(order));
         notifyKitchenGroup(owner, order, orderCustomerContactLabel(order));
 
         if (order.customerId) {
@@ -5712,7 +5738,7 @@ const server = http.createServer((req, res) => {
           `${orderCustomerContactLabel(order)}\n${itemsText}\n\nJami: ${fmtNum(total)} so'm\nTo'lov: ${PAYMENT_TYPES[paymentType]}`;
         const notifyTargets = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'oshpaz') || staffHasRole(s, 'kassir')).map(s => s.id))];
         await notifyStaffList(owner, notifyTargets, notifyText, `Buyurtma #${order.id} (mijoz)`, 'newOrder');
-        notifyDeliveryGroup(owner, order, orderCustomerContactLabel(order));
+        if (order.orderType !== 'dostavka') notifyDeliveryGroup(owner, order, orderCustomerContactLabel(order));
         notifyKitchenGroup(owner, order, orderCustomerContactLabel(order));
         saveOwners(owners);
       }
@@ -5971,7 +5997,7 @@ const server = http.createServer((req, res) => {
         `${itemsText}\n\nJami: ${fmtNum(total)} so'm\nTo'lov: ${PAYMENT_TYPES[paymentType]}`;
       const notifyTargets = [ctx.owner.id, ...((ctx.owner.staff || []).filter(s => staffHasRole(s, 'oshpaz')).map(s => s.id))];
       await notifyStaffList(ctx.owner, notifyTargets, notifyText, `Buyurtma #${order.id} (kassir)`, 'newOrder');
-      notifyDeliveryGroup(ctx.owner, order, `Yaratdi: ${escapeHtmlServer(displayName(check.user))} (kassir)`);
+      if (order.orderType !== 'dostavka') notifyDeliveryGroup(ctx.owner, order, `Yaratdi: ${escapeHtmlServer(displayName(check.user))} (kassir)`);
       notifyKitchenGroup(ctx.owner, order, `Yaratdi: ${escapeHtmlServer(displayName(check.user))} (kassir)`);
       saveOwners(owners);
 
@@ -6573,6 +6599,7 @@ const server = http.createServer((req, res) => {
       saveOwners(owners);
 
       syncGroupMessagesForOrder(ctx.owner, order);
+      if (status === 'tayyor') notifyDeliveryGroupOrderReady(ctx.owner, order);
 
       if (status === 'tayyor') {
         const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
