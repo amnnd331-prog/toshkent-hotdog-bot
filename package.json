@@ -1,0 +1,12 @@
+{
+  "name": "admin-mini-app-bot",
+  "version": "1.0.0",
+  "description": "Faqat admin uchun Telegram Mini App",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=16"
+  }
+}
