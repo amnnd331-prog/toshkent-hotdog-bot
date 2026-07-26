@@ -4199,7 +4199,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   const ORDER_TYPE_LABELS = { olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
-  const PAYMENT_TYPE_LABELS = { naqd: 'Naqd', karta: 'Karta', dostavka_orqali: "Dostavka orqali" };
+  const PAYMENT_TYPE_LABELS = { naqd: 'Naqd', karta: 'Karta', click: 'Click', dostavka_orqali: "Dostavka orqali" };
 
   function visiblePaymentTypeEntries(orderType) {
     return Object.entries(PAYMENT_TYPE_LABELS).filter(([k]) => {
@@ -7212,6 +7212,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
             <option value="" ${!orderHistoryState.paymentType ? 'selected' : ''}>Barcha to'lov turlari</option>
             <option value="naqd" ${orderHistoryState.paymentType === 'naqd' ? 'selected' : ''}>Naqd</option>
             <option value="karta" ${orderHistoryState.paymentType === 'karta' ? 'selected' : ''}>Karta</option>
+            <option value="click" ${orderHistoryState.paymentType === 'click' ? 'selected' : ''}>Click</option>
             <option value="dostavka_orqali" ${orderHistoryState.paymentType === 'dostavka_orqali' ? 'selected' : ''}>Dostavka orqali</option>
           </select>
           <div class="profile-row"><b>Buyurtma turi</b></div>
