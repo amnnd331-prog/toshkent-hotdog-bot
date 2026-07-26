@@ -2706,12 +2706,12 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
   }
 
-  const ROLE_LABELS = { kassir: 'Kassir', oshpaz: 'Oshpaz', sklad: 'Sklad mas\'uli', dostavka: 'Kuryer' };
+  const ROLE_LABELS = { kassir: 'Kassir' };
   function rolesLabelClient(roles) {
     return (roles || []).map(r => ROLE_LABELS[r] || r).join(', ') || '—';
   }
 
-  const ROLE_ICONS = { kassir: 'wallet', oshpaz: 'chef-hat', sklad: 'box', dostavka: 'scooter' };
+  const ROLE_ICONS = { kassir: 'wallet' };
 
   function staffRoles(s) {
     if (Array.isArray(s.roles) && s.roles.length) return s.roles;
@@ -2990,13 +2990,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
       return;
     }
     el2.outerHTML = koKpiGridHtml(res.summary);
-
-    const courierCard = document.getElementById('koCourierCard');
-    if (courierCard) {
-      courierCard.addEventListener('click', () => {
-        renderCourierReportScreen(profile, () => renderOwnerHomeScreen(profile));
-      });
-    }
   }
 
   const KO_STATUS_COLUMNS = [
@@ -4092,19 +4085,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     setAppHeader(logoUrl, restaurantName, roleLabel, multiRole ? staffRoleSwitchHandler : null);
     if (role === 'kassir') {
       renderCashierScreen(restaurantName);
-      return;
-    }
-    if (role === 'oshpaz') {
-      renderKitchenScreen(restaurantName);
-      return;
-    }
-    if (role === 'sklad') {
-      currentStockRole = 'sklad';
-      renderStockScreen(restaurantName, 'sklad', null);
-      return;
-    }
-    if (role === 'dostavka') {
-      renderDeliveryScreen(restaurantName);
       return;
     }
     ekran(`
@@ -6442,7 +6422,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
       <div class="panel">
         <div class="salom" style="font-size:20px;">Moliya</div>
         <button class="btn ikkinchi" id="cfBackBtn" style="margin-bottom:12px;">← Orqaga</button>
-        <button class="btn ikkinchi" id="cfCourierReportBtn" style="margin-bottom:12px;">${icon('scooter', 'icon-xs')} Kuryerlar hisoboti</button>
         <button class="btn ikkinchi" id="cfZReportBtn" style="margin-bottom:12px;">${icon('clipboard', 'icon-xs')} Kunlik Z-hisobot</button>
         <button class="btn ikkinchi" id="cfOrderHistoryBtn" style="margin-bottom:12px;">${icon('clipboard', 'icon-xs')} Buyurtmalar tarixi</button>
         <div class="tab-row">
@@ -6477,9 +6456,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `);
 
     document.getElementById('cfBackBtn').addEventListener('click', () => onBack && onBack());
-    document.getElementById('cfCourierReportBtn').addEventListener('click', () => {
-      renderCourierReportScreen(profile, () => renderCashflowScreen(profile, onBack));
-    });
     document.getElementById('cfZReportBtn').addEventListener('click', () => {
       renderZReportScreen(profile, () => renderCashflowScreen(profile, onBack));
     });
@@ -6947,12 +6923,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <div class="kartochka">
           <h2>Xodim qo'shish</h2>
           <input type="text" id="staffInput" placeholder="Telegram ID, @username yoki t.me havolasi">
-          <div class="staff-hint" style="margin-top:8px;">Lavozim(lar) — bir nechtasini belgilash mumkin:</div>
+          <div class="staff-hint" style="margin-top:8px;">Lavozim:</div>
           <div class="staff-role-grid">
-            <label class="check-label"><input type="checkbox" class="staffRoleAddCheckbox" value="kassir"> Kassir</label>
-            <label class="check-label"><input type="checkbox" class="staffRoleAddCheckbox" value="oshpaz"> Oshpaz</label>
-            <label class="check-label"><input type="checkbox" class="staffRoleAddCheckbox" value="sklad"> Sklad mas'uli</label>
-            <label class="check-label"><input type="checkbox" class="staffRoleAddCheckbox" value="dostavka"> Kuryer</label>
+            <label class="check-label"><input type="checkbox" class="staffRoleAddCheckbox" value="kassir" checked> Kassir</label>
           </div>
           <select id="staffBranchInput">
             <option value="">— Markaziy (filialsiz) —</option>
@@ -7140,100 +7113,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
         ? notificationErrorLogHtml(notifRes.entries)
         : `<div class="xabar err">${escapeHtml((notifRes.reason) || 'Xatolik yuz berdi.')}</div>`;
     }
-  }
-
-  let courierReportState = { period: 'today' };
-
-  function courierReportRowsHtml(report) {
-    if (!report.length) return `<div class="bosh">Kuryerlar hali qo'shilmagan.</div>`;
-    return report.map(c => `
-      <div class="owner-item">
-        <div>
-          <div class="owner-id">${escapeHtml(c.id)}</div>
-          ${c.username ? `<div class="owner-username">@${escapeHtml(c.username)}</div>` : ''}
-          <div class="owner-expiry">Buyurtmalar: ${c.orderCount} ta</div>
-          <div class="owner-price">Jami pul: ${cfFormatSum(c.totalAmount)}</div>
-        </div>
-        <div class="rating-badge">${cfFormatSum(c.commission)}<div class="rating-unit">komissiya</div></div>
-      </div>
-    `).join('');
-  }
-
-  function renderCourierReportScreen(profile, onBack, isOwnerView = true) {
-    ekran(`
-      <div class="panel">
-        <div class="salom" style="font-size:20px;">Kuryerlar hisoboti</div>
-        ${onBack ? `<button class="btn ikkinchi" id="crBackBtn" style="margin-bottom:12px;">← Orqaga</button>` : ''}
-        <div class="tab-row">
-          <div class="tab-opt ${courierReportState.period === 'today' ? 'selected' : ''}" data-cr-period="today">Bugun</div>
-          <div class="tab-opt ${courierReportState.period === 'week' ? 'selected' : ''}" data-cr-period="week">Hafta</div>
-          <div class="tab-opt ${courierReportState.period === 'month' ? 'selected' : ''}" data-cr-period="month">Oy</div>
-          <div class="tab-opt ${courierReportState.period === 'all' ? 'selected' : ''}" data-cr-period="all">Hammasi</div>
-        </div>
-        ${isOwnerView ? `
-        <div class="kartochka">
-          <h2>Komissiya foizi</h2>
-          <input type="text" id="crCommissionInput" placeholder="Masalan: 10" inputmode="numeric">
-          <button class="btn ikkinchi" id="crSaveCommissionBtn">Saqlash</button>
-          <div class="xabar" id="crCommissionMsg"></div>
-        </div>
-        ` : ''}
-        <div class="kartochka">
-          <h2>Kuryerlar</h2>
-          <div id="crList" class="owner-list"><div class="bosh">Yuklanmoqda...</div></div>
-        </div>
-      </div>
-    `);
-
-    if (onBack) document.getElementById('crBackBtn').addEventListener('click', () => onBack());
-
-    document.querySelector('.tab-row').addEventListener('click', (e) => {
-      const p = e.target.getAttribute('data-cr-period');
-      if (!p || p === courierReportState.period) return;
-      courierReportState.period = p;
-      renderCourierReportScreen(profile, onBack, isOwnerView);
-    });
-
-    if (isOwnerView) {
-      document.getElementById('crSaveCommissionBtn').addEventListener('click', async () => {
-        const percent = document.getElementById('crCommissionInput').value.trim();
-        const msgEl = document.getElementById('crCommissionMsg');
-        if (!/^\d+(\.\d+)?$/.test(percent)) {
-          msgEl.textContent = 'To\'g\'ri foiz kiriting (0-100).';
-          msgEl.className = 'xabar err';
-          return;
-        }
-        msgEl.textContent = 'Saqlanmoqda...';
-        msgEl.className = 'xabar';
-        const res = await apiPost('/api/set-courier-commission', { initData, percent });
-        if (res.ok) {
-          msgEl.textContent = 'Saqlandi.';
-          msgEl.className = 'xabar ok';
-          loadCourierReport(isOwnerView);
-        } else {
-          msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-          msgEl.className = 'xabar err';
-        }
-      });
-    }
-
-    loadCourierReport(isOwnerView);
-  }
-
-  async function loadCourierReport(isOwnerView = true) {
-    const listEl = document.getElementById('crList');
-    const commissionInput = document.getElementById('crCommissionInput');
-    if (!listEl) return;
-    const res = await apiPost('/api/courier-report', { initData, period: courierReportState.period });
-    if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, () => loadCourierReport(isOwnerView)); return; }
-    if (!res.ok) {
-      listEl.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
-      return;
-    }
-    if (commissionInput && document.activeElement !== commissionInput) {
-      commissionInput.value = res.commissionPercent;
-    }
-    listEl.innerHTML = courierReportRowsHtml(res.report);
   }
 
   let orderHistoryState = { dateFrom: '', dateTo: '', employeeId: '', paymentType: '', orderType: '', page: 1 };
