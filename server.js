@@ -8531,7 +8531,33 @@ const server = http.createServer((req, res) => {
         if (tariff) tariffInfo = { id: tariff.id, name: tariff.name };
       }
 
-      return sendJSON(res, 200, { ok: true, profile: owner.profile || null, tariff: tariffInfo });
+      const profileOut = owner.profile ? Object.assign({}, owner.profile, { isSuperAdmin: userId === String(ADMIN_ID) }) : null;
+      return sendJSON(res, 200, { ok: true, profile: profileOut, tariff: tariffInfo });
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/api/super-admin-reset-reports') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      if (userId !== String(ADMIN_ID)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu amal faqat super adminga ruxsat etilgan.' });
+      }
+
+      const owners = loadOwners();
+      const owner = findOwner(owners, userId);
+      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Owner topilmadi.' });
+
+      owner.orders = [];
+      owner.expenses = [];
+      owner.zReports = [];
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true });
     });
     return;
   }
