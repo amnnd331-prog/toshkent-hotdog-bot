@@ -8018,7 +8018,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadOwnProfileAndRender() {
     const res = await apiPost('/api/my-profile', { initData });
     if (res.networkError) { renderNetworkErrorScreen(res.reason, loadOwnProfileAndRender); return; }
-    if (res.ok && res.profile) { applyBrandColor(res.profile.brandColor); renderOwnerHomeScreen(res.profile); }
+    if (res.ok && res.profile) {
+      applyBrandColor(res.profile.brandColor);
+      cashierState.tab = 'yaratish';
+      renderCashierScreen(res.profile.name, () => renderOwnerHomeScreen(res.profile));
+    }
     else { resetBrandColor(); renderProfileForm(res.ok ? res.profile : null); }
   }
 
