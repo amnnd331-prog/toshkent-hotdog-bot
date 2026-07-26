@@ -4128,7 +4128,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     bodyEl.innerHTML = myStatsBodyHtml(res.stats);
   }
 
-  const ORDER_TYPE_LABELS = { stol: 'Stolga', olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
+  const ORDER_TYPE_LABELS = { olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
   const PAYMENT_TYPE_LABELS = { naqd: 'Naqd', karta: 'Karta', dostavka_orqali: "Dostavka orqali" };
 
   function visiblePaymentTypeEntries(orderType) {
@@ -4146,7 +4146,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }
   }
 
-  let cashierState = { menu: [], cart: {}, orderType: 'stol', paymentType: 'naqd', tableNumber: '', tab: 'yaratish', lastOrderRequestId: null };
+  let cashierState = { menu: [], cart: {}, orderType: 'olib_ketish', paymentType: 'naqd', tab: 'yaratish', lastOrderRequestId: null };
 
   function cashierCartTotal() {
     return cashierState.menu.reduce((sum, m) => sum + (cashierState.cart[m.id] || 0) * m.price, 0);
@@ -4187,9 +4187,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
               <div class="type-opt ${cashierState.orderType === k ? 'selected' : ''}" data-order-type="${k}">${label}</div>
             `).join('')}
           </div>
-          <div id="tableNumberWrap" class="${cashierState.orderType === 'stol' ? '' : 'hidden'}">
-            <input type="text" id="tableNumberInput" placeholder="Stol raqami" value="${escapeHtml(cashierState.tableNumber)}" inputmode="numeric">
-          </div>
           <div class="type-row" id="paymentTypeRow">
             ${visiblePaymentTypeEntries(cashierState.orderType).map(([k, label]) => `
               <div class="type-opt ${cashierState.paymentType === k ? 'selected' : ''}" data-payment-type="${k}">${label}</div>
@@ -4225,9 +4222,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
       cashierState.paymentType = t;
       renderCashierScreen(restaurantName, onBack);
     });
-    const tableInput = document.getElementById('tableNumberInput');
-    if (tableInput) tableInput.addEventListener('input', (e) => { cashierState.tableNumber = e.target.value; });
-
     document.getElementById('sendOrderBtn').addEventListener('click', () => sendCashierOrder(restaurantName, onBack));
 
     attachShiftWidgetHandler();
@@ -4461,12 +4455,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
       msgEl.className = 'xabar err';
       return;
     }
-    if (cashierState.orderType === 'stol' && !cashierState.tableNumber.trim()) {
-      msgEl.textContent = 'Stol raqamini kiriting.';
-      msgEl.className = 'xabar err';
-      return;
-    }
-
     if (sendBtn) sendBtn.disabled = true;
 
     if (!cashierState.lastOrderRequestId) {
@@ -4479,7 +4467,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
       initData,
       items,
       orderType: cashierState.orderType,
-      tableNumber: cashierState.tableNumber,
       paymentType: cashierState.paymentType,
       requestId: cashierState.lastOrderRequestId
     });
@@ -4672,7 +4659,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   function orderCardHtml(order, role) {
-    const orderLabel = `${ORDER_TYPE_LABELS[order.orderType] || order.orderType}${order.tableNumber ? ' — stol ' + escapeHtml(order.tableNumber) : ''}`;
+    const orderLabel = `${ORDER_TYPE_LABELS[order.orderType] || order.orderType}`;
     const itemsHtml = order.items.map(it => `${escapeHtml(it.name)} x${it.qty}`).join('<br>');
 
     const allDirectStock = Array.isArray(order.items) && order.items.length > 0 &&
@@ -6980,7 +6967,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       return `
         <div class="owner-item">
           <div>
-            <div class="owner-id">${sana}${o.tableNumber ? ' · stol ' + escapeHtml(o.tableNumber) : ''}</div>
+            <div class="owner-id">${sana}</div>
             <div class="owner-username">${escapeHtml(ORDER_TYPE_LABELS[o.orderType] || o.orderType)} · ${escapeHtml(PAYMENT_TYPE_LABELS[o.paymentType] || o.paymentType)} · ${escapeHtml(orderHistoryStatusLabel(o.status))}</div>
             <div class="owner-expiry">${itemsText}</div>
             <div class="owner-expiry">Xodim: ${escapeHtml(o.createdByName || '—')}</div>
@@ -7020,7 +7007,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <div class="profile-row"><b>Buyurtma turi</b></div>
           <select id="ohOrderType">
             <option value="">Barcha turlar</option>
-            <option value="stol">Stolga</option>
             <option value="olib_ketish">Olib ketish</option>
             <option value="dostavka">Dostavka</option>
           </select>
@@ -7722,9 +7708,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
     bonusPoints: 0,
     bonusEnabled: false,
     cart: {},
-    orderType: 'stol',
+    orderType: 'olib_ketish',
     paymentType: 'naqd',
-    tableNumber: '',
     location: null,
     addressNote: '',
     extraPhone: '',
@@ -8155,9 +8140,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <div class="type-opt ${customerState.orderType === k ? 'selected' : ''}" data-corder-type="${k}">${label}</div>
         `).join('')}
       </div>
-      <div id="cTableWrap" class="${customerState.orderType === 'stol' ? '' : 'hidden'}">
-        <input type="text" id="cTableInput" placeholder="Stol raqami" value="${escapeHtml(customerState.tableNumber)}" inputmode="numeric">
-      </div>
       <div id="cDeliveryWrap" class="${customerState.orderType === 'dostavka' ? '' : 'hidden'}">
         ${customerState.addresses.length ? `
           <div class="cust-addr-chip-row" id="cAddrChipRow">
@@ -8515,9 +8497,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
         alert('Nusxalab bo\'lmadi, raqamni qo\'lda ko\'chiring.');
       }
     });
-    const tableInput = modalEl.querySelector('#cTableInput');
-    if (tableInput) tableInput.addEventListener('input', (e) => { customerState.tableNumber = e.target.value; });
-
     const locationBtn = modalEl.querySelector('#cLocationBtn');
     const locationStatusEl = modalEl.querySelector('#cLocationStatus');
     if (locationBtn) locationBtn.addEventListener('click', () => {
@@ -8866,7 +8845,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       <div class="order-card" data-order-card-id="${escapeHtml(o.id)}">
         <div class="order-top">
           <div>
-            <div class="order-type">${ORDER_TYPE_LABELS[o.orderType] || o.orderType}${o.tableNumber ? ' — stol ' + escapeHtml(o.tableNumber) : ''}</div>
+            <div class="order-type">${ORDER_TYPE_LABELS[o.orderType] || o.orderType}</div>
             <div class="order-time">${timeAgo(o.createdAt)}</div>
           </div>
           <span class="status-badge ${o.status}">${o.status === 'tayyor' && o.deliveredAt ? 'Yetkazildi' : (o.status === 'tayyor' && o.customerReceivedAt ? (o.customerReceivedAuto ? 'Avtomatik yopilgan' : 'Oldingiz') : (ORDER_STATUS_LABELS[o.status] || o.status))}</span>
@@ -9026,11 +9005,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
       msgEl.className = 'xabar err';
       return;
     }
-    if (customerState.orderType === 'stol' && !customerState.tableNumber.trim()) {
-      msgEl.textContent = 'Stol raqamini kiriting.';
-      msgEl.className = 'xabar err';
-      return;
-    }
     if (customerState.orderType === 'dostavka' && !customerState.location && !customerState.addressNote.trim()) {
       msgEl.textContent = 'Dostavka uchun joylashuvni aniqlang yoki manzilni yozib qoldiring.';
       msgEl.className = 'xabar err';
@@ -9055,7 +9029,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
       ownerId: customerState.ownerId,
       items,
       orderType: customerState.orderType,
-      tableNumber: customerState.tableNumber,
       paymentType: customerState.paymentType,
       promoId: customerState.promoId || null,
       usePoints: customerState.usePoints ? customerState.bonusPoints : 0,
