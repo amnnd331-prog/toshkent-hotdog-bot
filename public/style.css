@@ -1216,6 +1216,15 @@
   .profile-view { display: flex; gap: var(--sp-3); align-items: center; }
   .profile-view .info { flex: 1; min-width: 0; }
   .profile-row { font-size: var(--fs-body); margin-top: 4px; }
+  .cf-payment-row {
+    display: block;
+    font-family: inherit;
+    color: inherit;
+    padding: 8px 6px;
+    border-radius: var(--radius-sm);
+    transition: background 0.15s ease;
+  }
+  .cf-payment-row:hover, .cf-payment-row:active { background: var(--surface-1); }
   .profile-row b { color: var(--text-secondary); font-weight: 600; }
   .role-badge {
     display: inline-block;
