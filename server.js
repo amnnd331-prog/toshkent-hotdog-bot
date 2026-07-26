@@ -1039,7 +1039,10 @@ const WRITEOFF_REASONS = {
   muddati_otdi: "Muddati o'tdi / buzilgan",
   boshqa: 'Boshqa sabab'
 };
-const ORDER_TYPES = { olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
+const ORDER_TYPES = { olib_ketish: 'Olib ketish', dostavka: 'Dostavka', zal: 'Zal' };
+// "zal" turi faqat kassir/ega tomonidan (zalda o'tirgan mijoz uchun) yaratiladi —
+// mijozning botdagi buyurtma oynasida bu tur ko'rsatilmaydi (pastda CUSTOMER_ORDER_TYPES'ga qarang).
+const CUSTOMER_ORDER_TYPES = { olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
 const PAYMENT_TYPES = { naqd: 'Naqd', karta: 'Karta', click: 'Click', dostavka_orqali: 'Dostavka orqali' };
 
 function orderIncomeAmount(o) {
@@ -5647,7 +5650,7 @@ const server = http.createServer((req, res) => {
       if (!Array.isArray(items) || !items.length) {
         return sendJSON(res, 200, { ok: false, reason: 'Savat bo\'sh. Kamida bitta taom tanlang.' });
       }
-      if (!Object.prototype.hasOwnProperty.call(ORDER_TYPES, orderType)) {
+      if (!Object.prototype.hasOwnProperty.call(CUSTOMER_ORDER_TYPES, orderType)) {
         return sendJSON(res, 200, { ok: false, reason: 'Buyurtma turini tanlang.' });
       }
       if (!Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, paymentType)) {
