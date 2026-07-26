@@ -1417,6 +1417,24 @@ function orderCustomerContactLabel(order) {
   return lines.join('\n');
 }
 
+// Har bir buyurtma yakunlangach (mijoz oldi / kuryer yetkazdi / avtomatik
+// yopilgan bo'lsa ham) — mijozga yulduzcha bilan baholash so'raladi.
+// Uch joyda ham (dostavka, stol/olib ketish qo'lda, 2 soatlik avtomatik
+// yopilish) bir xil xabar yuborilishi uchun bitta umumiy funksiya.
+function sendOrderRatingRequest(owner, order) {
+  if (!order.customerId || order.customerRating) return;
+  const ratingKeyboard = {
+    inline_keyboard: [[
+      { text: '1⭐️', callback_data: `rate:${owner.id}:${order.id}:1` },
+      { text: '2⭐️', callback_data: `rate:${owner.id}:${order.id}:2` },
+      { text: '3⭐️', callback_data: `rate:${owner.id}:${order.id}:3` },
+      { text: '4⭐️', callback_data: `rate:${owner.id}:${order.id}:4` },
+      { text: '5⭐️', callback_data: `rate:${owner.id}:${order.id}:5` }
+    ]]
+  };
+  sendMessage(order.customerId, '✅ Buyurtmangiz uchun rahmat!\n\nXizmatimizni qanday baholaysiz?', ratingKeyboard);
+}
+
 function staffDisplayName(staff) {
   if (!staff) return null;
   const profile = findProfile(staff.id);
@@ -3429,6 +3447,7 @@ setInterval(() => {
         order.customerReceivedAt = new Date().toISOString();
         order.customerReceivedAuto = true;
         changed = true;
+        sendOrderRatingRequest(owner, order);
       }
     }
   }
@@ -6588,6 +6607,10 @@ const server = http.createServer((req, res) => {
       logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'mijoz_oldi', orderId: order.id, note: `${fmtNum(order.total)} so'm — mijoz oldi deb belgilandi` });
       saveOwners(owners);
 
+      // Dostavka buyurtmalarida (/api/deliver-order) qilingani kabi — mijoz
+      // buyurtmasini olgach, xizmatni yulduzcha bilan baholashi so'raladi.
+      sendOrderRatingRequest(ctx.owner, order);
+
       return sendJSON(res, 200, { ok: true, order });
     });
     return;
@@ -6623,20 +6646,7 @@ const server = http.createServer((req, res) => {
       logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'yetkazdi', orderId: order.id, note: `${fmtNum(order.total)} so'm — yetkazib berildi` });
       saveOwners(owners);
 
-      if (order.customerId) {
-        const ratingKeyboard = {
-          inline_keyboard: [[
-            { text: '1⭐️', callback_data: `rate:${ctx.owner.id}:${order.id}:1` },
-            { text: '2⭐️', callback_data: `rate:${ctx.owner.id}:${order.id}:2` },
-            { text: '3⭐️', callback_data: `rate:${ctx.owner.id}:${order.id}:3` },
-            { text: '4⭐️', callback_data: `rate:${ctx.owner.id}:${order.id}:4` },
-            { text: '5⭐️', callback_data: `rate:${ctx.owner.id}:${order.id}:5` }
-          ]]
-        };
-        sendMessage(order.customerId,
-          '✅ Buyurtmangiz yetkazib berildi!\n\nXizmatimizni qanday baholaysiz?',
-          ratingKeyboard);
-      }
+      sendOrderRatingRequest(ctx.owner, order);
 
       return sendJSON(res, 200, { ok: true, order });
     });
