@@ -5672,7 +5672,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/customer-order') {
     readBody(req, async (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const { initData, ownerId, items, orderType, paymentType, promoId, usePoints, location, addressNote, extraPhone, requestId } = payload;
+      const { initData, ownerId, items, orderType, paymentType, promoId, usePoints, location, addressNote, extraPhone, comment, requestId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -5731,6 +5731,7 @@ const server = http.createServer((req, res) => {
       }
       const addressNoteFinal = orderType === 'dostavka' ? String(addressNote || '').trim().slice(0, 300) : null;
       const extraPhoneFinal = orderType === 'dostavka' ? String(extraPhone || '').trim().slice(0, 30) : null;
+      const commentFinal = String(comment || '').trim().slice(0, 300) || null;
 
       const menu = (owner.menu || []).filter(m => m.available !== false);
       const combosAvailable = (owner.combos || []).filter(c => c.available !== false);
@@ -5853,6 +5854,7 @@ const server = http.createServer((req, res) => {
         location: deliveryLocation,
         addressNote: addressNoteFinal,
         extraPhone: extraPhoneFinal,
+        comment: commentFinal,
         paymentType,
         status: 'yangi',
 
@@ -5885,8 +5887,9 @@ const server = http.createServer((req, res) => {
           'kassir yoki oshxona egasi tekshirib tasdiqlagach, buyurtmangiz oshxonaga yuboriladi.');
       } else {
         const itemsText = orderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
+        const commentLine = order.comment ? `\n💬 Izoh: ${escapeHtmlServer(order.comment)}` : '';
         const notifyText = `🆕 <b>Yangi mijoz buyurtmasi</b> (${ORDER_TYPES[orderType]})\n` +
-          `${orderCustomerContactLabel(order)}\n${itemsText}\n\nJami: ${fmtNum(total)} so'm\nTo'lov: ${PAYMENT_TYPES[paymentType]}`;
+          `${orderCustomerContactLabel(order)}\n${itemsText}\n\nJami: ${fmtNum(total)} so'm\nTo'lov: ${PAYMENT_TYPES[paymentType]}${commentLine}`;
         const notifyTargets = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'oshpaz') || staffHasRole(s, 'kassir')).map(s => s.id))];
         await notifyStaffList(owner, notifyTargets, notifyText, `Buyurtma #${order.id} (mijoz)`, 'newOrder');
         notifyKitchenGroup(owner, order, orderCustomerContactLabel(order));
