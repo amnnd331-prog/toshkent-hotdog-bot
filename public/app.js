@@ -7707,6 +7707,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     addresses: [],
     bonusPoints: 0,
     bonusEnabled: false,
+    personRegistered: false,
     cart: {},
     orderType: 'olib_ketish',
     paymentType: 'naqd',
@@ -8331,6 +8332,14 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
   function openCustomerCheckoutModal() {
     if (!customerCartQty()) return;
+    if (!customerState.personRegistered) {
+      renderPersonRegistrationScreen(() => {
+        customerState.personRegistered = true;
+        renderCustomerMenuTab();
+        openCustomerCheckoutModal();
+      });
+      return;
+    }
     const fabBar = document.getElementById('cCartFab');
     if (fabBar) fabBar.classList.add('hidden');
     const overlay = document.createElement('div');
@@ -9385,10 +9394,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }
     applyBrandColor(verifyRes.restaurant.brandColor);
     setAppHeader(verifyRes.restaurant.logoUrl, verifyRes.restaurant.name);
-    if (!verifyRes.personRegistered) {
-      renderPersonRegistrationScreen(() => renderCustomerApp(ownerId));
-      return;
-    }
     customerState.ownerId = ownerId;
     customerState.restaurant = verifyRes.restaurant;
     customerState.favorites = verifyRes.customer.favorites || [];
@@ -9396,6 +9401,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     customerState.bonusPoints = verifyRes.customer.bonusPoints || 0;
     customerState.bonusEnabled = !!verifyRes.bonusEnabled;
     customerState.cardOnlyRestricted = !!verifyRes.customer.cardOnlyRestricted;
+    customerState.personRegistered = !!verifyRes.personRegistered;
 
     const menuRes = await apiPost('/api/customer-menu-list', { initData, ownerId });
     customerState.menu = menuRes.ok ? menuRes.menu : [];
