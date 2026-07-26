@@ -6970,6 +6970,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <div class="staff-hint" style="margin-top:8px;">Lavozim:</div>
           <div class="staff-role-grid">
             <label class="check-label"><input type="checkbox" class="staffRoleAddCheckbox" value="kassir" checked> Kassir</label>
+            <label class="check-label"><input type="checkbox" class="staffRoleAddCheckbox" value="egasi"> Egasi (hamkor — to'liq huquq)</label>
           </div>
           <select id="staffBranchInput">
             <option value="">— Markaziy (filialsiz) —</option>
@@ -8416,7 +8417,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           ${customerState.location ? icon('check-circle', 'icon-xs icon-success') + ' Joylashuv aniqlandi (qayta aniqlash)' : icon('pin', 'icon-xs') + ' Joylashuvni aniqlash'}
         </button>
         <div id="cLocationStatus" class="xabar" style="margin-bottom:6px;"></div>
-        <textarea id="cAddressNoteInput" placeholder="Manzilni tushuntiring (mo'ljal, qavat, kod va h.k.) - kuryer oson topishi uchun" rows="2">${escapeHtml(customerState.addressNote)}</textarea>
+        <textarea id="cAddressNoteInput" placeholder="Manzilni tushuntiring (orientir, qavat, kod va h.k.) - kuryer oson topishi uchun" rows="2">${escapeHtml(customerState.addressNote)}</textarea>
         <input type="tel" id="cExtraPhoneInput" class="phone-input-lg" placeholder="Qo'shimcha tel. raqam (majburiy)" value="${escapeHtml(customerState.extraPhone)}" inputmode="tel">
       </div>
       <div class="type-row" id="cPaymentTypeRow">
@@ -8829,7 +8830,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           ${formLoc.current ? icon('check-circle', 'icon-xs icon-success') + ' Joylashuv aniqlandi (qayta aniqlash)' : icon('pin', 'icon-xs') + ' Joylashuvni aniqlash'}
         </button>
         <div id="custAddrLocStatus" class="xabar" style="margin-bottom:6px;"></div>
-        <textarea id="custAddrNoteInput" placeholder="Manzilni tushuntiring (mo'ljal, qavat, kod va h.k.)" rows="2" style="margin-bottom:8px;">${escapeHtml(existing ? (existing.addressNote || '') : '')}</textarea>
+        <textarea id="custAddrNoteInput" placeholder="Manzilni tushuntiring (orientir, qavat, kod va h.k.)" rows="2" style="margin-bottom:8px;">${escapeHtml(existing ? (existing.addressNote || '') : '')}</textarea>
         <input type="tel" id="custAddrPhoneInput" class="phone-input-lg" placeholder="Qo'shimcha tel. raqam" value="${escapeHtml(existing ? (existing.extraPhone || '') : '')}" inputmode="tel" style="margin-bottom:8px;">
         <div class="xabar" id="custAddrFormMsg"></div>
         <div class="btn-row">
