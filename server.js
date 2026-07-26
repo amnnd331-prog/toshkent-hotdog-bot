@@ -5829,6 +5829,152 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Mavjud buyurtmani tahrirlash (kassir yoki egasi): mahsulot qo'shish/olib tashlash/
+  // miqdorini o'zgartirish — mijoz qo'shimcha narsa xohlasa yangi buyurtma ochmasdan,
+  // shu buyurtmani tahrirlab qo'yish uchun. Faqat hali oshxonaga "Tayyor" bo'lmagan
+  // (yangi / tayyorlanmoqda) buyurtmalarni tahrirlash mumkin.
+  if (req.method === 'POST' && req.url === '/api/edit-order') {
+    readBody(req, async (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, orderId, items, orderType, paymentType } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const ctx = resolveOwnerContext(owners, userId);
+      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
+      if (!ctxHasAnyRole(ctx, ['kassir', 'egasi'])) {
+        return sendJSON(res, 200, { ok: false, reason: 'Faqat kassir yoki ega buyurtmani tahrirlashi mumkin' });
+      }
+      if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendJSON(res, 200, featureBlockedResult('orders-manage'));
+
+      const order = (ctx.owner.orders || []).find(o => o.id === orderId);
+      if (!order) return sendJSON(res, 200, { ok: false, reason: 'Buyurtma topilmadi.' });
+
+      if (order.paymentProofStatus === 'kutilmoqda') {
+        return sendJSON(res, 200, { ok: false, reason: 'To\'lovi hali tasdiqlanmagan buyurtmani tahrirlab bo\'lmaydi.' });
+      }
+      if (order.status !== 'yangi' && order.status !== 'tayyorlanmoqda') {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu buyurtma allaqachon tayyor yoki yakunlangan — endi tahrirlab bo\'lmaydi.' });
+      }
+
+      if (!Array.isArray(items) || !items.length) {
+        return sendJSON(res, 200, { ok: false, reason: 'Savat bo\'sh. Kamida bitta taom qoldiring.' });
+      }
+
+      const finalOrderType = Object.prototype.hasOwnProperty.call(ORDER_TYPES, orderType) ? orderType : order.orderType;
+      const finalPaymentType = Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, paymentType) ? paymentType : order.paymentType;
+      if (finalOrderType === 'dostavka' && finalPaymentType === 'naqd') {
+        return sendJSON(res, 200, { ok: false, reason: 'Dostavka buyurtmalarida naqd to\'lov mavjud emas. Karta yoki dostavka orqali to\'lovni tanlang.' });
+      }
+      if (finalOrderType !== 'dostavka' && finalPaymentType === 'dostavka_orqali') {
+        return sendJSON(res, 200, { ok: false, reason: '"Dostavka orqali" to\'lovi faqat Dostavka buyurtmalarida mavjud.' });
+      }
+
+      const menu = ctx.owner.menu || [];
+      const combosAvailable = ctx.owner.combos || [];
+      const newOrderItems = [];
+      for (const it of items) {
+        const qty = parseInt(it.qty, 10);
+        if (!Number.isInteger(qty) || qty <= 0) return sendJSON(res, 200, { ok: false, reason: 'Miqdor noto\'g\'ri.' });
+        if (it.isCombo) {
+          const combo = combosAvailable.find(c => c.id === it.id);
+          if (!combo) return sendJSON(res, 200, { ok: false, reason: 'Menyuda mavjud bo\'lmagan combo tanlangan.' });
+          newOrderItems.push({ id: combo.id, name: combo.name, price: combo.price, qty, isCombo: true });
+          continue;
+        }
+        const menuItem = menu.find(m => m.id === it.id);
+        if (!menuItem) return sendJSON(res, 200, { ok: false, reason: 'Menyuda mavjud bo\'lmagan taom tanlangan.' });
+        newOrderItems.push({ id: menuItem.id, name: menuItem.name, price: menuItem.price, qty, directStockId: menuItem.directStockId || null });
+      }
+      const newTotal = newOrderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
+
+      if (!ctx.owner.stock) ctx.owner.stock = [];
+
+      // Har bir mahsulot ro'yxati uchun kerakli ombor miqdorlarini hisoblaydi
+      // (create-order'dagi checkStockAvailability bilan bir xil mantiq).
+      function stockNeedsForItems(orderItems) {
+        const needed = new Map();
+        for (const it of orderItems) {
+          if (it.isCombo) {
+            const combo = findCombo(ctx.owner, it.id);
+            if (!combo) continue;
+            for (const need of comboStockNeeds(ctx.owner, combo, it.qty)) {
+              needed.set(need.stockId, Math.round(((needed.get(need.stockId) || 0) + need.qty) * 1000) / 1000);
+            }
+            continue;
+          }
+          const menuItem = menu.find(m => m.id === it.id);
+          if (menuItem && menuItem.directStockId) {
+            needed.set(menuItem.directStockId, Math.round(((needed.get(menuItem.directStockId) || 0) + it.qty) * 1000) / 1000);
+            continue;
+          }
+          const recipe = (menuItem && Array.isArray(menuItem.recipe)) ? menuItem.recipe : [];
+          for (const ing of recipe) {
+            const consumeQty = Math.round(ing.qty * it.qty * 1000) / 1000;
+            needed.set(ing.stockId, Math.round(((needed.get(ing.stockId) || 0) + consumeQty) * 1000) / 1000);
+          }
+        }
+        return needed;
+      }
+
+      // Eski buyurtma allaqachon ombordan yechilgan edi — shuning uchun faqat
+      // ESKI va YANGI ehtiyoj o'rtasidagi FARQNI (delta) ombordan yechamiz yoki qaytaramiz.
+      const oldNeeded = stockNeedsForItems(order.items || []);
+      const newNeeded = stockNeedsForItems(newOrderItems);
+      const stockIds = new Set([...oldNeeded.keys(), ...newNeeded.keys()]);
+      const netDeltas = new Map();
+      for (const id of stockIds) {
+        const delta = Math.round(((newNeeded.get(id) || 0) - (oldNeeded.get(id) || 0)) * 1000) / 1000;
+        if (delta !== 0) netDeltas.set(id, delta);
+      }
+
+      for (const [stockId, delta] of netDeltas) {
+        if (delta <= 0) continue;
+        const stockItem = findStockItem(ctx.owner, stockId);
+        if (!stockItem) continue;
+        if (stockItem.qty < delta) {
+          return sendJSON(res, 200, { ok: false, reason: `Omborda "${stockItem.name}" yetarli emas (kerak: ${delta} ${stockItem.unit}, mavjud: ${stockItem.qty} ${stockItem.unit}).` });
+        }
+      }
+
+      for (const [stockId, delta] of netDeltas) {
+        const stockItem = findStockItem(ctx.owner, stockId);
+        if (!stockItem) continue;
+        stockItem.qty = Math.max(0, Math.round((stockItem.qty - delta) * 1000) / 1000);
+        addStockMovement(ctx.owner, {
+          stockId: stockItem.id, stockName: stockItem.name, type: delta > 0 ? 'chiqim' : 'kirim',
+          qty: Math.abs(delta), unit: stockItem.unit,
+          note: `Buyurtma tahrirlandi: #${order.orderNumber || order.id}`,
+          userId
+        });
+        checkLowStockAlert(ctx.owner, stockItem, userId);
+      }
+
+      const oldItemsSummary = (order.items || []).map(it => `${it.name} x${it.qty}`).join(', ') || '—';
+      order.items = newOrderItems;
+      order.total = newTotal;
+      order.orderType = finalOrderType;
+      order.paymentType = finalPaymentType;
+      order.editedAt = new Date().toISOString();
+      order.editedBy = userId;
+      if (finalOrderType === 'dostavka' && finalPaymentType === 'dostavka_orqali') order.courierCashCollected = false;
+
+      logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'buyurtma_tahrirlandi', orderId: order.id, note: `Yangi: ${fmtNum(newTotal)} so'm (avvalgi: ${oldItemsSummary})` });
+      saveOwners(owners);
+
+      const itemsText = newOrderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
+      const notifyText = `✏️ <b>Buyurtma tahrirlandi</b> (${ORDER_TYPES[finalOrderType]})\n${itemsText}\n\nJami: ${fmtNum(newTotal)} so'm\nTo'lov: ${PAYMENT_TYPES[finalPaymentType]}`;
+      const notifyTargets = [ctx.owner.id, ...((ctx.owner.staff || []).filter(s => staffHasRole(s, 'oshpaz')).map(s => s.id))];
+      await notifyStaffList(ctx.owner, notifyTargets, notifyText, `Buyurtma #${order.id} tahrirlandi`, 'newOrder');
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, order });
+    });
+    return;
+  }
+
   if (req.method === 'POST' && req.url === '/api/orders-list') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
