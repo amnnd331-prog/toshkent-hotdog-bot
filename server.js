@@ -8552,12 +8552,14 @@ const server = http.createServer((req, res) => {
       const owner = findOwner(owners, userId);
       if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Owner topilmadi.' });
 
+      const safetyFile = savePreRestoreSafetySnapshot(userId);
+
       owner.orders = [];
       owner.expenses = [];
       owner.zReports = [];
       saveOwners(owners);
 
-      return sendJSON(res, 200, { ok: true });
+      return sendJSON(res, 200, { ok: true, safetyFile });
     });
     return;
   }
@@ -9653,7 +9655,7 @@ const server = http.createServer((req, res) => {
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
-      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin zaxira yuklab ola oladi' });
+      if (userId !== String(ADMIN_ID)) return sendJSON(res, 200, { ok: false, reason: 'Faqat super admin zaxira yuklab ola oladi' });
 
       let snapshot;
       try {
@@ -9690,7 +9692,7 @@ const server = http.createServer((req, res) => {
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
-      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin bazani tiklay oladi' });
+      if (userId !== String(ADMIN_ID)) return sendJSON(res, 200, { ok: false, reason: 'Faqat super admin bazani tiklay oladi' });
 
       const rawContent = payload.content;
       if (!rawContent || typeof rawContent !== 'string') {
@@ -9735,7 +9737,7 @@ const server = http.createServer((req, res) => {
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
-      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin bazani tiklay oladi' });
+      if (userId !== String(ADMIN_ID)) return sendJSON(res, 200, { ok: false, reason: 'Faqat super admin bazani tiklay oladi' });
 
       const { confirmToken, confirmText, content } = payload;
       if ((confirmText || '').trim().toUpperCase() !== 'TASDIQLAYMAN') {
