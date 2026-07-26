@@ -1273,6 +1273,20 @@
   .qty-controls button:hover { background: var(--brand-primary-dark); }
   .qty-controls .qty-val { min-width: 22px; text-align: center; font-weight: 600; }
 
+  .price-variant-list { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+  .price-variant-row {
+    display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2);
+    background: var(--surface-1); border-radius: var(--radius-sm); padding: 6px 8px;
+  }
+  .price-variant-label { font-size: var(--fs-sm); font-weight: 600; color: var(--text-primary); }
+  .price-variant-row .qty-controls { gap: 6px; }
+  .price-variant-row .qty-controls button {
+    width: 30px; height: 30px; font-size: 15px; border-radius: var(--radius-sm);
+  }
+  .price-variant-row .qty-add-btn {
+    width: 30px; height: 30px; font-size: 15px; border-radius: var(--radius-sm);
+  }
+
   .cart-fab-bar {
     position: fixed;
     left: 0; right: 0; bottom: 0;
