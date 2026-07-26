@@ -7635,8 +7635,12 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <div class="bosh">Barcha savdo, xarajat va Z-hisobotlarni butunlay o'chirib, hisobotlarni yangidan boshlaydi. Bu amalni qaytarib bo'lmaydi.</div>
           <button class="btn xavfli" id="zrDeleteAllBtn" style="margin-top:10px; background:#d33;">Hammasini o'chirish</button>
           <div class="xabar" id="zrDeleteAllMsg"></div>
-          <button class="btn ikkinchi" id="zrBackupBtn" style="margin-top:10px;">${icon('download', 'icon-xs')} DB zaxira (yuklash / tiklash)</button>
         </div>` : ''}
+        <div class="kartochka" style="margin-top:10px;">
+          <h2>${icon('download', 'icon-xs')} Zaxira nusxa</h2>
+          <div class="bosh">Butun bazani faylga yuklab olish yoki avvalgi faylni o'qib tiklash.</div>
+          <button class="btn ikkinchi" id="zrBackupBtn" style="margin-top:10px;">${icon('download', 'icon-xs')} DB zaxira (yuklash / tiklash)</button>
+        </div>
         <div class="kartochka chart-card">
           <h2>${icon('trending-up', 'icon-xs')} Sof foyda dinamikasi</h2>
           <div id="zrChart"><div class="bosh">Yuklanmoqda...</div></div>
