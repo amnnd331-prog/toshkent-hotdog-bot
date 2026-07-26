@@ -6917,6 +6917,13 @@ const server = http.createServer((req, res) => {
     const income = kassaIncome + dostavkaIncome;
     const expense = expenses.reduce((sum, e) => sum + (e.amount || 0), 0);
 
+    const paymentBreakdown = {};
+    for (const key of Object.keys(PAYMENT_TYPES)) paymentBreakdown[key] = 0;
+    for (const o of orders) {
+      const pt = Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, o.paymentType) ? o.paymentType : 'naqd';
+      paymentBreakdown[pt] = (paymentBreakdown[pt] || 0) + orderIncomeAmount(o);
+    }
+
     const byCategory = {};
     for (const key of Object.keys(EXPENSE_CATEGORIES)) byCategory[key] = 0;
     for (const e of expenses) {
@@ -6926,7 +6933,7 @@ const server = http.createServer((req, res) => {
 
     return {
       income, expense, net: income - expense, orderCount: orders.length, byCategory,
-      kassaIncome, dostavkaIncome, dostavkaOrderCount: dostavkaOrders.length
+      kassaIncome, dostavkaIncome, dostavkaOrderCount: dostavkaOrders.length, paymentBreakdown
     };
   }
 
