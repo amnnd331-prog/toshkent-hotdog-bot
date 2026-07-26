@@ -1063,7 +1063,6 @@ const PAYMENT_TYPES = { naqd: 'Naqd', karta: 'Karta', dostavka_orqali: 'Dostavka
 function orderIncomeAmount(o) {
   if (o.status === 'bekor_qilindi') return 0;
   if (o.paymentProofStatus === 'kutilmoqda' || o.paymentProofStatus === 'rad_etildi') return 0;
-  if (o.paymentType === 'dostavka_orqali' && o.courierCashCollected === false) return 0;
   return o.total || 0;
 }
 
@@ -5562,7 +5561,6 @@ const server = http.createServer((req, res) => {
         paymentConfirmMethod: paymentType === 'karta' ? 'skrinshot' : null,
         paymentProofFileId: null,
 
-        courierCashCollected: (orderType === 'dostavka' && paymentType === 'dostavka_orqali') ? false : true,
         branchId: null,
         customerId: userId,
         customerName: customerDisplayName(userId, check.user),
@@ -5839,7 +5837,6 @@ const server = http.createServer((req, res) => {
         status: 'yangi',
         branchId: orderBranchId,
 
-        courierCashCollected: (orderType === 'dostavka' && paymentType === 'dostavka_orqali') ? false : true,
         createdAt: new Date().toISOString(),
         createdBy: userId
       };
@@ -5995,7 +5992,6 @@ const server = http.createServer((req, res) => {
       order.paymentType = finalPaymentType;
       order.editedAt = new Date().toISOString();
       order.editedBy = userId;
-      if (finalOrderType === 'dostavka' && finalPaymentType === 'dostavka_orqali') order.courierCashCollected = false;
 
       logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'buyurtma_tahrirlandi', orderId: order.id, note: `Yangi: ${fmtNum(newTotal)} so'm (avvalgi: ${oldItemsSummary})` });
       saveOwners(owners);
@@ -7522,25 +7518,17 @@ const server = http.createServer((req, res) => {
         const mine = deliveredOrders.filter(o => String(o.deliveredBy) === String(c.id));
         const totalAmount = mine.reduce((sum, o) => sum + (o.total || 0), 0);
 
-        const pendingAmount = mine
-          .filter(o => o.paymentType === 'dostavka_orqali' && o.courierCashCollected === false)
-          .reduce((sum, o) => sum + (o.total || 0), 0);
         return {
           id: c.id,
           username: c.username || null,
           orderCount: mine.length,
           totalAmount,
-          pendingAmount,
           commission: Math.round(totalAmount * commissionPercent / 100)
         };
       });
       report.sort((a, b) => b.orderCount - a.orderCount);
 
-      const recentMovements = (owner.cashMovements || [])
-        .filter(m => m.type === 'kuryer_kassaga_qaytarish')
-        .slice(0, 20);
-
-      return sendJSON(res, 200, { ok: true, report, commissionPercent, recentMovements });
+      return sendJSON(res, 200, { ok: true, report, commissionPercent });
     });
     return;
   }
@@ -7566,59 +7554,6 @@ const server = http.createServer((req, res) => {
       saveOwners(owners);
 
       return sendJSON(res, 200, { ok: true, commissionPercent: p });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/courier-collect-cash') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const { initData, courierId } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
-      if (!isOwnerAccessValid(ctx.owner) || ctx.role !== 'egasi') return sendJSON(res, 200, { ok: false, reason: 'Bu amalni faqat oshxona egasi bajara oladi' });
-      const owner = ctx.owner;
-      if (!ownerCanUseFeature(owner, 'courier-report')) return sendJSON(res, 200, featureBlockedResult('courier-report'));
-
-      if (!courierId) return sendJSON(res, 200, { ok: false, reason: 'Kuryer tanlanmagan.' });
-
-      let collected = 0;
-      let count = 0;
-      for (const o of (owner.orders || [])) {
-        if (o.orderType === 'dostavka' && o.paymentType === 'dostavka_orqali' &&
-            String(o.deliveredBy) === String(courierId) && o.courierCashCollected === false) {
-          o.courierCashCollected = true;
-          o.courierCashCollectedAt = new Date().toISOString();
-          collected += (o.total || 0);
-          count++;
-        }
-      }
-
-      if (count > 0) {
-        if (!Array.isArray(owner.cashMovements)) owner.cashMovements = [];
-        const courierStaff = (owner.staff || []).find(s => String(s.id) === String(courierId));
-        owner.cashMovements.unshift({
-          id: crypto.randomBytes(6).toString('hex'),
-          type: 'kuryer_kassaga_qaytarish',
-          courierId: String(courierId),
-          courierUsername: (courierStaff && courierStaff.username) || null,
-          amount: collected,
-          orderCount: count,
-          confirmedBy: userId,
-          createdAt: new Date().toISOString()
-        });
-
-        if (owner.cashMovements.length > 200) owner.cashMovements.length = 200;
-      }
-
-      saveOwners(owners);
-
-      return sendJSON(res, 200, { ok: true, collected, count });
     });
     return;
   }
