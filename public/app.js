@@ -86,7 +86,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   const ADMIN_TARGET_OWNER_ENDPOINTS = [
     '/api/menu-list', '/api/menu-add', '/api/menu-update', '/api/menu-remove', '/api/menu-set-recipe',
     '/api/category-list', '/api/category-add', '/api/category-remove', '/api/category-reorder',
-    '/api/stock-list', '/api/stock-add', '/api/stock-remove', '/api/stock-movements',
+    '/api/stock-list', '/api/stock-add', '/api/stock-remove', '/api/stock-movements', '/api/stock-writeoff',
     '/api/branch-list'
   ];
   async function apiPost(url, body) {
@@ -5791,6 +5791,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
             ${levelPct !== null ? `<div class="stock-level-track"><div class="stock-level-fill ${low ? 'low' : ''}" style="width:${levelPct}%;"></div></div>` : ''}
           </div>
           <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
+            <button data-writeoff-stock-id="${escapeHtml(s.id)}" class="row-action-btn brand">🗑 Spisaniya</button>
             ${canTransfer ? `<button data-transfer-stock-id="${escapeHtml(s.id)}" class="row-action-btn brand">Filialga o'tkazish</button>` : ''}
             ${canRemove ? `<button data-remove-stock-id="${escapeHtml(s.id)}" class="row-action-btn danger">O'chirish</button>` : ''}
           </div>
@@ -5949,6 +5950,13 @@ const tg = window.Telegram && window.Telegram.WebApp;
         loadStockAndRender();
       });
     });
+    el.querySelectorAll('[data-writeoff-stock-id]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.getAttribute('data-writeoff-stock-id');
+        const item = stockState.stock.find(s => s.id === id);
+        if (item) openWriteoffForm(item);
+      });
+    });
     el.querySelectorAll('[data-transfer-stock-id]').forEach(btn => {
       btn.addEventListener('click', () => {
         const id = btn.getAttribute('data-transfer-stock-id');
@@ -5999,6 +6007,88 @@ const tg = window.Telegram && window.Telegram.WebApp;
         loadStockAndRender();
         loadMovementsAndRender();
       } else {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    };
+  }
+
+  // Backenddagi WRITEOFF_REASONS bilan bir xil (server.js) — katlet kuysa,
+  // non qotib qolsa yoki yirtilsa kabi holatlarda spisaniya sababini tanlash uchun.
+  const WRITEOFF_REASON_LABELS = {
+    kuydi: '🔥 Kuydi',
+    qotib_qoldi: '🧊 Qotib qoldi',
+    yirtildi: '💔 Yirtildi / shikastlandi',
+    tushib_ketdi: "🫗 Tushib ketdi / to'kildi",
+    muddati_otdi: "⏳ Muddati o'tdi / buzilgan",
+    boshqa: '✏️ Boshqa sabab'
+  };
+
+  function openWriteoffForm(item) {
+    let selectedReason = null;
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay';
+    overlay.innerHTML = `
+      <div class="modal" style="max-width:380px;">
+        <h3>🗑 Spisaniya qilish</h3>
+        <p>${escapeHtml(item.name)} — omborda: ${item.qty} ${escapeHtml(item.unit)}</p>
+        <input type="text" id="writeoffQtyInput" placeholder="Miqdor (${escapeHtml(item.unit)})" inputmode="decimal">
+        <div class="bosh" style="margin:8px 0 4px;text-align:left;">Sababi:</div>
+        <div class="type-row" id="writeoffReasonRow" style="flex-wrap:wrap;">
+          ${Object.entries(WRITEOFF_REASON_LABELS).map(([k, label]) => `
+            <div class="type-opt" data-writeoff-reason="${k}">${escapeHtml(label)}</div>
+          `).join('')}
+        </div>
+        <input type="text" id="writeoffNoteInput" placeholder="Izoh (ixtiyoriy, 'Boshqa sabab'da shart)" style="margin-top:8px;">
+        <div class="xabar" id="writeoffMsg"></div>
+        <div class="btn-row">
+          <button class="btn ikkinchi" id="writeoffCancelBtn">Bekor qilish</button>
+          <button class="btn" id="writeoffSubmitBtn">Spisaniya qilish</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    document.getElementById('writeoffReasonRow').addEventListener('click', (e) => {
+      const opt = e.target.closest('[data-writeoff-reason]');
+      if (!opt) return;
+      selectedReason = opt.getAttribute('data-writeoff-reason');
+      overlay.querySelectorAll('[data-writeoff-reason]').forEach(el => {
+        el.classList.toggle('selected', el.getAttribute('data-writeoff-reason') === selectedReason);
+      });
+    });
+
+    document.getElementById('writeoffCancelBtn').onclick = () => overlay.remove();
+    document.getElementById('writeoffSubmitBtn').onclick = async () => {
+      const qty = document.getElementById('writeoffQtyInput').value.trim();
+      const note = document.getElementById('writeoffNoteInput').value.trim();
+      const msgEl = document.getElementById('writeoffMsg');
+      if (!qty || !Number.isFinite(Number(qty)) || Number(qty) <= 0) {
+        msgEl.textContent = 'To\'g\'ri miqdor kiriting.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      if (!selectedReason) {
+        msgEl.textContent = 'Spisaniya sababini tanlang.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      if (selectedReason === 'boshqa' && !note) {
+        msgEl.textContent = '"Boshqa sabab" tanlansa, izoh yozish shart.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      msgEl.textContent = 'Yuborilmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/stock-writeoff', {
+        initData, id: item.id, qty, reason: selectedReason, note, branchId: currentStockBranchId
+      });
+      if (res.ok) {
+        overlay.remove();
+        loadStockAndRender();
+        loadMovementsAndRender();
+      } else {
+        handleFeatureBlocked(res);
         msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
         msgEl.className = 'xabar err';
       }
