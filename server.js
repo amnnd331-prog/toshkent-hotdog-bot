@@ -7387,6 +7387,13 @@ const server = http.createServer((req, res) => {
       paymentBreakdown[pt] = (paymentBreakdown[pt] || 0) + orderIncomeAmount(o);
     }
 
+    const kassaBreakdown = {};
+    for (const key of Object.keys(PAYMENT_TYPES)) kassaBreakdown[key] = 0;
+    for (const o of kassaOrders) {
+      const pt = Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, o.paymentType) ? o.paymentType : 'naqd';
+      kassaBreakdown[pt] = (kassaBreakdown[pt] || 0) + orderIncomeAmount(o);
+    }
+
     const byCategory = {};
     for (const key of Object.keys(EXPENSE_CATEGORIES)) byCategory[key] = 0;
     for (const e of expenses) {
@@ -7396,7 +7403,7 @@ const server = http.createServer((req, res) => {
 
     return {
       income, expense, net: income - expense, orderCount: orders.length, byCategory,
-      kassaIncome, dostavkaIncome, dostavkaOrderCount: dostavkaOrders.length, paymentBreakdown
+      kassaIncome, dostavkaIncome, dostavkaOrderCount: dostavkaOrders.length, paymentBreakdown, kassaBreakdown
     };
   }
 
@@ -7831,6 +7838,13 @@ const server = http.createServer((req, res) => {
       paymentBreakdown[pt] = (paymentBreakdown[pt] || 0) + orderIncomeAmount(o);
     }
 
+    const kassaBreakdown = {};
+    for (const key of Object.keys(PAYMENT_TYPES)) kassaBreakdown[key] = 0;
+    for (const o of kassaOrders) {
+      const pt = Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, o.paymentType) ? o.paymentType : 'naqd';
+      kassaBreakdown[pt] = (kassaBreakdown[pt] || 0) + orderIncomeAmount(o);
+    }
+
     const expenseByCategory = {};
     for (const key of Object.keys(EXPENSE_CATEGORIES)) expenseByCategory[key] = 0;
     for (const e of expenses) {
@@ -7842,7 +7856,7 @@ const server = http.createServer((req, res) => {
     return {
       date: dateKey,
       income, kassaIncome, dostavkaIncome, orderCount: orders.length,
-      paymentBreakdown, expense, expenseByCategory, net: income - expense
+      paymentBreakdown, expense, expenseByCategory, net: income - expense, kassaBreakdown
     };
   }
 
