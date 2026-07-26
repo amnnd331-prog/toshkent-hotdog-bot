@@ -2380,15 +2380,18 @@
     padding: 2px 4px;
   }
 
-/* ---- PULSAR brand splash screen ---- */
+/* ---- Toshkent Hot-Dog brand splash screen (oq-qizil) ---- */
 .app-splash {
   position: fixed;
   inset: 0;
   z-index: 999999;
-  background: #000;
+  background: #fff;
   display: flex;
   align-items: center;
   justify-content: center;
+  overflow: hidden;
+  border-top: 6px solid #e30613;
+  border-bottom: 6px solid #e30613;
   transition: opacity .45s ease;
 }
 .app-splash.app-splash-hide {
@@ -2396,15 +2399,16 @@
   pointer-events: none;
 }
 .app-splash-logo {
-  width: 52vw;
-  max-width: 300px;
-  min-width: 140px;
-  height: auto;
-  animation: appSplashPulse 1.8s ease-in-out infinite;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  animation: appSplashZoom 3s ease-out forwards;
 }
-@keyframes appSplashPulse {
-  0%, 100% { transform: scale(1); filter: brightness(1); }
-  50% { transform: scale(1.045); filter: brightness(1.18); }
+@keyframes appSplashZoom {
+  0% { transform: scale(1.08); filter: brightness(.85); }
+  40% { filter: brightness(1); }
+  100% { transform: scale(1); filter: brightness(1); }
 }
 @media (prefers-reduced-motion: reduce) {
   .app-splash-logo { animation: none; }
