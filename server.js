@@ -9655,7 +9655,9 @@ const server = http.createServer((req, res) => {
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
-      if (userId !== String(ADMIN_ID)) return sendJSON(res, 200, { ok: false, reason: 'Faqat super admin zaxira yuklab ola oladi' });
+      const owners0 = pruneExpiredOwners();
+      const owner0 = findOwner(owners0, userId);
+      if (!isOwnerAccessValid(owner0)) return sendJSON(res, 200, { ok: false, reason: 'Zaxira faqat tasdiqlangan do\'kon egasiga ruxsat etilgan.' });
 
       let snapshot;
       try {
@@ -9692,7 +9694,9 @@ const server = http.createServer((req, res) => {
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
-      if (userId !== String(ADMIN_ID)) return sendJSON(res, 200, { ok: false, reason: 'Faqat super admin bazani tiklay oladi' });
+      const owners1 = pruneExpiredOwners();
+      const owner1 = findOwner(owners1, userId);
+      if (!isOwnerAccessValid(owner1)) return sendJSON(res, 200, { ok: false, reason: 'Bazani tiklash faqat tasdiqlangan do\'kon egasiga ruxsat etilgan.' });
 
       const rawContent = payload.content;
       if (!rawContent || typeof rawContent !== 'string') {
@@ -9737,7 +9741,9 @@ const server = http.createServer((req, res) => {
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
-      if (userId !== String(ADMIN_ID)) return sendJSON(res, 200, { ok: false, reason: 'Faqat super admin bazani tiklay oladi' });
+      const owners2 = pruneExpiredOwners();
+      const owner2 = findOwner(owners2, userId);
+      if (!isOwnerAccessValid(owner2)) return sendJSON(res, 200, { ok: false, reason: 'Bazani tiklash faqat tasdiqlangan do\'kon egasiga ruxsat etilgan.' });
 
       const { confirmToken, confirmText, content } = payload;
       if ((confirmText || '').trim().toUpperCase() !== 'TASDIQLAYMAN') {
