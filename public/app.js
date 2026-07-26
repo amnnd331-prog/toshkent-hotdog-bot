@@ -4191,7 +4191,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     bodyEl.innerHTML = myStatsBodyHtml(res.stats);
   }
 
-  const ORDER_TYPE_LABELS = { olib_ketish: 'Olib ketish', dostavka: 'Dostavka', zal: 'Zal' };
+  const ORDER_TYPE_LABELS = { olib_ketish: 'Olib ketish', dostavka: 'Dostavka', zal: 'Zal', tashqari: 'Tashqari' };
   // Mijozning bot ichidagi buyurtma oynasida "Zal" turi ko'rsatilmaydi —
   // bu tur faqat kassir/ega tomonidan zalda o'tirgan mijoz uchun yaratiladi.
   const CUSTOMER_ORDER_TYPE_LABELS = { olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
@@ -4907,9 +4907,12 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
     // Mijoz qo'shimcha narsa xohlasa yoki buyurtmadan biror narsani olib
     // tashlashni so'rasa, kassir/ega yangi buyurtma yaratmasdan shu buyurtmani
-    // tahrirlab qo'yishi mumkin (faqat hali "Tayyor" bo'lmagan buyurtmalarda).
+    // tahrirlab qo'yishi mumkin — "Tayyor" bo'lgan buyurtmalarda ham (bekor
+    // qilingan buyurtma bundan mustasno). Agar "Tayyor" buyurtmaga yangi
+    // mahsulot qo'shilsa, backend o'sha qo'shimchani alohida oshxona guruhiga
+    // (o'ziga xos "Tayyor" tugmasi bilan) yuboradi.
     let editBtn = '';
-    if (!paymentPending && (role === 'kassir' || role === 'egasi') && (order.status === 'yangi' || order.status === 'tayyorlanmoqda')) {
+    if (!paymentPending && (role === 'kassir' || role === 'egasi') && order.status !== 'bekor_qilindi') {
       editBtn = `<button class="order-action-btn ikkinchi" data-edit-order-id="${escapeHtml(order.id)}">✏️ Tahrirlash</button>`;
     }
     const deliveredNote = (order.orderType === 'dostavka' && order.deliveredBy)
@@ -7285,6 +7288,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
             <option value="olib_ketish" ${orderHistoryState.orderType === 'olib_ketish' ? 'selected' : ''}>Olib ketish</option>
             <option value="dostavka" ${orderHistoryState.orderType === 'dostavka' ? 'selected' : ''}>Dostavka</option>
             <option value="zal" ${orderHistoryState.orderType === 'zal' ? 'selected' : ''}>Zal</option>
+            <option value="tashqari" ${orderHistoryState.orderType === 'tashqari' ? 'selected' : ''}>Tashqari</option>
           </select>
           <button class="btn" id="ohApplyBtn" style="margin-top:10px;">Filtrlash</button>
           <button class="btn ikkinchi" id="ohResetBtn" style="margin-top:8px;">Tozalash</button>
