@@ -1,12 +1,12 @@
 :root {
 
-    /* Standart brend rangi — "Pulsar" ko'k rangi. Owner o'z brend rangini
-       tanlasa, JS (applyBrandColor) shu 4 ta o'zgaruvchini inline style
+    /* Standart brend rangi — Toshkent Hot-Dog qizil rangi. Owner o'z brend
+       rangini tanlasa, JS (applyBrandColor) shu 4 ta o'zgaruvchini inline style
        orqali ustidan yozadi — bu yerdagi qiymatlar faqat HALI HECH KIM
        rang tanlamagan holat uchun standart. */
-    --brand-primary: #1E4FD8;
-    --brand-primary-dark: #1941B1;
-    --brand-primary-light: #E9EDFB;
+    --brand-primary: #E30613;
+    --brand-primary-dark: #B8050F;
+    --brand-primary-light: #FCE7E9;
     --brand-on-primary: #FFFFFF;
 
     --surface-0: var(--tg-theme-bg-color, #FFFFFF);
