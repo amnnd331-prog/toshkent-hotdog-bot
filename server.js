@@ -706,8 +706,6 @@ const FEATURE_GROUPS = [
 const FEATURE_CATALOG = [
 
   { id: 'cashier-panel', name: "Kassir paneli", group: 'boshqaruv' },
-  { id: 'courier-panel', name: "Kuryer paneli", group: 'boshqaruv' },
-  { id: 'kitchen-panel', name: "Oshpaz paneli", group: 'boshqaruv' },
   { id: 'staff-invite', name: "Xodim taklifnomalari", group: 'boshqaruv' },
   { id: 'staff-roles', name: "Xodim rollari va huquqlari", group: 'boshqaruv' },
   { id: 'branch-manage', name: "Filiallar boshqaruvi", group: 'boshqaruv' },
@@ -722,7 +720,6 @@ const FEATURE_CATALOG = [
   { id: 'orders-manage', name: "Buyurtmalarni boshqarish", group: 'buyurtma' },
   { id: 'delivery-group', name: "Dostavka guruh xabarnomasi", group: 'buyurtma' },
   { id: 'kitchen-group', name: "Oshxona guruh xabarnomasi", group: 'buyurtma' },
-  { id: 'courier-report', name: "Kuryer hisoboti", group: 'buyurtma' },
 
   { id: 'stock-manage', name: "Ombor boshqaruvi", group: 'ombor_moliya' },
   { id: 'expense-manage', name: "Xarajatlar", group: 'ombor_moliya' },
@@ -848,16 +845,11 @@ function pruneExpiredOwners() {
 }
 
 const STAFF_ROLES = {
-  kassir: 'Kassir',
-  oshpaz: 'Oshpaz',
-  sklad: 'Sklad mas\'uli',
-  dostavka: 'Kuryer'
+  kassir: 'Kassir'
 };
 
 const ROLE_PANEL_FEATURE = {
-  kassir: 'cashier-panel',
-  oshpaz: 'kitchen-panel',
-  dostavka: 'courier-panel'
+  kassir: 'cashier-panel'
 };
 
 function allowedStaffRoles(owner, roles) {
@@ -7492,72 +7484,6 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (req.method === 'POST' && req.url === '/api/courier-report') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const { initData, period } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = pruneExpiredOwners();
-      const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
-      if (!isOwnerAccessValid(ctx.owner) || ctx.role !== 'egasi') return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
-      const owner = ctx.owner;
-      if (!ownerCanUseFeature(owner, 'courier-report')) return sendJSON(res, 200, featureBlockedResult('courier-report'));
-
-      const fromDate = resolvePeriodStart(period);
-      const commissionPercent = Number.isFinite(owner.courierCommissionPercent) ? owner.courierCommissionPercent : 10;
-
-      const couriers = (owner.staff || []).filter(s => staffHasRole(s, 'dostavka'));
-      const deliveredOrders = (owner.orders || []).filter(o =>
-        o.orderType === 'dostavka' && o.deliveredBy && new Date(o.deliveredAt || o.createdAt) >= fromDate);
-
-      const report = couriers.map(c => {
-        const mine = deliveredOrders.filter(o => String(o.deliveredBy) === String(c.id));
-        const totalAmount = mine.reduce((sum, o) => sum + (o.total || 0), 0);
-
-        return {
-          id: c.id,
-          username: c.username || null,
-          orderCount: mine.length,
-          totalAmount,
-          commission: Math.round(totalAmount * commissionPercent / 100)
-        };
-      });
-      report.sort((a, b) => b.orderCount - a.orderCount);
-
-      return sendJSON(res, 200, { ok: true, report, commissionPercent });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/set-courier-commission') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const { initData, percent } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
-      if (!ownerCanUseFeature(owner, 'courier-report')) return sendJSON(res, 200, featureBlockedResult('courier-report'));
-
-      const p = Number(percent);
-      if (!Number.isFinite(p) || p < 0 || p > 100) {
-        return sendJSON(res, 200, { ok: false, reason: 'Komissiya foizi 0 dan 100 gacha bo\'lishi kerak.' });
-      }
-      owner.courierCommissionPercent = p;
-      saveOwners(owners);
-
-      return sendJSON(res, 200, { ok: true, commissionPercent: p });
-    });
-    return;
-  }
-
   if (req.method === 'POST' && req.url === '/api/restricted-customers') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
@@ -9910,9 +9836,9 @@ function seedDefaultTariffsIfEmpty() {
     return;
   }
 
-  const CORE = ['cashier-panel', 'courier-panel', 'kitchen-panel', 'staff-invite', 'shift-toggle',
+  const CORE = ['cashier-panel', 'staff-invite', 'shift-toggle',
     'menu-manage', 'category-manage', 'orders-manage', 'delivery-group', 'kitchen-group',
-    'courier-report', 'stock-manage', 'expense-manage', 'cashflow', 'customer-menu',
+    'stock-manage', 'expense-manage', 'cashflow', 'customer-menu',
     'customer-account', 'support-chat', 'restaurant-brand', 'system-status', 'notification-log',
     'dashboard'];
   const STANDARD_ADDS = ['staff-roles', 'branch-manage', 'combo-manage', 'promo-manage', 'banner-manage', 'bonus-settings', 'z-report', 'ai-analytics'];
