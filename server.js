@@ -1461,7 +1461,7 @@ function escapeHtmlServer(str) {
 }
 
 function orderItemsTextWithPrices(order) {
-  return order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty} — ${fmtNum((it.price || 0) * it.qty)} so'm`).join('\n');
+  return order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
 }
 
 function notifyDeliveryGroup(owner, order, creatorLabel) {
