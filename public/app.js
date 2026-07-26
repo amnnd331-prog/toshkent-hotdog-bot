@@ -6709,6 +6709,17 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <div id="aiForecast"><div class="bosh">Yuklanmoqda...</div></div>
         </div>
         <div class="kartochka">
+          <h2>📊 Kunlik savdo hisoboti (Z-hisobot)</h2>
+          <div class="bosh" style="margin-bottom:8px;">Har kuni soat 08:00 (Toshkent) o'tgan kunning savdo/xarajat hisoboti avtomatik Telegram'ga yuboriladi.</div>
+          <label class="check-label" style="font-size:var(--fs-body);">
+            <input type="checkbox" id="dailyReportToggle">
+            Avtomatik kunlik hisobotni yoqish
+          </label>
+          <div id="dailyReportText" class="bosh" style="margin-top:8px;">Yuklanmoqda...</div>
+          <button class="btn ikkinchi" id="dailyReportSendBtn" style="margin-top:10px;">Hozir yubor</button>
+          <div class="xabar" id="dailyReportMsg"></div>
+        </div>
+        <div class="kartochka">
           <h2>🤖 AI Direktor — kunlik hisobot</h2>
           <div class="bosh" style="margin-bottom:8px;">Har kuni soat 08:00 (Toshkent) shu hisobot avtomatik Telegram'ga yuboriladi.</div>
           <label class="check-label" style="font-size:var(--fs-body);">
@@ -6763,6 +6774,24 @@ const tg = window.Telegram && window.Telegram.WebApp;
       if (q) aiSendQuestion(q);
     });
 
+    document.getElementById('dailyReportToggle').addEventListener('change', async (e) => {
+      const checked = e.target.checked;
+      e.target.disabled = true;
+      const res = await apiPost('/api/daily-report-toggle', { initData, enabled: checked });
+      e.target.disabled = false;
+      if (!res.ok) { e.target.checked = !checked; alert(res.reason || 'Xatolik yuz berdi.'); }
+    });
+    document.getElementById('dailyReportSendBtn').addEventListener('click', async () => {
+      const btn = document.getElementById('dailyReportSendBtn');
+      const msgEl = document.getElementById('dailyReportMsg');
+      btn.disabled = true;
+      const res = await apiPost('/api/daily-report-send-now', { initData });
+      btn.disabled = false;
+      if (!res.ok) { msgEl.textContent = res.reason || 'Xatolik yuz berdi.'; msgEl.className = 'xabar err'; return; }
+      msgEl.textContent = 'Yuborildi — Telegram\'dagi bot xabarini tekshiring.';
+      msgEl.className = 'xabar ok';
+    });
+
     document.getElementById('aiDirDailyToggle').addEventListener('change', async (e) => {
       const checked = e.target.checked;
       e.target.disabled = true;
@@ -6805,6 +6834,21 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   async function loadAiDirectorPreviews() {
+    const dailyReportTextEl = document.getElementById('dailyReportText');
+    const dailyReportToggleEl = document.getElementById('dailyReportToggle');
+    if (dailyReportTextEl) {
+      const res = await apiPost('/api/daily-report-preview', { initData });
+      if (res.ok) {
+        dailyReportTextEl.innerHTML = `<div style="white-space:pre-line;">${res.text}</div>` +
+          (res.sentToday ? `<div class="bosh" style="margin-top:6px;">✅ Bugun allaqachon yuborilgan.</div>` : '');
+        dailyReportToggleEl.checked = res.enabled;
+      } else if (res.blockedFeature) {
+        renderFeatureBlockedInline(dailyReportTextEl, res.reason);
+      } else {
+        dailyReportTextEl.textContent = res.reason || 'Yuklab bo\'lmadi.';
+      }
+    }
+
     const dailyTextEl = document.getElementById('aiDirDailyText');
     const dailyToggle = document.getElementById('aiDirDailyToggle');
     if (dailyTextEl) {
