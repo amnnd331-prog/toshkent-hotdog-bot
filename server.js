@@ -301,31 +301,14 @@ function decideSubscriptionPayment(owner, action, decidedByUserId, reasonText) {
 }
 
 function getOwnerSubscriptionAccess(owner) {
+  // 68-bosqich: obuna/tarif tekshiruvi butunlay o'chirildi — mavjud har
+  // qanday owner uchun har doim "faol" deb qaytariladi. Shu bir joyni
+  // o'zgartirish bilan butun tizimdagi barcha joylardagi tekshiruvlar
+  // (isOwnerAccessValid, checkSubscriptionAccess, getBlockedOwnerAccess,
+  // pruneExpiredOwners va h.k.) avtomatik ravishda hech kimni bloklamay
+  // qo'yadi — chunki ularning barchasi shu funksiya orqali ishlaydi.
   if (!owner) return { allowed: false, status: 'unknown', daysLeft: null, inGrace: false };
-
-  if (owner.subscriptionStatus === SUBSCRIPTION_STATUS.PENDING_TRIAL) {
-    return { allowed: false, status: SUBSCRIPTION_STATUS.PENDING_TRIAL, daysLeft: null, inGrace: false };
-  }
-
-  if (!owner.subscriptionUntil) {
-    return { allowed: true, status: SUBSCRIPTION_STATUS.ACTIVE, daysLeft: null, inGrace: false };
-  }
-
-  const untilMs = new Date(owner.subscriptionUntil).getTime();
-  const now = Date.now();
-  if (Number.isFinite(untilMs) && untilMs > now) {
-    const daysLeft = Math.ceil((untilMs - now) / 86400000);
-    return { allowed: true, status: SUBSCRIPTION_STATUS.ACTIVE, daysLeft, inGrace: false };
-  }
-
-  const graceMs = owner.graceUntil
-    ? new Date(owner.graceUntil).getTime()
-    : (Number.isFinite(untilMs) ? untilMs + SUBSCRIPTION_GRACE_DAYS * 86400000 : NaN);
-  if (Number.isFinite(graceMs) && graceMs > now) {
-    return { allowed: true, status: SUBSCRIPTION_STATUS.ACTIVE, daysLeft: 0, inGrace: true };
-  }
-
-  return { allowed: false, status: SUBSCRIPTION_STATUS.BLOCKED, daysLeft: null, inGrace: false };
+  return { allowed: true, status: SUBSCRIPTION_STATUS.ACTIVE, daysLeft: null, inGrace: false };
 }
 
 function checkSubscriptionAccess(userId, owners) {
@@ -751,10 +734,9 @@ function getFeatureCatalogGrouped() {
 }
 
 function ownerCanUseFeature(owner, featureId) {
-  if (!owner || !owner.tariffId) return true;
-  const tariff = loadTariffs().find(t => t.id === owner.tariffId);
-  if (!tariff) return true;
-  return !!(tariff.features && tariff.features[featureId] === true);
+  // 68-bosqich: tarif asosidagi funksiya cheklovi o'chirildi — barcha
+  // funksiyalar har doim ochiq.
+  return true;
 }
 
 function featureBlockedResult(featureId) {
@@ -773,10 +755,8 @@ function featureBlockedResult(featureId) {
 // maxBranches: null yoki 0 — cheklanmagan (owner istagancha filial ocha
 // oladi). Owner'ga tarif biriktirilmagan bo'lsa ham cheklanmagan.
 function ownerMaxBranches(owner) {
-  if (!owner || !owner.tariffId) return null;
-  const tariff = loadTariffs().find(t => t.id === owner.tariffId);
-  if (!tariff || !tariff.maxBranches) return null;
-  return tariff.maxBranches;
+  // 68-bosqich: tarif asosidagi filiallar soni cheklovi o'chirildi.
+  return null;
 }
 
 function loadAdmins() { return loadJSONArray(ADMINS_FILE); }
