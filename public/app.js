@@ -6,7 +6,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (!splashEl) return;
     splashEl.classList.add('app-splash-hide');
     setTimeout(() => splashEl.remove(), 450);
-  }, 3000);
+  }, 2000);
 
   function applyResponsiveViewport() {
     const h = (tg && tg.viewportHeight) || window.innerHeight;
