@@ -4431,7 +4431,18 @@ const tg = window.Telegram && window.Telegram.WebApp;
       tabRow.querySelectorAll('[data-section-id]').forEach(opt => {
         const isActive = opt.getAttribute('data-section-id') === sectionId;
         opt.classList.toggle('selected', isActive);
-        if (isActive) opt.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+        if (isActive) {
+          // opt.scrollIntoView() ishlatilganda, tabRow "position: sticky"
+          // ekani uchun ba'zi brauzerlarda butun sahifani tepaga (elementning
+          // "stuck bo'lmagan" asl joyiga) aylantirib yuboradi — masalan,
+          // menyuni pastga tushirganda sahifa to'satdan tepaga otilib ketardi.
+          // Shu sababli faqat tabRow'ning o'zini (gorizontal) aylantiramiz,
+          // butun sahifa scroll holatiga tegmaymiz.
+          const rowRect = tabRow.getBoundingClientRect();
+          const optRect = opt.getBoundingClientRect();
+          const delta = (optRect.left + optRect.width / 2) - (rowRect.left + rowRect.width / 2);
+          tabRow.scrollTo({ left: tabRow.scrollLeft + delta, behavior: 'smooth' });
+        }
       });
     };
     setActiveTab(sections[0].id);
