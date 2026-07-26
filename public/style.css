@@ -2214,23 +2214,3 @@
     cursor: pointer;
     padding: 2px 4px;
   }
-
-/* ---- Toshkent Hot-Dog brand splash screen (oq-qizil) ---- */
-.app-splash {
-  position: fixed;
-  inset: 0;
-  height: calc(var(--app-vh, 1vh) * 100);
-  z-index: 999999;
-  background-color: #fff;
-  background-image: url('assets/splash-toshkent-hotdog.jpg');
-  background-size: cover;
-  background-position: center;
-  background-repeat: no-repeat;
-  border-top: 6px solid #e30613;
-  border-bottom: 6px solid #e30613;
-  transition: opacity .45s ease;
-}
-.app-splash.app-splash-hide {
-  opacity: 0;
-  pointer-events: none;
-}
