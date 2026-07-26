@@ -2386,8 +2386,11 @@
   inset: 0;
   height: calc(var(--app-vh, 1vh) * 100);
   z-index: 999999;
-  background: #fff;
-  overflow: hidden;
+  background-color: #fff;
+  background-image: url('assets/splash-toshkent-hotdog.png');
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
   border-top: 6px solid #e30613;
   border-bottom: 6px solid #e30613;
   transition: opacity .45s ease;
@@ -2395,25 +2398,4 @@
 .app-splash.app-splash-hide {
   opacity: 0;
   pointer-events: none;
-}
-.app-splash-logo {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  object-position: center;
-  display: block;
-  animation: appSplashZoom 3s ease-out forwards;
-}
-@keyframes appSplashZoom {
-  0% { transform: scale(1.08); filter: brightness(.85); }
-  40% { filter: brightness(1); }
-  100% { transform: scale(1); filter: brightness(1); }
-}
-@media (prefers-reduced-motion: reduce) {
-  .app-splash-logo { animation: none; }
 }
