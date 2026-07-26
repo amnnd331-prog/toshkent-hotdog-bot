@@ -7163,8 +7163,8 @@ const server = http.createServer((req, res) => {
     const orders = (owner.orders || []).filter(o => new Date(o.createdAt) >= fromDate);
     const expenses = (owner.expenses || []).filter(e => new Date(e.createdAt) >= fromDate);
 
-    const dostavkaOrders = orders.filter(o => o.orderType === 'dostavka');
-    const kassaOrders = orders.filter(o => o.orderType !== 'dostavka');
+    const dostavkaOrders = orders.filter(o => o.orderType === 'dostavka' && o.paymentType === 'dostavka_orqali');
+    const kassaOrders = orders.filter(o => !(o.orderType === 'dostavka' && o.paymentType === 'dostavka_orqali'));
     const kassaIncome = kassaOrders.reduce((sum, o) => sum + orderIncomeAmount(o), 0);
     const dostavkaIncome = dostavkaOrders.reduce((sum, o) => sum + orderIncomeAmount(o), 0);
     const income = kassaIncome + dostavkaIncome;
@@ -7479,7 +7479,7 @@ const server = http.createServer((req, res) => {
         const bucket = buckets.get(key);
         bucket.orderCount += 1;
         bucket.income += orderIncomeAmount(o);
-        if (o.orderType === 'dostavka') bucket.dostavkaIncome += orderIncomeAmount(o);
+        if (o.orderType === 'dostavka' && o.paymentType === 'dostavka_orqali') bucket.dostavkaIncome += orderIncomeAmount(o);
         else bucket.kassaIncome += orderIncomeAmount(o);
       }
 
@@ -7674,8 +7674,8 @@ const server = http.createServer((req, res) => {
       return t >= dayStart && t < dayEnd;
     });
 
-    const dostavkaOrders = orders.filter(o => o.orderType === 'dostavka');
-    const kassaOrders = orders.filter(o => o.orderType !== 'dostavka');
+    const dostavkaOrders = orders.filter(o => o.orderType === 'dostavka' && o.paymentType === 'dostavka_orqali');
+    const kassaOrders = orders.filter(o => !(o.orderType === 'dostavka' && o.paymentType === 'dostavka_orqali'));
     const kassaIncome = kassaOrders.reduce((s, o) => s + orderIncomeAmount(o), 0);
     const dostavkaIncome = dostavkaOrders.reduce((s, o) => s + orderIncomeAmount(o), 0);
     const income = kassaIncome + dostavkaIncome;
