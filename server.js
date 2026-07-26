@@ -892,6 +892,7 @@ const EXPENSE_CATEGORIES = {
   mahsulot: 'Mahsulot xaridi',
 
   sklad_xarid: 'Sklad xaridlari',
+  spisaniya: 'Spisaniya (isrof)',
   boshqa: 'Boshqa'
 };
 
@@ -996,6 +997,16 @@ function ownerAverageRating(owner) {
 }
 
 const STOCK_UNITS = { kg: 'kg', g: 'g', l: 'l', ml: 'ml', dona: 'dona' };
+// Sklad mahsuloti buzilib/isrof bo'lib spisaniya qilinganda tanlanadigan sabablar
+// (masalan: katlet kuysa, non qotib qolsa yoki yirtilsa).
+const WRITEOFF_REASONS = {
+  kuydi: 'Kuydi (kuyib qoldi)',
+  qotib_qoldi: 'Qotib qoldi',
+  yirtildi: 'Yirtildi / shikastlandi',
+  tushib_ketdi: "Tushib ketdi / to'kildi",
+  muddati_otdi: "Muddati o'tdi / buzilgan",
+  boshqa: 'Boshqa sabab'
+};
 const ORDER_TYPES = { olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
 const PAYMENT_TYPES = { naqd: 'Naqd', karta: 'Karta', dostavka_orqali: 'Dostavka orqali' };
 
@@ -6789,6 +6800,81 @@ const server = http.createServer((req, res) => {
       saveOwners(owners);
 
       return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
+  // Buzilgan/isrof bo'lgan sklad mahsulotini spisaniya qilish (masalan: katlet
+  // kuysa, non qotib qolsa yoki yirtilsa) — miqdor ombordan ayiriladi, sababi
+  // harakatlar tarixiga yoziladi va yo'qotish summasi Moliyaga xarajat sifatida tushadi.
+  if (req.method === 'POST' && req.url === '/api/stock-writeoff') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, id, qty, reason, note, branchId } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
+      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
+      if (!ctxHasAnyRole(ctx, ['egasi', 'sklad'])) {
+        return sendJSON(res, 200, { ok: false, reason: 'Bu amalga ruxsatingiz yo\'q' });
+      }
+      if (!ctx.isAdminActing && !ownerCanUseFeature(ctx.owner, 'stock-manage')) return sendJSON(res, 200, featureBlockedResult('stock-manage'));
+
+      const resolvedBranchId = ctx.role === 'egasi' ? (branchId || null) : ctx.branchId;
+      const pool = resolveStockPool(ctx.owner, resolvedBranchId);
+      if (!pool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi' });
+
+      if (!id) return sendJSON(res, 200, { ok: false, reason: 'Mahsulot tanlanmagan.' });
+      const item = findStockItem(pool, id);
+      if (!item) return sendJSON(res, 200, { ok: false, reason: 'Bunday mahsulot omborda topilmadi.' });
+
+      const qtyNum = Number(qty);
+      if (!Number.isFinite(qtyNum) || qtyNum <= 0) {
+        return sendJSON(res, 200, { ok: false, reason: 'Miqdorni to\'g\'ri kiriting.' });
+      }
+      if (qtyNum > item.qty) {
+        return sendJSON(res, 200, { ok: false, reason: `Omborda yetarli emas (bor: ${item.qty} ${item.unit}).` });
+      }
+      if (!Object.prototype.hasOwnProperty.call(WRITEOFF_REASONS, reason)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Spisaniya sababini tanlang.' });
+      }
+      const noteTrim = String(note || '').trim().slice(0, 200);
+      if (reason === 'boshqa' && !noteTrim) {
+        return sendJSON(res, 200, { ok: false, reason: '"Boshqa sabab" tanlansa, izoh yozish shart.' });
+      }
+
+      item.qty = Math.max(0, Math.round((item.qty - qtyNum) * 1000) / 1000);
+      const reasonLabel = WRITEOFF_REASONS[reason];
+      const movementNote = `Spisaniya: ${reasonLabel}${noteTrim ? ' — ' + noteTrim : ''}`;
+
+      addStockMovement(pool, {
+        stockId: item.id, stockName: item.name, type: 'chiqim',
+        qty: qtyNum, unit: item.unit, note: movementNote, userId
+      });
+      checkLowStockAlert(ctx.owner, item, userId, resolvedBranchId);
+      logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'sklad_spisaniya', note: `${item.name}: -${qtyNum} ${item.unit} (${reasonLabel})` });
+
+      const lossAmount = Math.round(qtyNum * (item.price || 0) * 100) / 100;
+      if (lossAmount > 0) {
+        if (!ctx.owner.expenses) ctx.owner.expenses = [];
+        ctx.owner.expenses.unshift({
+          id: crypto.randomBytes(4).toString('hex'),
+          amount: lossAmount,
+          category: 'spisaniya',
+          note: `${item.name} — ${qtyNum} ${item.unit} (${reasonLabel}${noteTrim ? ': ' + noteTrim : ''})`,
+          createdAt: new Date().toISOString(),
+          createdBy: userId,
+          source: 'stock',
+          stockId: item.id
+        });
+        if (ctx.owner.expenses.length > 500) ctx.owner.expenses.length = 500;
+      }
+
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true, item, lossAmount });
     });
     return;
   }
