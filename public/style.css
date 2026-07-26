@@ -2384,6 +2384,7 @@
 .app-splash {
   position: fixed;
   inset: 0;
+  height: calc(var(--app-vh, 1vh) * 100);
   z-index: 999999;
   background: #fff;
   overflow: hidden;
