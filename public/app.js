@@ -6394,8 +6394,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
       </div>
       <div class="kartochka" style="margin-top:10px;">
         <h2>Kassa va dostavka (alohida)</h2>
-        <div class="profile-row"><b>Kassadagi pul</b> (olib ketish): ${cfFormatSum(bucket.kassaIncome)}</div>
-        <div class="profile-row"><b>Kuryer qo'lidagi pul:</b> ${cfFormatSum(bucket.dostavkaIncome)} (${bucket.dostavkaOrderCount} ta buyurtma)</div>
+        <div class="profile-row"><b>Kassadagi pul</b> (olib ketish + kartali dostavka): ${cfFormatSum(bucket.kassaIncome)}</div>
+        <div class="profile-row"><b>Kuryer qo'lidagi naqd pul:</b> ${cfFormatSum(bucket.dostavkaIncome)} (${bucket.dostavkaOrderCount} ta buyurtma)</div>
       </div>
       ${paymentRows ? `
       <div class="kartochka" style="margin-top:10px;">
