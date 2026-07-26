@@ -2787,7 +2787,9 @@ async function handleTelegramUpdate(update) {
         const notifyTargets = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'oshpaz') || staffHasRole(s, 'kassir')).map(s => s.id))];
         await notifyStaffList(owner, notifyTargets, notifyText, `Buyurtma #${order.id} (to'lov tasdiqlangach)`, 'newOrder');
         saveOwners(owners);
-        if (order.orderType !== 'dostavka') notifyDeliveryGroup(owner, order, orderCustomerContactLabel(order));
+        // Dostavka guruhi FAQAT dostavka buyurtmalari uchun (va faqat
+        // oshpaz "Tayyor" deganda — qarang: notifyDeliveryGroupOrderReady).
+        // Stolga / Olib ketish buyurtmalari bu guruhga umuman yuborilmaydi.
         notifyKitchenGroup(owner, order, orderCustomerContactLabel(order));
 
         if (order.customerId) {
@@ -5791,7 +5793,6 @@ const server = http.createServer((req, res) => {
           `${orderCustomerContactLabel(order)}\n${itemsText}\n\nJami: ${fmtNum(total)} so'm\nTo'lov: ${PAYMENT_TYPES[paymentType]}`;
         const notifyTargets = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'oshpaz') || staffHasRole(s, 'kassir')).map(s => s.id))];
         await notifyStaffList(owner, notifyTargets, notifyText, `Buyurtma #${order.id} (mijoz)`, 'newOrder');
-        if (order.orderType !== 'dostavka') notifyDeliveryGroup(owner, order, orderCustomerContactLabel(order));
         notifyKitchenGroup(owner, order, orderCustomerContactLabel(order));
         saveOwners(owners);
       }
@@ -6050,7 +6051,6 @@ const server = http.createServer((req, res) => {
         `${itemsText}\n\nJami: ${fmtNum(total)} so'm\nTo'lov: ${PAYMENT_TYPES[paymentType]}`;
       const notifyTargets = [ctx.owner.id, ...((ctx.owner.staff || []).filter(s => staffHasRole(s, 'oshpaz')).map(s => s.id))];
       await notifyStaffList(ctx.owner, notifyTargets, notifyText, `Buyurtma #${order.id} (kassir)`, 'newOrder');
-      if (order.orderType !== 'dostavka') notifyDeliveryGroup(ctx.owner, order, `Yaratdi: ${escapeHtmlServer(displayName(check.user))} (kassir)`);
       notifyKitchenGroup(ctx.owner, order, `Yaratdi: ${escapeHtmlServer(displayName(check.user))} (kassir)`);
       saveOwners(owners);
 
