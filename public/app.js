@@ -9210,18 +9210,17 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (o.status === 'bekor_qilindi') return '';
     const isDelivery = o.orderType === 'dostavka';
     const steps = [
-      { key: 'yangi', label: 'Qabul qilindi' },
       { key: 'tayyorlanmoqda', label: 'Tayyorlanmoqda' },
       { key: 'tayyor', label: isDelivery ? "Tayyor bo'ldi" : 'Tayyor' }
     ];
     if (isDelivery) steps.push({ key: 'yetkazildi', label: 'Yetkazildi' });
     else steps.push({ key: 'oldim', label: 'Oldim' });
 
-    let activeIdx = 0;
-    if (o.status === 'tayyorlanmoqda') activeIdx = 1;
+    let activeIdx = -1;
+    if (o.status === 'tayyorlanmoqda') activeIdx = 0;
     else if (o.status === 'tayyor') {
-      if (isDelivery) activeIdx = o.deliveredAt ? 3 : 2;
-      else activeIdx = o.customerReceivedAt ? 3 : 2;
+      if (isDelivery) activeIdx = o.deliveredAt ? 2 : 1;
+      else activeIdx = o.customerReceivedAt ? 2 : 1;
     }
 
     return `
