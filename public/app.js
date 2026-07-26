@@ -4220,7 +4220,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   let cashierState = {
-    menu: [], cart: {}, orderType: 'olib_ketish', paymentType: 'naqd', tab: 'yaratish', lastOrderRequestId: null,
+    menu: [], cart: {}, orderType: 'olib_ketish', paymentType: 'naqd', tab: 'yaratish', lastOrderRequestId: null, comment: '',
     // Mavjud buyurtmani tahrirlash rejimi uchun: null bo'lsa - yangi buyurtma yaratish rejimi.
     editingOrderId: null, editingOrderNumber: null, editingComboItems: null, editingReturn: null
   };
@@ -4246,6 +4246,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     cashierState.editingComboItems = null;
     cashierState.editingReturn = null;
     cashierState.cart = {};
+    cashierState.comment = '';
     if (returnFn) returnFn();
     else renderCashierScreen(restaurantName, onBack);
   }
@@ -4282,6 +4283,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
               <div class="type-opt ${cashierState.paymentType === k ? 'selected' : ''}" data-payment-type="${k}">${label}</div>
             `).join('')}
           </div>
+          <textarea id="orderCommentInput" placeholder="Izoh (masalan: piyozsiz, achchiq sous ko'proq...)" rows="2" style="margin-top:10px;">${escapeHtml(cashierState.comment || '')}</textarea>
           <div class="cart-total"><span>Jami:</span><span id="cartTotalVal">${fmtNum(cashierCartTotal())} so'm</span></div>
           <button class="btn" id="sendOrderBtn">${isEditing ? 'Buyurtmani yangilash' : "Oshxonaga yuborish"}</button>
           <div class="xabar" id="orderMsg"></div>
@@ -4317,6 +4319,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
       renderCashierScreen(restaurantName, onBack);
     });
     document.getElementById('sendOrderBtn').addEventListener('click', () => sendCashierOrder(restaurantName, onBack));
+    document.getElementById('orderCommentInput').addEventListener('input', (e) => {
+      cashierState.comment = e.target.value;
+    });
 
     attachShiftWidgetHandler();
     loadShiftWidget();
@@ -4628,12 +4633,14 @@ const tg = window.Telegram && window.Telegram.WebApp;
         orderId: cashierState.editingOrderId,
         items,
         orderType: cashierState.orderType,
-        paymentType: cashierState.paymentType
+        paymentType: cashierState.paymentType,
+        comment: cashierState.comment
       });
 
       if (res.ok) {
         const returnFn = cashierState.editingReturn;
         cashierState.cart = {};
+        cashierState.comment = '';
         cashierState.editingOrderId = null;
         cashierState.editingOrderNumber = null;
         cashierState.editingComboItems = null;
@@ -4663,11 +4670,13 @@ const tg = window.Telegram && window.Telegram.WebApp;
       items: cartItems,
       orderType: cashierState.orderType,
       paymentType: cashierState.paymentType,
+      comment: cashierState.comment,
       requestId: cashierState.lastOrderRequestId
     });
 
     if (res.ok) {
       cashierState.cart = {};
+      cashierState.comment = '';
       cashierState.lastOrderRequestId = null;
       msgEl.textContent = '';
       renderCashierScreen(restaurantName, onBack);
@@ -4914,6 +4923,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         ${order.customerName ? `<div class="order-time">👤 ${escapeHtml(order.customerName)}${order.customerPhone ? ` · <button type="button" class="call-link" data-call-phone="${escapeHtml(order.customerPhone)}" data-call-tgid="${escapeHtml(String(order.customerId || ''))}">📞 ${escapeHtml(order.customerPhone)}</button>` : ''}</div>` : ''}
         ${order.orderType === 'dostavka' && order.extraPhone ? `<div class="order-time"><button type="button" class="call-link" data-call-phone="${escapeHtml(order.extraPhone)}">📞 ${escapeHtml(order.extraPhone)}</button></div>` : ''}
         <div class="order-items">${itemsHtml}</div>
+        ${order.comment ? `<div class="order-time" style="color:var(--warning);">💬 ${escapeHtml(order.comment)}</div>` : ''}
         ${deliveredNote}
         ${receivedNote}
         ${paymentPendingNote}
@@ -4992,6 +5002,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         cashierState.editingReturn = onReturn || null;
         cashierState.orderType = order.orderType;
         cashierState.paymentType = order.paymentType;
+        cashierState.comment = order.comment || '';
         cashierState.cart = {};
         (order.items || []).forEach(it => {
           if (it.isCombo) return;
@@ -5545,6 +5556,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         ${order.extraPhone ? `<div class="order-time"><button type="button" class="call-link" data-call-phone="${escapeHtml(order.extraPhone)}">📞 ${escapeHtml(order.extraPhone)}</button> (qo'shimcha)</div>` : ''}
         ${routeUrl ? `<button type="button" class="btn ikkinchi" data-route-order-id="${escapeHtml(order.id)}" style="margin:8px 0; width:100%;">🗺️ Marshrut (Google Maps)</button>` : ''}
         <div class="order-items">${itemsHtml}</div>
+        ${order.comment ? `<div class="order-time" style="color:var(--warning);">💬 ${escapeHtml(order.comment)}</div>` : ''}
         <div class="order-bottom">
           <span class="order-total">${fmtNum(order.total)} so'm (${PAYMENT_TYPE_LABELS[order.paymentType] || order.paymentType})</span>
           ${isDelivered
