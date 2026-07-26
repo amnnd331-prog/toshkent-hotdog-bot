@@ -2730,6 +2730,49 @@ async function handleTelegramUpdate(update) {
       }
     }
 
+    // Buyurtma allaqachon "Tayyor" bo'lgach, kassir unga yangi mahsulot
+    // qo'shsa — shu qo'shimcha alohida oshxona guruhiga yuboriladi va
+    // shu yerda unga alohida "Tayyor" bosiladi (asosiy buyurtma holatiga
+    // tegmaydi). Qarang: /api/edit-order.
+    if (data.startsWith('kgaddready:')) {
+      const [, ownerId, orderId, additionId] = data.split(':');
+      const owners = loadOwners();
+      const owner = findOwner(owners, ownerId);
+      if (!owner) { await answerCallbackQuery(cq.id, 'Oshxona topilmadi.'); return; }
+      if (await guardCallbackSubscription(cq, owners, ownerId)) return;
+      const order = (owner.orders || []).find(o => o.id === orderId);
+      if (!order) { await answerCallbackQuery(cq.id, 'Buyurtma topilmadi.'); return; }
+      const addition = (order.additions || []).find(a => a.id === additionId);
+      if (!addition) { await answerCallbackQuery(cq.id, 'Topilmadi.'); return; }
+      if (addition.ready) {
+        await answerCallbackQuery(cq.id, 'Allaqachon tayyor deb belgilangan.');
+        return;
+      }
+      addition.ready = true;
+      addition.readyBy = from.id;
+      addition.readyAt = new Date().toISOString();
+      saveOwners(owners);
+
+      if (chatId && messageId) {
+        await editMessageText(chatId, messageId,
+          `${cq.message.text || ''}\n\n🏁 Tayyor — ${displayName(from)}`, null);
+      }
+
+      {
+        const itemsText = addition.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
+        const orderLabel = `#${order.orderNumber || order.id}`;
+        const readyText = `✅ <b>Qo'shimcha tayyor</b> (Buyurtma ${orderLabel})\n${itemsText}`;
+        const staffList = owner.staff || [];
+        const targetIds = staffList.filter(s => staffHasRole(s, 'kassir')).map(s => s.id);
+        for (const targetId of new Set([owner.id, ...targetIds].map(String))) {
+          if (targetId === String(from.id)) continue;
+          sendMessage(targetId, readyText);
+        }
+      }
+      await answerCallbackQuery(cq.id, 'Tayyor deb belgilandi 🏁');
+      return;
+    }
+
     // Dostavka guruhida "✅ Yetkazildi" tugmasi — kuryer mini-ilovani
     // ochmasdan, to'g'ridan-to'g'ri guruhdan buyurtmani yetkazilgan deb
     // belgilashi mumkin (qarang: notifyDeliveryGroupOrderReady()). Bu
@@ -6143,8 +6186,8 @@ const server = http.createServer((req, res) => {
       if (order.paymentProofStatus === 'kutilmoqda') {
         return sendJSON(res, 200, { ok: false, reason: 'To\'lovi hali tasdiqlanmagan buyurtmani tahrirlab bo\'lmaydi.' });
       }
-      if (order.status !== 'yangi' && order.status !== 'tayyorlanmoqda') {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu buyurtma allaqachon tayyor yoki yakunlangan — endi tahrirlab bo\'lmaydi.' });
+      if (order.status === 'bekor_qilindi') {
+        return sendJSON(res, 200, { ok: false, reason: 'Bekor qilingan buyurtmani tahrirlab bo\'lmaydi.' });
       }
 
       if (!Array.isArray(items) || !items.length) {
@@ -6179,6 +6222,22 @@ const server = http.createServer((req, res) => {
         newOrderItems.push({ id: menuItem.id, name: priceOpt.label ? `${menuItem.name} (${priceOpt.label})` : menuItem.name, price: priceOpt.price, priceId: priceOpt.priceId, qty, directStockId: menuItem.directStockId || null });
       }
       const newTotal = newOrderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
+
+      // Buyurtma allaqachon "Tayyor" bo'lgan bo'lsa-yu, kassir shu tahrirlashda
+      // yangi mahsulot qo'shsa (yoki miqdorini oshirsa) — o'sha ORTIQCHA qismni
+      // aniqlab olamiz, keyinroq shuni alohida oshxona guruhiga yuboramiz.
+      const orderWasReady = order.status === 'tayyor';
+      const itemKey = (it) => `${it.isCombo ? 'combo:' : ''}${it.id}:${it.priceId || ''}`;
+      const oldQtyByKey = new Map();
+      (order.items || []).forEach(it => {
+        const k = itemKey(it);
+        oldQtyByKey.set(k, (oldQtyByKey.get(k) || 0) + it.qty);
+      });
+      const addedItems = [];
+      newOrderItems.forEach(it => {
+        const delta = it.qty - (oldQtyByKey.get(itemKey(it)) || 0);
+        if (delta > 0) addedItems.push({ name: it.name, qty: delta });
+      });
 
       if (!ctx.owner.stock) ctx.owner.stock = [];
 
@@ -6262,6 +6321,47 @@ const server = http.createServer((req, res) => {
       const notifyTargets = [ctx.owner.id, ...((ctx.owner.staff || []).filter(s => staffHasRole(s, 'oshpaz')).map(s => s.id))];
       await notifyStaffList(ctx.owner, notifyTargets, notifyText, `Buyurtma #${order.id} tahrirlandi`, 'newOrder');
       saveOwners(owners);
+
+      // Buyurtma "Tayyor" bo'lgach qo'shilgan mahsulotlar — alohida oshxona
+      // guruhiga, o'zining mustaqil "Tayyor" tugmasi bilan yuboriladi.
+      if (orderWasReady && addedItems.length) {
+        const addition = {
+          id: crypto.randomBytes(4).toString('hex'),
+          items: addedItems,
+          createdAt: new Date().toISOString(),
+          createdBy: userId,
+          ready: false,
+          readyBy: null,
+          readyAt: null
+        };
+        if (!order.additions) order.additions = [];
+        order.additions.push(addition);
+        saveOwners(owners);
+
+        if (ctx.owner.kitchenGroupId && ownerCanUseFeature(ctx.owner, 'kitchen-group')) {
+          const addItemsText = addedItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
+          const orderLabel = `#${order.orderNumber || order.id}`;
+          const addText = `➕ <b>Qo'shimcha buyurtma</b> (Buyurtma ${orderLabel})\n${addItemsText}`;
+          sendMessage(ctx.owner.kitchenGroupId, addText, {
+            inline_keyboard: [[
+              { text: '🏁 Tayyor', callback_data: `kgaddready:${ctx.owner.id}:${order.id}:${addition.id}` }
+            ]]
+          }, ctx.owner.kitchenGroupThreadId).then(result => {
+            if (result && result.ok && result.result && result.result.message_id) {
+              const owners2 = loadOwners();
+              const o2 = findOwner(owners2, ctx.owner.id);
+              const ord2 = o2 && (o2.orders || []).find(x => x.id === order.id);
+              const add2 = ord2 && (ord2.additions || []).find(a => a.id === addition.id);
+              if (add2) {
+                add2.kitchenGroupMsgId = result.result.message_id;
+                saveOwners(owners2);
+              }
+            }
+          }).catch(err => {
+            console.error(`[kgaddready xabar xatosi] owner=${ctx.owner.id} order=${order.id}: ${(err && err.message) || err}`);
+          });
+        }
+      }
 
       return sendJSON(res, 200, { ok: true, order });
     });
