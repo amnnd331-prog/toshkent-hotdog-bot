@@ -2387,7 +2387,7 @@
   height: calc(var(--app-vh, 1vh) * 100);
   z-index: 999999;
   background-color: #fff;
-  background-image: url('assets/splash-toshkent-hotdog.png');
+  background-image: url('assets/splash-toshkent-hotdog.jpg');
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
