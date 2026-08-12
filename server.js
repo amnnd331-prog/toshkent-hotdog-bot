@@ -1120,6 +1120,15 @@ function ctxHasAnyRole(ctx, roles) {
   return roles.some(r => ctxHasRole(ctx, r));
 }
 
+// Avtomatik hisobotlar (kunlik, haftalik, AI direktor) kimlarga yuborilishi
+// kerakligini aniqlaydi: asosiy egasi + "Egasi (hamkor)" roli berilgan barcha
+// xodimlar (havola orqali qo'shilganlar ham shular qatorida — chunki ular
+// ham owner.staff ichida rol="egasi" bilan saqlanadi).
+function ownerReportRecipientIds(owner) {
+  const staffEgasi = (owner.staff || []).filter(s => staffHasRole(s, 'egasi')).map(s => s.id);
+  return Array.from(new Set([owner.id, ...staffEgasi].map(String)));
+}
+
 function rolesLabel(roles) {
   return (roles || []).map(r => STAFF_ROLES[r] || r).join(', ') || '—';
 }
@@ -2313,6 +2322,17 @@ async function handleTelegramUpdate(update) {
       return;
     }
 
+    if (text === '/hisobot' || text.startsWith('/hisobot@') || text.startsWith('/hisobot ')) {
+      const owners = pruneExpiredOwners();
+      const ctx = resolveOwnerContext(owners, from.id);
+      if (!ctx || ctx.role !== 'egasi') {
+        await sendMessage(chatId, "Bu buyruq faqat oshxona egasi va uning hamkorlariga mavjud.");
+        return;
+      }
+      await sendMessage(chatId, buildFullHisobotText(ctx.owner));
+      return;
+    }
+
     if (text.startsWith('/start')) {
       await handleStartCommand(chatId, from, text);
       return;
@@ -3391,7 +3411,9 @@ async function sendAiDirectorDigest(owner, force) {
   const todayKey = aiDirDateKey(new Date());
   if (!force && owner.aiDirectorLastSent === todayKey) return false;
   const text = buildAiDirectorText(owner);
-  await sendMessage(owner.id, text);
+  for (const recipientId of ownerReportRecipientIds(owner)) {
+    await sendMessage(recipientId, text);
+  }
   owner.aiDirectorLastSent = todayKey;
   return true;
 }
@@ -3461,7 +3483,9 @@ async function sendAiWeeklyDirectorDigest(owner, force) {
   const weekKey = aiDirWeekKey(new Date());
   if (!force && owner.aiWeeklyLastSent === weekKey) return false;
   const text = buildAiWeeklyDirectorText(owner);
-  await sendMessage(owner.id, text);
+  for (const recipientId of ownerReportRecipientIds(owner)) {
+    await sendMessage(recipientId, text);
+  }
   owner.aiWeeklyLastSent = weekKey;
   return true;
 }
@@ -3543,7 +3567,9 @@ async function sendDailyReportDigest(owner, force) {
   const yesterdayKey = aiDirDateKey(new Date(Date.now() - 86400000));
   if (!force && owner.dailyReportLastSent === yesterdayKey) return false;
   const text = buildDailyReportText(owner, yesterdayKey);
-  await sendMessage(owner.id, text);
+  for (const recipientId of ownerReportRecipientIds(owner)) {
+    await sendMessage(recipientId, text);
+  }
   owner.dailyReportLastSent = yesterdayKey;
 
   // Agar o'sha kun uchun hali Z-hisobot qo'lda yopilmagan bo'lsa, shu
@@ -3561,6 +3587,62 @@ async function sendDailyReportDigest(owner, force) {
     }
   }
   return true;
+}
+
+// ---- /hisobot buyrug'i — barcha hisobot va tahlillarni bittada yig'ib
+// yuboradi. Egasi va "Egasi (hamkor)" xodimlar uchun ochiq (qarang:
+// resolveOwnerContext — ikkalasi ham role === 'egasi' qaytaradi).
+function buildZReportSummaryText(owner) {
+  const list = (owner.zReports || []).slice().sort((a, b) => b.date.localeCompare(a.date)).slice(0, 7);
+  if (!list.length) return null;
+  const lines = ["🧾 <b>So'nggi kunlar (Z-hisobot):</b>"];
+  for (const z of list) {
+    lines.push(`  • ${z.date}: tushum ${fmtNum(z.income)} so'm, sof foyda ${fmtNum(z.net)} so'm`);
+  }
+  return lines.join('\n');
+}
+
+function buildStaffTopPerformerText(owner) {
+  if (!(owner.staff || []).length) return null;
+  const from = new Date(Date.now() - 30 * 86400000);
+  const log = (owner.staffActionLog || []).filter(e => new Date(e.createdAt) >= from);
+  if (!log.length) return null;
+  const report = (owner.staff || []).map(staff => {
+    const mine = log.filter(e => String(e.userId) === String(staff.id));
+    const actionCount = mine.length;
+    const errorCount = mine.reduce((s, e) => s + (e.errorCount || 0), 0);
+    return { name: staffDisplayName(staff), actionCount, errorCount, score: actionCount - errorCount * 2 };
+  }).filter(r => r.actionCount > 0);
+  if (!report.length) return null;
+  report.sort((a, b) => b.score - a.score);
+  const top = report[0];
+  return `👤 Oxirgi 30 kunda eng faol xodim: <b>${escapeHtmlServer(top.name)}</b> — ${top.actionCount} ta amal` +
+    (top.errorCount ? `, ${top.errorCount} ta xato` : '') + '.';
+}
+
+function buildFullHisobotText(owner) {
+  const sections = [];
+  sections.push(`📋 <b>To'liq hisobot</b> — ${escapeHtmlServer((owner.profile && owner.profile.name) || 'Oshxona')}`);
+
+  const yesterdayKey = aiDirDateKey(new Date(Date.now() - 86400000));
+  sections.push(buildDailyReportText(owner, yesterdayKey));
+
+  if (ownerCanUseFeature(owner, 'ai-analytics')) {
+    sections.push(buildAiDirectorText(owner));
+    sections.push(buildAiWeeklyDirectorText(owner));
+  }
+
+  if (ownerCanUseFeature(owner, 'z-report')) {
+    const zText = buildZReportSummaryText(owner);
+    if (zText) sections.push(zText);
+  }
+
+  if (ownerCanUseFeature(owner, 'staff-performance')) {
+    const staffText = buildStaffTopPerformerText(owner);
+    if (staffText) sections.push(staffText);
+  }
+
+  return sections.join('\n\n————————————\n\n');
 }
 
 setInterval(() => {
