@@ -9760,7 +9760,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <rect x="50" y="354" width="280" height="14" fill="#4A3A2A"/>
         </svg>
         <div style="text-align:center; margin-top:14px;">
-          <div style="font-size:12px; color:var(--text-muted); margin-bottom:10px;">Ish vaqti: ${pad2(status.openHour)}:00 — ${pad2(status.closeHour)}:00</div>
+          <div style="font-size:12px; color:var(--text-muted); margin-bottom:10px;">Ish vaqti: ${pad2(status.openHour)}:${pad2(status.openMinute || 0)} — ${pad2(status.closeHour)}:${pad2(status.closeMinute || 0)}</div>
           <div style="height:4px; background:var(--surface-1); border-radius:4px; overflow:hidden; max-width:260px; margin:0 auto 16px;">
             <div id="kitchenProgressFill" style="height:100%; width:0%; background:var(--brand-primary); border-radius:4px;"></div>
           </div>
@@ -9780,8 +9780,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
     ekran(customerClosedScreenHtml(status));
 
     const opensAt = new Date(status.opensAt).getTime();
-    const closedHours = (((status.openHour - status.closeHour) % 24) + 24) % 24 || 24;
-    const totalWindowMs = closedHours * 3600 * 1000;
+    const openMinTotal = status.openHour * 60 + (status.openMinute || 0);
+    const closeMinTotal = status.closeHour * 60 + (status.closeMinute || 0);
+    const closedMinutes = (((openMinTotal - closeMinTotal) % 1440) + 1440) % 1440 || 1440;
+    const totalWindowMs = closedMinutes * 60 * 1000;
     const timerEl = document.getElementById('kitchenTimerSvgText');
     const progressEl = document.getElementById('kitchenProgressFill');
 
