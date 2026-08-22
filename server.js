@@ -481,10 +481,10 @@ function saveJSONArray(file, arr) {
 function loadOwners() { return loadJSONArray(OWNERS_FILE).map(ensureSubscriptionFields); }
 function saveOwners(owners) { saveJSONArray(OWNERS_FILE, owners); }
 
-// Oshxonaning ish vaqti (Toshkent bo'yicha): 10:00 dan 03:00 gacha ishlaydi.
-// Hozircha barcha oshxonalar uchun bitta umumiy jadval — kelajakda har bir
-// owner.profile.workHours asosida individual qilish mumkin.
-const KITCHEN_WORK_HOURS = { openHour: 10, closeHour: 3 };
+// Oshxonaning standart (zaxira) ish vaqti (Toshkent bo'yicha): 10:00 dan 03:00 gacha.
+// Har bir owner o'z profilida (Sozlamalar -> Ish vaqti) "09:00 - 23:00" ko'rinishida
+// vaqt kiritsa, aynan o'sha vaqt ishlatiladi; aks holda shu standart qiymat qo'llanadi.
+const KITCHEN_WORK_HOURS = { openHour: 10, openMinute: 0, closeHour: 3, closeMinute: 0 };
 const KITCHEN_TZ_OFFSET_MS = 5 * 60 * 60 * 1000; // Toshkent = UTC+5
 
 function kitchenTashkentDate(input) {
@@ -492,16 +492,43 @@ function kitchenTashkentDate(input) {
   return new Date(d.getTime() + KITCHEN_TZ_OFFSET_MS);
 }
 
-function isKitchenOpenNow() {
-  const h = kitchenTashkentDate().getUTCHours();
-  return h >= KITCHEN_WORK_HOURS.openHour || h < KITCHEN_WORK_HOURS.closeHour;
+// "09:00 - 23:00" (yoki "9:00-23:00" kabi) matnni { openHour, openMinute, closeHour, closeMinute }
+// ko'rinishiga o'giradi. Noto'g'ri/bo'sh bo'lsa null qaytaradi.
+function parseWorkHoursRange(str) {
+  if (!str) return null;
+  const m = String(str).match(/(\d{1,2})[:.](\d{2})\s*[-–—]\s*(\d{1,2})[:.](\d{2})/);
+  if (!m) return null;
+  const openHour = parseInt(m[1], 10), openMinute = parseInt(m[2], 10);
+  const closeHour = parseInt(m[3], 10), closeMinute = parseInt(m[4], 10);
+  if ([openHour, closeHour].some(h => h < 0 || h > 23)) return null;
+  if ([openMinute, closeMinute].some(mm => mm < 0 || mm > 59)) return null;
+  return { openHour, openMinute, closeHour, closeMinute };
+}
+
+// Owner uchun amaldagi ish vaqtini qaytaradi: profilida kiritilgan bo'lsa o'shani,
+// bo'lmasa yoki noto'g'ri formatda bo'lsa standart KITCHEN_WORK_HOURS ni.
+function getOwnerWorkHours(owner) {
+  const raw = owner && owner.profile && owner.profile.workHours;
+  return parseWorkHoursRange(raw) || KITCHEN_WORK_HOURS;
+}
+
+function isKitchenOpenNow(hours) {
+  const wh = hours || KITCHEN_WORK_HOURS;
+  const now = kitchenTashkentDate();
+  const nowMin = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const openMin = wh.openHour * 60 + (wh.openMinute || 0);
+  const closeMin = wh.closeHour * 60 + (wh.closeMinute || 0);
+  if (openMin === closeMin) return true; // 24 soat ochiq
+  if (openMin < closeMin) return nowMin >= openMin && nowMin < closeMin;
+  return nowMin >= openMin || nowMin < closeMin;
 }
 
 // Keyingi ochilish vaqtini haqiqiy (UTC) Date sifatida qaytaradi.
-function nextKitchenOpenAt() {
+function nextKitchenOpenAt(hours) {
+  const wh = hours || KITCHEN_WORK_HOURS;
   const tashkentNow = kitchenTashkentDate();
   const target = new Date(tashkentNow);
-  target.setUTCHours(KITCHEN_WORK_HOURS.openHour, 0, 0, 0);
+  target.setUTCHours(wh.openHour, wh.openMinute || 0, 0, 0);
   if (target <= tashkentNow) target.setUTCDate(target.getUTCDate() + 1);
   return new Date(target.getTime() - KITCHEN_TZ_OFFSET_MS);
 }
@@ -511,20 +538,23 @@ function loadKitchenReminders() { return loadJSONArray(KITCHEN_REMINDERS_FILE); 
 function saveKitchenReminders(list) { saveJSONArray(KITCHEN_REMINDERS_FILE, list); }
 
 // Oshxona ochilganda kutayotgan mijozlarga botdan avtomatik xabar yuboradi.
+// Har bir owner o'zining (sozlamalardagi) ish vaqtiga qarab tekshiriladi.
 setInterval(() => {
-  if (!isKitchenOpenNow()) return;
   const reminders = loadKitchenReminders();
   if (!reminders.length) return;
-  saveKitchenReminders([]);
   const owners = loadOwners();
+  const remaining = [];
   reminders.forEach(r => {
     const owner = findOwner(owners, r.ownerId);
+    const hours = getOwnerWorkHours(owner);
+    if (!isKitchenOpenNow(hours)) { remaining.push(r); return; }
     const restaurantName = (owner && owner.profile && owner.profile.name) || 'Toshkent Hot-Dog';
     const menuUrl = PUBLIC_URL ? `${PUBLIC_URL.replace(/\/$/, '')}/?customer=${encodeURIComponent(r.ownerId)}` : null;
     sendMessage(r.userId,
       `🔓 <b>Ochildik!</b>\n${escapeHtmlServer(restaurantName)} hozir buyurtmalarni qabul qilmoqda.`,
       menuUrl ? { inline_keyboard: [[{ text: '🍽 Menyuni ochish', web_app: { url: menuUrl } }]] } : null);
   });
+  if (remaining.length !== reminders.length) saveKitchenReminders(remaining);
 }, 30 * 1000);
 
 function loadAdminSupportMessages() { return loadJSONArray(ADMIN_SUPPORT_FILE); }
@@ -5140,7 +5170,9 @@ const server = http.createServer((req, res) => {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
       const { initData, ownerId } = payload || {};
-      const open = isKitchenOpenNow();
+      const owner = ownerId ? findOwner(loadOwners(), ownerId) : null;
+      const hours = getOwnerWorkHours(owner);
+      const open = isKitchenOpenNow(hours);
       let alreadyReminded = false;
       if (initData && ownerId) {
         const check = verifyAuth(initData);
@@ -5153,9 +5185,11 @@ const server = http.createServer((req, res) => {
       return sendJSON(res, 200, {
         ok: true,
         open,
-        opensAt: open ? null : nextKitchenOpenAt().toISOString(),
-        openHour: KITCHEN_WORK_HOURS.openHour,
-        closeHour: KITCHEN_WORK_HOURS.closeHour,
+        opensAt: open ? null : nextKitchenOpenAt(hours).toISOString(),
+        openHour: hours.openHour,
+        openMinute: hours.openMinute || 0,
+        closeHour: hours.closeHour,
+        closeMinute: hours.closeMinute || 0,
         alreadyReminded
       });
     });
@@ -5169,7 +5203,8 @@ const server = http.createServer((req, res) => {
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       if (!ownerId) return sendJSON(res, 200, { ok: false, reason: 'Oshxona aniqlanmadi.' });
-      if (isKitchenOpenNow()) return sendJSON(res, 200, { ok: false, reason: 'Oshxona hozir ochiq.' });
+      const owner = findOwner(loadOwners(), ownerId);
+      if (isKitchenOpenNow(getOwnerWorkHours(owner))) return sendJSON(res, 200, { ok: false, reason: 'Oshxona hozir ochiq.' });
 
       const userId = String(check.user.id);
       const reminders = loadKitchenReminders();
