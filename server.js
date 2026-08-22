@@ -481,6 +481,52 @@ function saveJSONArray(file, arr) {
 function loadOwners() { return loadJSONArray(OWNERS_FILE).map(ensureSubscriptionFields); }
 function saveOwners(owners) { saveJSONArray(OWNERS_FILE, owners); }
 
+// Oshxonaning ish vaqti (Toshkent bo'yicha): 10:00 dan 03:00 gacha ishlaydi.
+// Hozircha barcha oshxonalar uchun bitta umumiy jadval — kelajakda har bir
+// owner.profile.workHours asosida individual qilish mumkin.
+const KITCHEN_WORK_HOURS = { openHour: 10, closeHour: 3 };
+const KITCHEN_TZ_OFFSET_MS = 5 * 60 * 60 * 1000; // Toshkent = UTC+5
+
+function kitchenTashkentDate(input) {
+  const d = (input instanceof Date) ? input : new Date(input || Date.now());
+  return new Date(d.getTime() + KITCHEN_TZ_OFFSET_MS);
+}
+
+function isKitchenOpenNow() {
+  const h = kitchenTashkentDate().getUTCHours();
+  return h >= KITCHEN_WORK_HOURS.openHour || h < KITCHEN_WORK_HOURS.closeHour;
+}
+
+// Keyingi ochilish vaqtini haqiqiy (UTC) Date sifatida qaytaradi.
+function nextKitchenOpenAt() {
+  const tashkentNow = kitchenTashkentDate();
+  const target = new Date(tashkentNow);
+  target.setUTCHours(KITCHEN_WORK_HOURS.openHour, 0, 0, 0);
+  if (target <= tashkentNow) target.setUTCDate(target.getUTCDate() + 1);
+  return new Date(target.getTime() - KITCHEN_TZ_OFFSET_MS);
+}
+
+const KITCHEN_REMINDERS_FILE = path.join(DATA_DIR, 'kitchen_reminders.json');
+function loadKitchenReminders() { return loadJSONArray(KITCHEN_REMINDERS_FILE); }
+function saveKitchenReminders(list) { saveJSONArray(KITCHEN_REMINDERS_FILE, list); }
+
+// Oshxona ochilganda kutayotgan mijozlarga botdan avtomatik xabar yuboradi.
+setInterval(() => {
+  if (!isKitchenOpenNow()) return;
+  const reminders = loadKitchenReminders();
+  if (!reminders.length) return;
+  saveKitchenReminders([]);
+  const owners = loadOwners();
+  reminders.forEach(r => {
+    const owner = findOwner(owners, r.ownerId);
+    const restaurantName = (owner && owner.profile && owner.profile.name) || 'Toshkent Hot-Dog';
+    const menuUrl = PUBLIC_URL ? `${PUBLIC_URL.replace(/\/$/, '')}/?customer=${encodeURIComponent(r.ownerId)}` : null;
+    sendMessage(r.userId,
+      `🔓 <b>Ochildik!</b>\n${escapeHtmlServer(restaurantName)} hozir buyurtmalarni qabul qilmoqda.`,
+      menuUrl ? { inline_keyboard: [[{ text: '🍽 Menyuni ochish', web_app: { url: menuUrl } }]] } : null);
+  });
+}, 30 * 1000);
+
 function loadAdminSupportMessages() { return loadJSONArray(ADMIN_SUPPORT_FILE); }
 function saveAdminSupportMessages(msgs) { saveJSONArray(ADMIN_SUPPORT_FILE, msgs); }
 
@@ -5086,6 +5132,58 @@ const server = http.createServer((req, res) => {
         personRegistered: isRegisteredUser(userId),
         bonusEnabled: !!(owner.bonusSettings && owner.bonusSettings.enabled)
       });
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/api/kitchen-status') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, ownerId } = payload || {};
+      const open = isKitchenOpenNow();
+      let alreadyReminded = false;
+      if (initData && ownerId) {
+        const check = verifyAuth(initData);
+        if (check.ok) {
+          const userId = String(check.user.id);
+          const reminders = loadKitchenReminders();
+          alreadyReminded = reminders.some(r => String(r.userId) === userId && String(r.ownerId) === String(ownerId));
+        }
+      }
+      return sendJSON(res, 200, {
+        ok: true,
+        open,
+        opensAt: open ? null : nextKitchenOpenAt().toISOString(),
+        openHour: KITCHEN_WORK_HOURS.openHour,
+        closeHour: KITCHEN_WORK_HOURS.closeHour,
+        alreadyReminded
+      });
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/api/kitchen-remind') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, ownerId } = payload || {};
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      if (!ownerId) return sendJSON(res, 200, { ok: false, reason: 'Oshxona aniqlanmadi.' });
+      if (isKitchenOpenNow()) return sendJSON(res, 200, { ok: false, reason: 'Oshxona hozir ochiq.' });
+
+      const userId = String(check.user.id);
+      const reminders = loadKitchenReminders();
+      const exists = reminders.some(r => String(r.userId) === userId && String(r.ownerId) === String(ownerId));
+      if (!exists) {
+        reminders.push({
+          id: crypto.randomBytes(4).toString('hex'),
+          userId,
+          ownerId: String(ownerId),
+          createdAt: new Date().toISOString()
+        });
+        saveKitchenReminders(reminders);
+      }
+      return sendJSON(res, 200, { ok: true });
     });
     return;
   }
