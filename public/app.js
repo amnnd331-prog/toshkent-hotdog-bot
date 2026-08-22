@@ -9658,6 +9658,12 @@ const tg = window.Telegram && window.Telegram.WebApp;
     customerState.cardOnlyRestricted = !!verifyRes.customer.cardOnlyRestricted;
     customerState.personRegistered = !!verifyRes.personRegistered;
 
+    const kitchenStatus = await apiPost('/api/kitchen-status', { initData, ownerId });
+    if (kitchenStatus.ok && !kitchenStatus.open) {
+      renderKitchenClosedScreen(ownerId, kitchenStatus);
+      return;
+    }
+
     const menuRes = await apiPost('/api/customer-menu-list', { initData, ownerId });
     customerState.menu = menuRes.ok ? menuRes.menu : [];
     customerState.categories = menuRes.ok ? (menuRes.categories || []) : [];
@@ -9668,6 +9674,153 @@ const tg = window.Telegram && window.Telegram.WebApp;
     renderCustomerMenuTab();
 
     refreshCustomerNotifBadge();
+  }
+
+  let kitchenCountdownTimer = null;
+
+  function customerClosedScreenHtml(status) {
+    const already = !!status.alreadyReminded;
+    return `
+      <div class="panel" style="padding-top:6px;">
+        <svg width="100%" viewBox="0 0 380 380" style="display:block; border-radius:12px; overflow:hidden;">
+          <rect x="0" y="0" width="380" height="120" fill="#0E1A33"/>
+          <circle cx="315" cy="30" r="15" fill="#F4E9C9"/>
+          <circle cx="55" cy="24" r="1.4" fill="#F4E9C9"/>
+          <circle cx="105" cy="46" r="1.1" fill="#F4E9C9"/>
+          <circle cx="260" cy="12" r="1.2" fill="#F4E9C9"/>
+          <rect x="0" y="120" width="380" height="260" fill="#182233"/>
+          <rect x="65" y="118" width="6" height="236" fill="#4A3A2A"/>
+          <rect x="309" y="118" width="6" height="236" fill="#4A3A2A"/>
+          <rect x="66" y="64" width="248" height="32" rx="3" fill="#2B2B28"/>
+          <rect x="66" y="64" width="248" height="32" rx="3" fill="none" stroke="var(--brand-primary)" stroke-width="2"/>
+          <text x="190" y="85" text-anchor="middle" font-size="17" font-weight="700" fill="#F0E9DC">TOSHKENT HOT-DOG</text>
+          <rect x="60" y="96" width="20" height="26" fill="var(--brand-primary)"/>
+          <rect x="80" y="96" width="20" height="26" fill="#F0E9DC"/>
+          <rect x="100" y="96" width="20" height="26" fill="var(--brand-primary)"/>
+          <rect x="120" y="96" width="20" height="26" fill="#F0E9DC"/>
+          <rect x="140" y="96" width="20" height="26" fill="var(--brand-primary)"/>
+          <rect x="160" y="96" width="20" height="26" fill="#F0E9DC"/>
+          <rect x="180" y="96" width="20" height="26" fill="var(--brand-primary)"/>
+          <rect x="200" y="96" width="20" height="26" fill="#F0E9DC"/>
+          <rect x="220" y="96" width="20" height="26" fill="var(--brand-primary)"/>
+          <rect x="240" y="96" width="20" height="26" fill="#F0E9DC"/>
+          <rect x="260" y="96" width="20" height="26" fill="var(--brand-primary)"/>
+          <rect x="280" y="96" width="20" height="26" fill="#F0E9DC"/>
+          <rect x="300" y="96" width="20" height="26" fill="var(--brand-primary)"/>
+          <circle cx="70" cy="122" r="9" fill="var(--brand-primary)"/>
+          <circle cx="90" cy="122" r="9" fill="#F0E9DC"/>
+          <circle cx="110" cy="122" r="9" fill="var(--brand-primary)"/>
+          <circle cx="130" cy="122" r="9" fill="#F0E9DC"/>
+          <circle cx="150" cy="122" r="9" fill="var(--brand-primary)"/>
+          <circle cx="170" cy="122" r="9" fill="#F0E9DC"/>
+          <circle cx="190" cy="122" r="9" fill="var(--brand-primary)"/>
+          <circle cx="210" cy="122" r="9" fill="#F0E9DC"/>
+          <circle cx="230" cy="122" r="9" fill="var(--brand-primary)"/>
+          <circle cx="250" cy="122" r="9" fill="#F0E9DC"/>
+          <circle cx="270" cy="122" r="9" fill="var(--brand-primary)"/>
+          <circle cx="290" cy="122" r="9" fill="#F0E9DC"/>
+          <circle cx="310" cy="122" r="9" fill="var(--brand-primary)"/>
+          <rect x="60" y="132" width="260" height="220" fill="#2B2B28"/>
+          <rect x="80" y="146" width="220" height="88" fill="#8A8F98"/>
+          <line x1="80" y1="154" x2="300" y2="154" stroke="#6B7078" stroke-width="1.5"/>
+          <line x1="80" y1="162" x2="300" y2="162" stroke="#6B7078" stroke-width="1.5"/>
+          <line x1="80" y1="170" x2="300" y2="170" stroke="#6B7078" stroke-width="1.5"/>
+          <line x1="80" y1="178" x2="300" y2="178" stroke="#6B7078" stroke-width="1.5"/>
+          <line x1="80" y1="186" x2="300" y2="186" stroke="#6B7078" stroke-width="1.5"/>
+          <line x1="80" y1="194" x2="300" y2="194" stroke="#6B7078" stroke-width="1.5"/>
+          <line x1="80" y1="202" x2="300" y2="202" stroke="#6B7078" stroke-width="1.5"/>
+          <line x1="80" y1="210" x2="300" y2="210" stroke="#6B7078" stroke-width="1.5"/>
+          <line x1="80" y1="218" x2="300" y2="218" stroke="#6B7078" stroke-width="1.5"/>
+          <line x1="80" y1="226" x2="300" y2="226" stroke="#6B7078" stroke-width="1.5"/>
+          <circle cx="190" cy="190" r="9" fill="#5A5F66"/>
+          <rect x="187" y="196" width="6" height="10" fill="#5A5F66"/>
+          <line x1="178" y1="146" x2="182" y2="180" stroke="#4A3A2A" stroke-width="1"/>
+          <line x1="202" y1="146" x2="198" y2="180" stroke="#4A3A2A" stroke-width="1"/>
+          <g transform="rotate(-4 190 194)">
+            <rect x="160" y="180" width="60" height="26" rx="2" fill="#F0E9DC"/>
+            <text x="190" y="197" text-anchor="middle" font-size="14" font-weight="700" fill="#792A1F">yopiq</text>
+          </g>
+          <ellipse cx="290" cy="304" rx="14" ry="5" fill="#D9A463"/>
+          <rect x="278" y="295" width="24" height="7" rx="3" fill="#6B4226"/>
+          <path d="M278 293 L284 289 L290 293 L296 289 L302 293 L302 296 L278 296 Z" fill="#F2C94C"/>
+          <path d="M278 289 Q283 284 290 289 Q297 284 302 289" fill="none" stroke="#6FA83B" stroke-width="3" stroke-linecap="round"/>
+          <ellipse cx="290" cy="286" rx="14" ry="8" fill="#E4B673"/>
+          <circle cx="284" cy="283" r="1.1" fill="#F7EFDD"/>
+          <circle cx="290" cy="281" r="1.1" fill="#F7EFDD"/>
+          <circle cx="296" cy="283" r="1.1" fill="#F7EFDD"/>
+          <rect x="86" y="240" width="188" height="8" fill="#4A3A2A"/>
+          <rect x="90" y="248" width="180" height="100" rx="3" fill="#24322B"/>
+          <rect x="90" y="248" width="180" height="100" rx="3" fill="none" stroke="#4A3A2A" stroke-width="3"/>
+          <text x="180" y="266" text-anchor="middle" font-size="13" font-weight="600" fill="#E9E2D0">
+            <tspan x="180" dy="0">Kunduzi sizga yaxshiroq va</tspan>
+            <tspan x="180" dy="16">mazaliroq tayyorlash uchun</tspan>
+            <tspan x="180" dy="16">hozir dam olyabmiz</tspan>
+          </text>
+          <text id="kitchenTimerSvgText" x="180" y="335" text-anchor="middle" font-size="26" font-weight="700" fill="#F0E9DC" font-family="monospace">00:00:00</text>
+          <rect x="50" y="354" width="280" height="14" fill="#4A3A2A"/>
+        </svg>
+        <div style="text-align:center; margin-top:14px;">
+          <div style="font-size:12px; color:var(--text-muted); margin-bottom:10px;">Ish vaqti: ${pad2(status.openHour)}:00 — ${pad2(status.closeHour)}:00</div>
+          <div style="height:4px; background:var(--surface-1); border-radius:4px; overflow:hidden; max-width:260px; margin:0 auto 16px;">
+            <div id="kitchenProgressFill" style="height:100%; width:0%; background:var(--brand-primary); border-radius:4px;"></div>
+          </div>
+          <button class="btn" id="kitchenRemindBtn" ${already ? 'disabled' : ''}>
+            <span>${already ? "🔔 Eslatma yoqilgan" : "🔔 Ochilganda eslatib qo'y"}</span>
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  function pad2(n) { return n < 10 ? '0' + n : '' + n; }
+
+  function renderKitchenClosedScreen(ownerId, status) {
+    clearAppHeader();
+    if (kitchenCountdownTimer) { clearInterval(kitchenCountdownTimer); kitchenCountdownTimer = null; }
+    ekran(customerClosedScreenHtml(status));
+
+    const opensAt = new Date(status.opensAt).getTime();
+    const closedHours = (((status.openHour - status.closeHour) % 24) + 24) % 24 || 24;
+    const totalWindowMs = closedHours * 3600 * 1000;
+    const timerEl = document.getElementById('kitchenTimerSvgText');
+    const progressEl = document.getElementById('kitchenProgressFill');
+
+    function tick() {
+      const now = Date.now();
+      const diff = opensAt - now;
+      if (diff <= 0) {
+        clearInterval(kitchenCountdownTimer);
+        kitchenCountdownTimer = null;
+        renderCustomerApp(ownerId);
+        return;
+      }
+      const totalSec = Math.floor(diff / 1000);
+      const hh = Math.floor(totalSec / 3600);
+      const mm = Math.floor((totalSec % 3600) / 60);
+      const ss = totalSec % 60;
+      if (timerEl) timerEl.textContent = pad2(hh) + ':' + pad2(mm) + ':' + pad2(ss);
+      if (progressEl && totalWindowMs > 0) {
+        const elapsed = totalWindowMs - diff;
+        const pct = Math.max(0, Math.min(100, (elapsed / totalWindowMs) * 100));
+        progressEl.style.width = pct.toFixed(0) + '%';
+      }
+    }
+    tick();
+    kitchenCountdownTimer = setInterval(tick, 1000);
+
+    const btn = document.getElementById('kitchenRemindBtn');
+    if (btn) {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        const r = await apiPost('/api/kitchen-remind', { initData, ownerId });
+        if (r.ok) {
+          btn.innerHTML = '<span>🔔 Eslatma yoqilgan</span>';
+        } else {
+          btn.disabled = false;
+          alert(r.reason || 'Xatolik yuz berdi.');
+        }
+      });
+    }
   }
 
   function customerRestaurantPickerHtml(restaurants) {
