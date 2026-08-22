@@ -1119,7 +1119,7 @@ const ORDER_TYPES = { olib_ketish: 'Olib ketish', dostavka: 'Dostavka', zal: 'Za
 // "zal" turi faqat kassir/ega tomonidan (zalda o'tirgan mijoz uchun) yaratiladi —
 // mijozning botdagi buyurtma oynasida bu tur ko'rsatilmaydi (pastda CUSTOMER_ORDER_TYPES'ga qarang).
 const CUSTOMER_ORDER_TYPES = { olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
-const PAYMENT_TYPES = { naqd: 'Naqd', karta: 'Karta', click: 'Click', dostavka_orqali: 'Dostavka orqali' };
+const PAYMENT_TYPES = { naqd: 'Naqd', karta: 'Karta', click: 'Click', dostavka_orqali: 'Naqd' };
 
 function orderIncomeAmount(o) {
   if (o.status === 'bekor_qilindi') return 0;
@@ -5917,11 +5917,11 @@ const server = http.createServer((req, res) => {
         return sendJSON(res, 200, { ok: false, reason: 'To\'lov turini tanlang.' });
       }
       if (orderType === 'dostavka' && paymentType === 'naqd') {
-        return sendJSON(res, 200, { ok: false, reason: 'Dostavka buyurtmalarida naqd to\'lov mavjud emas. Karta yoki dostavka orqali to\'lovni tanlang.' });
+        return sendJSON(res, 200, { ok: false, reason: 'Bu turdagi naqd to\'lov dostavka buyurtmalarida mavjud emas. "Naqd" (dostavka orqali) yoki Karta tanlang.' });
       }
 
       if (orderType !== 'dostavka' && paymentType === 'dostavka_orqali') {
-        return sendJSON(res, 200, { ok: false, reason: '"Dostavka orqali" to\'lovi faqat Dostavka buyurtmalarida mavjud.' });
+        return sendJSON(res, 200, { ok: false, reason: '"Naqd" to\'lovi (dostavkada) faqat Dostavka buyurtmalarida mavjud.' });
       }
 
       if (orderType === 'dostavka' && paymentType === 'dostavka_orqali' && customerIsCardOnlyRestricted(owner, userId)) {
@@ -6255,11 +6255,11 @@ const server = http.createServer((req, res) => {
         return sendJSON(res, 200, { ok: false, reason: 'To\'lov turini tanlang.' });
       }
       if (orderType === 'dostavka' && paymentType === 'naqd') {
-        return sendJSON(res, 200, { ok: false, reason: 'Dostavka buyurtmalarida naqd to\'lov mavjud emas. Karta yoki dostavka orqali to\'lovni tanlang.' });
+        return sendJSON(res, 200, { ok: false, reason: 'Bu turdagi naqd to\'lov dostavka buyurtmalarida mavjud emas. "Naqd" (dostavka orqali) yoki Karta tanlang.' });
       }
 
       if (orderType !== 'dostavka' && paymentType === 'dostavka_orqali') {
-        return sendJSON(res, 200, { ok: false, reason: '"Dostavka orqali" to\'lovi faqat Dostavka buyurtmalarida mavjud.' });
+        return sendJSON(res, 200, { ok: false, reason: '"Naqd" to\'lovi (dostavkada) faqat Dostavka buyurtmalarida mavjud.' });
       }
 
       const menu = ctx.owner.menu || [];
@@ -6415,10 +6415,10 @@ const server = http.createServer((req, res) => {
       const finalOrderType = Object.prototype.hasOwnProperty.call(ORDER_TYPES, orderType) ? orderType : order.orderType;
       const finalPaymentType = Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, paymentType) ? paymentType : order.paymentType;
       if (finalOrderType === 'dostavka' && finalPaymentType === 'naqd') {
-        return sendJSON(res, 200, { ok: false, reason: 'Dostavka buyurtmalarida naqd to\'lov mavjud emas. Karta yoki dostavka orqali to\'lovni tanlang.' });
+        return sendJSON(res, 200, { ok: false, reason: 'Bu turdagi naqd to\'lov dostavka buyurtmalarida mavjud emas. "Naqd" (dostavka orqali) yoki Karta tanlang.' });
       }
       if (finalOrderType !== 'dostavka' && finalPaymentType === 'dostavka_orqali') {
-        return sendJSON(res, 200, { ok: false, reason: '"Dostavka orqali" to\'lovi faqat Dostavka buyurtmalarida mavjud.' });
+        return sendJSON(res, 200, { ok: false, reason: '"Naqd" to\'lovi (dostavkada) faqat Dostavka buyurtmalarida mavjud.' });
       }
 
       const menu = ctx.owner.menu || [];
