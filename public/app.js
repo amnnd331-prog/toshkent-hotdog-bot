@@ -4195,7 +4195,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   // Mijozning bot ichidagi buyurtma oynasida "Zal" turi ko'rsatilmaydi —
   // bu tur faqat kassir/ega tomonidan zalda o'tirgan mijoz uchun yaratiladi.
   const CUSTOMER_ORDER_TYPE_LABELS = { olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
-  const PAYMENT_TYPE_LABELS = { naqd: 'Naqd', karta: 'Karta', click: 'Click', dostavka_orqali: "Dostavka orqali" };
+  const PAYMENT_TYPE_LABELS = { naqd: 'Naqd', karta: 'Karta', click: 'Click', dostavka_orqali: "Naqd" };
 
   function visiblePaymentTypeEntries(orderType) {
     return Object.entries(PAYMENT_TYPE_LABELS).filter(([k]) => {
@@ -7280,7 +7280,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
             <option value="naqd" ${orderHistoryState.paymentType === 'naqd' ? 'selected' : ''}>Naqd</option>
             <option value="karta" ${orderHistoryState.paymentType === 'karta' ? 'selected' : ''}>Karta</option>
             <option value="click" ${orderHistoryState.paymentType === 'click' ? 'selected' : ''}>Click</option>
-            <option value="dostavka_orqali" ${orderHistoryState.paymentType === 'dostavka_orqali' ? 'selected' : ''}>Dostavka orqali</option>
+            <option value="dostavka_orqali" ${orderHistoryState.paymentType === 'dostavka_orqali' ? 'selected' : ''}>Naqd</option>
           </select>
           <div class="profile-row"><b>Buyurtma turi</b></div>
           <select id="ohOrderType">
