@@ -2041,8 +2041,12 @@ async function handleStartCommand(chatId, from, text) {
     const owners = loadOwners();
     if (findOwner(owners, from.id) || findStaffInfo(owners, from.id)) {
       const skCtx = skResolveCtx(owners, from.id);
-      const skHint = skCtx ? "\n\n📦 Ostatka, 📖 retsept va 🧮 audit uchun /sklad buyrug'ini yuboring — tugmalar orqali tez qo'shasiz." : '';
-      await sendMessage(chatId, `Salom! Mini App tugmasi orqali boshqaruv panelini oching.${skHint}`);
+      if (skCtx) {
+        await sendMessage(chatId, "Salom! Mini App tugmasi orqali boshqaruv panelini oching.\n\n📦 Ostatka, 📖 retsept va 🧮 audit uchun quyidagi tugmani bosing:",
+          { inline_keyboard: [[{ text: '🗄 Sklad (ostatka / retsept / audit)', callback_data: 'sk:menu' }]] });
+        return;
+      }
+      await sendMessage(chatId, 'Salom! Mini App tugmasi orqali boshqaruv panelini oching.');
       return;
     }
 
@@ -11188,6 +11192,15 @@ server.listen(PORT, async () => {
 
   reloadAdminsCache();
   console.log(`Qo'shimcha adminlar soni: ${EXTRA_ADMIN_IDS.size}`);
+
+  try {
+    const cmdResult = await telegramApi('setMyCommands', { commands: JSON.stringify([
+      { command: 'sklad', description: "Sklad: ostatka, retsept, audit" }
+    ]) });
+    if (!cmdResult || !cmdResult.ok) console.error('setMyCommands xato:', cmdResult && cmdResult.description);
+  } catch (e) {
+    console.error('Bot buyruqlarini o\'rnatishda xatolik:', e.message);
+  }
 
   try {
     ensureAdminIsOwner();
