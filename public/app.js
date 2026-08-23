@@ -4229,24 +4229,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     editingOrderId: null, editingOrderNumber: null, editingComboItems: null, editingReturn: null
   };
 
-  // "Zal"/"Dostavka"/"Olib ketish" yoki "Naqd"/"Karta"/"Click" bosilganda BUTUN
-  // ekranni qayta chizib yubormaslik uchun (bu menyuni qayta yuklab, sahifani
-  // boshiga scroll qilib yuborardi) — faqat shu ikki qatorni yangilaymiz.
-  function updateCashierTypeRows() {
-    const orderRow = document.getElementById('orderTypeRow');
-    if (orderRow) {
-      orderRow.innerHTML = Object.entries(ORDER_TYPE_LABELS).map(([k, label]) => `
-        <div class="type-opt ${cashierState.orderType === k ? 'selected' : ''}" data-order-type="${k}">${label}</div>
-      `).join('');
-    }
-    const paymentRow = document.getElementById('paymentTypeRow');
-    if (paymentRow) {
-      paymentRow.innerHTML = visiblePaymentTypeEntries(cashierState.orderType).map(([k, label]) => `
-        <div class="type-opt ${cashierState.paymentType === k ? 'selected' : ''}" data-payment-type="${k}">${label}</div>
-      `).join('');
-    }
-  }
-
   function cashierCartTotal() {
     return Object.entries(cashierState.cart).reduce((sum, [key, qty]) => sum + (qty || 0) * menuItemPriceForCartKey(cashierState.menu, key), 0);
   }
@@ -4314,20 +4296,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <div id="cashierMenu" style="margin-top:14px;"><div class="bosh">Yuklanmoqda...</div></div>
         <div class="cart-bar">
           <div id="cashierCartItemsWrap">${cashierCartItemsHtml()}</div>
-          <div class="type-row" id="orderTypeRow">
-            ${Object.entries(ORDER_TYPE_LABELS).map(([k, label]) => `
-              <div class="type-opt ${cashierState.orderType === k ? 'selected' : ''}" data-order-type="${k}">${label}</div>
-            `).join('')}
-          </div>
-          <div class="type-row" id="paymentTypeRow">
-            ${visiblePaymentTypeEntries(cashierState.orderType).map(([k, label]) => `
-              <div class="type-opt ${cashierState.paymentType === k ? 'selected' : ''}" data-payment-type="${k}">${label}</div>
-            `).join('')}
-          </div>
-          <textarea id="orderCommentInput" placeholder="Izoh (masalan: piyozsiz, achchiq sous ko'proq...)" rows="2" style="margin-top:10px;">${escapeHtml(cashierState.comment || '')}</textarea>
           <div class="cart-total"><span>Jami:</span><span id="cartTotalVal">${fmtNum(cashierCartTotal())} so'm</span></div>
-          <button class="btn" id="sendOrderBtn">${isEditing ? 'Buyurtmani yangilash' : "Oshxonaga yuborish"}</button>
-          <div class="xabar" id="orderMsg"></div>
+          <button class="btn" id="cashierOpenCheckoutBtn">${isEditing ? 'Buyurtmani yangilash' : "Oshxonaga yuborish"}</button>
+          <div class="xabar" id="cashierCartMsg"></div>
         </div>
       </div>
     `);
@@ -4346,23 +4317,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       });
     }
 
-    document.getElementById('orderTypeRow').addEventListener('click', (e) => {
-      const t = e.target.getAttribute('data-order-type');
-      if (!t) return;
-      cashierState.orderType = t;
-      ensureValidPaymentType(cashierState);
-      updateCashierTypeRows();
-    });
-    document.getElementById('paymentTypeRow').addEventListener('click', (e) => {
-      const t = e.target.getAttribute('data-payment-type');
-      if (!t) return;
-      cashierState.paymentType = t;
-      updateCashierTypeRows();
-    });
-    document.getElementById('sendOrderBtn').addEventListener('click', () => sendCashierOrder(restaurantName, onBack));
-    document.getElementById('orderCommentInput').addEventListener('input', (e) => {
-      cashierState.comment = e.target.value;
-    });
+    document.getElementById('cashierOpenCheckoutBtn').addEventListener('click', () => openCashierCheckoutClick(restaurantName, onBack));
     document.getElementById('cashierCartItemsWrap').addEventListener('click', (e) => {
       const key = e.target.getAttribute('data-cart-remove');
       if (!key) return;
@@ -4376,6 +4331,83 @@ const tg = window.Telegram && window.Telegram.WebApp;
     loadShiftWidget();
     loadCashierMenu(restaurantName);
     watchCashierCartBarHeight();
+  }
+
+  // "Oshxonaga yuborish" bosilganda: savat bo'sh bo'lsa shu yerdayoq xabar
+  // ko'rsatiladi; bo'lmasa — "Olib ketish/Dostavka/Zal/Tashqari",
+  // "Naqd/Karta/Click" va izoh shu tugma bosilgandan KEYIN, keyingi oynada
+  // (modalda) ochiladi. Savat ro'yxati esa asosiy ekranda, x bilan
+  // o'chirsa bo'ladigan holda qolaveradi.
+  function openCashierCheckoutClick(restaurantName, onBack) {
+    const cartItems = Object.entries(cashierState.cart).filter(([, qty]) => qty > 0);
+    const comboItems = cashierState.editingComboItems || [];
+    const msgEl = document.getElementById('cashierCartMsg');
+    if (!cartItems.length && !comboItems.length) {
+      if (msgEl) { msgEl.textContent = "Savat bo'sh. Kamida bitta taom tanlang."; msgEl.className = 'xabar err'; }
+      return;
+    }
+    if (msgEl) { msgEl.textContent = ''; msgEl.className = 'xabar'; }
+    openCashierCheckoutModal(restaurantName, onBack);
+  }
+
+  function cashierCheckoutModalBodyHtml(isEditing) {
+    return `
+      <h3>${isEditing ? 'Buyurtmani yangilash' : 'Buyurtmani rasmiylashtirish'}</h3>
+      <div class="type-row" id="orderTypeRow">
+        ${Object.entries(ORDER_TYPE_LABELS).map(([k, label]) => `
+          <div class="type-opt ${cashierState.orderType === k ? 'selected' : ''}" data-order-type="${k}">${label}</div>
+        `).join('')}
+      </div>
+      <div class="type-row" id="paymentTypeRow">
+        ${visiblePaymentTypeEntries(cashierState.orderType).map(([k, label]) => `
+          <div class="type-opt ${cashierState.paymentType === k ? 'selected' : ''}" data-payment-type="${k}">${label}</div>
+        `).join('')}
+      </div>
+      <textarea id="orderCommentInput" placeholder="Izoh (masalan: piyozsiz, achchiq sous ko'proq...)" rows="2">${escapeHtml(cashierState.comment || '')}</textarea>
+      <div class="cart-total"><span>Jami:</span><span id="cartTotalVal">${fmtNum(cashierCartTotal())} so'm</span></div>
+      <div class="xabar" id="orderMsg"></div>
+      <div class="btn-row">
+        <button type="button" class="btn ikkinchi" id="cashierCheckoutCloseBtn">Bekor qilish</button>
+        <button type="button" class="btn" id="sendOrderBtn">${isEditing ? 'Buyurtmani yangilash' : "Oshxonaga yuborish"}</button>
+      </div>
+    `;
+  }
+
+  function renderCashierCheckoutModalBody(overlay, restaurantName, onBack) {
+    const modalEl = overlay.querySelector('.modal');
+    modalEl.innerHTML = cashierCheckoutModalBodyHtml(!!cashierState.editingOrderId);
+    wireCashierCheckoutModal(overlay, restaurantName, onBack);
+  }
+
+  function wireCashierCheckoutModal(overlay, restaurantName, onBack) {
+    const modalEl = overlay.querySelector('.modal');
+    modalEl.querySelector('#cashierCheckoutCloseBtn').addEventListener('click', () => overlay.remove());
+    modalEl.querySelector('#orderTypeRow').addEventListener('click', (e) => {
+      const t = e.target.getAttribute('data-order-type');
+      if (!t) return;
+      cashierState.orderType = t;
+      ensureValidPaymentType(cashierState);
+      renderCashierCheckoutModalBody(overlay, restaurantName, onBack);
+    });
+    modalEl.querySelector('#paymentTypeRow').addEventListener('click', (e) => {
+      const t = e.target.getAttribute('data-payment-type');
+      if (!t) return;
+      cashierState.paymentType = t;
+      renderCashierCheckoutModalBody(overlay, restaurantName, onBack);
+    });
+    modalEl.querySelector('#orderCommentInput').addEventListener('input', (e) => {
+      cashierState.comment = e.target.value;
+    });
+    modalEl.querySelector('#sendOrderBtn').addEventListener('click', () => sendCashierOrder(restaurantName, onBack, overlay));
+  }
+
+  function openCashierCheckoutModal(restaurantName, onBack) {
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay';
+    overlay.innerHTML = `<div class="modal" style="max-width:380px; max-height:85vh; overflow:auto;"></div>`;
+    document.body.appendChild(overlay);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    renderCashierCheckoutModalBody(overlay, restaurantName, onBack);
   }
 
   function renderCashierOrdersTab(restaurantName, onBack) {
@@ -4682,7 +4714,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (el) el.textContent = fmtNum(cashierCartTotal()) + " so'm";
   }
 
-  async function sendCashierOrder(restaurantName, onBack) {
+  async function sendCashierOrder(restaurantName, onBack, overlay) {
     const msgEl = document.getElementById('orderMsg');
     const sendBtn = document.getElementById('sendOrderBtn');
     const cartItems = Object.entries(cashierState.cart)
@@ -4725,6 +4757,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         cashierState.editingComboItems = null;
         cashierState.editingReturn = null;
         lastOrdersSnapshot = null;
+        if (overlay) overlay.remove();
         if (returnFn) {
           returnFn();
         } else {
@@ -4762,6 +4795,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       cashierState.orderType = 'olib_ketish';
       cashierState.paymentType = 'naqd';
       msgEl.textContent = '';
+      if (overlay) overlay.remove();
       renderCashierScreen(restaurantName, onBack);
       const topMsg = document.createElement('div');
       topMsg.className = 'xabar ok';
