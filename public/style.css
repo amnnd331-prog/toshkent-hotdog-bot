@@ -1312,14 +1312,43 @@
 
   .cart-total { display: flex; justify-content: space-between; font-size: var(--fs-body); font-weight: 700; margin-bottom: 10px; }
 
+  /* Har doim ko'rinib turishi uchun (pastga tushirish shart bo'lmasin) —
+     ekranga "sticky" emas, "fixed" qilib yopishtiramiz, xuddi cart-fab-bar
+     kabi. Tegishli .panel'ga JS orqali shu balandlikda padding-bottom
+     qo'shiladi (syncCashierCartBarPadding), aks holda kontent panel tagida
+     yashirinib qolardi. */
   .cart-bar {
-    position: sticky; bottom: 0;
+    position: fixed;
+    left: 0; right: 0; bottom: 0;
+    z-index: 30;
+    max-width: var(--app-max-width);
+    margin: 0 auto;
     background: var(--surface-1);
     box-shadow: var(--shadow-floating);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
     padding: 14px var(--sp-4);
-    margin-top: var(--sp-4);
+    padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px));
   }
+
+  /* Savatga qo'shilgan mahsulotlar ro'yxati — "+" bosilganda darhol shu
+     yerda ko'rinadi, kerak bo'lmagan taomni "✕" bilan bekor qilish mumkin. */
+  .cart-items-list { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; max-height: 160px; overflow-y: auto; }
+  .cart-item-row {
+    display: flex; align-items: center; gap: var(--sp-2);
+    background: var(--surface-0); border-radius: var(--radius-sm); padding: 6px 8px;
+  }
+  .cart-item-name {
+    flex: 1 1 auto; min-width: 0; font-size: var(--fs-sm); font-weight: 600;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .cart-item-price { flex: 0 0 auto; font-size: var(--fs-sm); font-weight: 600; color: var(--text-secondary); white-space: nowrap; }
+  .cart-item-remove {
+    flex: 0 0 auto; width: 24px; height: 24px; border-radius: 50%; border: none;
+    background: var(--surface-2); color: var(--text-secondary); font-size: 13px; line-height: 1;
+    display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0;
+    transition: background var(--transition-fast), color var(--transition-fast);
+  }
+  .cart-item-remove:hover { background: var(--brand-primary); color: var(--brand-on-primary); }
 
   .type-row { display: flex; gap: var(--sp-2); margin-bottom: 10px; flex-wrap: wrap; }
   .type-opt {
