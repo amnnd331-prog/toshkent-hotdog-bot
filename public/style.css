@@ -1273,18 +1273,25 @@
   .qty-controls button:hover { background: var(--brand-primary-dark); }
   .qty-controls .qty-val { min-width: 22px; text-align: center; font-weight: 600; }
 
-  .price-variant-list { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+  .price-variant-list { display: flex; flex-direction: column; gap: 5px; margin-top: 4px; }
   .price-variant-row {
-    display: flex; align-items: center; justify-content: space-between; gap: var(--sp-2);
-    background: var(--surface-1); border-radius: var(--radius-sm); padding: 6px 8px;
+    display: flex; align-items: center; justify-content: space-between; gap: 6px;
+    background: var(--surface-1); border-radius: var(--radius-sm); padding: 5px 6px;
   }
-  .price-variant-label { font-size: var(--fs-sm); font-weight: 600; color: var(--text-primary); }
-  .price-variant-row .qty-controls { gap: 6px; }
+  /* Tor (2 ustunli) kartochkalarda narx qatori ikki qatorga bo'linib
+     ketmasligi uchun — matn sig'masa, qirqib "..." qo'yiladi, balandlik
+     doim bir xil (ixcham) qoladi. */
+  .price-variant-label {
+    font-size: var(--fs-xs); font-weight: 600; color: var(--text-primary);
+    flex: 1 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .price-variant-row .qty-controls { flex: 0 0 auto; gap: 5px; }
   .price-variant-row .qty-controls button {
-    width: 30px; height: 30px; font-size: 15px; border-radius: var(--radius-sm);
+    width: 24px; height: 24px; font-size: 13px; border-radius: var(--radius-sm);
   }
+  .price-variant-row .qty-controls .qty-val { min-width: 12px; font-size: var(--fs-xs); }
   .price-variant-row .qty-add-btn {
-    width: 30px; height: 30px; font-size: 15px; border-radius: var(--radius-sm);
+    flex: 0 0 auto; width: 24px; height: 24px; font-size: 13px; border-radius: var(--radius-sm);
   }
 
   .cart-fab-bar {
@@ -1725,6 +1732,9 @@
     .catalog-grid { grid-template-columns: repeat(4, 1fr); }
   }
   .catalog-grid .bosh { grid-column: 1 / -1; }
+  /* Toq sonli mahsulot bo'lsa, oxirgi kartochka yolg'iz qolib, yonida
+     bo'sh joy qolib ketmasin — butun qatorni egallaydi. */
+  .catalog-grid > .catalog-item:last-child:nth-child(odd) { grid-column: 1 / -1; }
   .catalog-item {
     background: var(--surface-2);
     border-radius: var(--radius-lg);
