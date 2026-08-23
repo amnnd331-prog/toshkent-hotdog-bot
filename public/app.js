@@ -232,6 +232,17 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }
     return m.price;
   }
+  function menuItemNameForCartKey(menuList, key) {
+    const { itemId, priceId } = cartKeyParts(key);
+    const m = (menuList || []).find(x => x.id === itemId);
+    if (!m) return '';
+    if (priceId && Array.isArray(m.prices)) {
+      const idx = m.prices.findIndex(p => p.id === priceId);
+      const opt = m.prices[idx];
+      return opt ? `${m.name} (${variantLabel(opt, idx)})` : m.name;
+    }
+    return m.name;
+  }
   function menuPriceFromLabel(m) {
     if (Array.isArray(m.prices) && m.prices.length) {
       const min = Math.min(...m.prices.map(p => p.price));
@@ -4240,6 +4251,24 @@ const tg = window.Telegram && window.Telegram.WebApp;
     return Object.entries(cashierState.cart).reduce((sum, [key, qty]) => sum + (qty || 0) * menuItemPriceForCartKey(cashierState.menu, key), 0);
   }
 
+  // Savatga "+" bosib qo'shilgan mahsulotlar ro'yxati — pastdagi bekitilmas
+  // savat panelida darhol ko'rinadi, har birini "✕" bilan bekor qilsa bo'ladi.
+  function cashierCartItemsHtml() {
+    const entries = Object.entries(cashierState.cart).filter(([, qty]) => qty > 0);
+    if (!entries.length) return '';
+    return `
+      <div class="cart-items-list">
+        ${entries.map(([key, qty]) => `
+          <div class="cart-item-row">
+            <span class="cart-item-name">${escapeHtml(menuItemNameForCartKey(cashierState.menu, key))} × ${qty}</span>
+            <span class="cart-item-price">${fmtNum((menuItemPriceForCartKey(cashierState.menu, key) || 0) * qty)} so'm</span>
+            <button type="button" class="cart-item-remove" data-cart-remove="${escapeHtml(key)}" aria-label="Bekor qilish">✕</button>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
   function cashierTabRowHtml() {
     return `
       <div class="tab-row">
@@ -4284,6 +4313,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <div class="bosh">Taomni bosib savatga qo'shing.</div>
         <div id="cashierMenu" style="margin-top:14px;"><div class="bosh">Yuklanmoqda...</div></div>
         <div class="cart-bar">
+          <div id="cashierCartItemsWrap">${cashierCartItemsHtml()}</div>
           <div class="type-row" id="orderTypeRow">
             ${Object.entries(ORDER_TYPE_LABELS).map(([k, label]) => `
               <div class="type-opt ${cashierState.orderType === k ? 'selected' : ''}" data-order-type="${k}">${label}</div>
@@ -4333,10 +4363,19 @@ const tg = window.Telegram && window.Telegram.WebApp;
     document.getElementById('orderCommentInput').addEventListener('input', (e) => {
       cashierState.comment = e.target.value;
     });
+    document.getElementById('cashierCartItemsWrap').addEventListener('click', (e) => {
+      const key = e.target.getAttribute('data-cart-remove');
+      if (!key) return;
+      cashierState.cart[key] = 0;
+      updateCashierQtyDisplay(key);
+      updateCashierCartItemsList();
+      updateCartTotal();
+    });
 
     attachShiftWidgetHandler();
     loadShiftWidget();
     loadCashierMenu(restaurantName);
+    watchCashierCartBarHeight();
   }
 
   function renderCashierOrdersTab(restaurantName, onBack) {
@@ -4578,14 +4617,43 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const id = btn.getAttribute('data-qty-plus');
       cashierState.cart[id] = (cashierState.cart[id] || 0) + 1;
       updateCashierQtyDisplay(id);
+      updateCashierCartItemsList();
       updateCartTotal();
     });
     el.querySelectorAll('[data-qty-minus]').forEach(btn => btn.onclick = () => {
       const id = btn.getAttribute('data-qty-minus');
       cashierState.cart[id] = Math.max(0, (cashierState.cart[id] || 0) - 1);
       updateCashierQtyDisplay(id);
+      updateCashierCartItemsList();
       updateCartTotal();
     });
+  }
+
+  // Savat ro'yxatini (pastdagi bekitilmas panelda) joriy holatga moslab
+  // qayta chizadi — "+"/"-" bosilganda va "✕" bilan bekor qilinganda chaqiriladi.
+  function updateCashierCartItemsList() {
+    const wrap = document.getElementById('cashierCartItemsWrap');
+    if (wrap) wrap.innerHTML = cashierCartItemsHtml();
+  }
+
+  // Pastki savat paneli "fixed" bo'lgani uchun, uning balandligi o'zgarganda
+  // (mahsulot qo'shilib-ro'chirilganda, izoh matni ko'p qatorli bo'lganda)
+  // .panel pastiga xuddi shuncha bo'sh joy qo'shib turamiz — aks holda
+  // panel tagidagi kontent savat paneli ostida yashirinib qolardi.
+  let cashierCartBarRO = null;
+  function watchCashierCartBarHeight() {
+    if (cashierCartBarRO) { cashierCartBarRO.disconnect(); cashierCartBarRO = null; }
+    const barEl = document.querySelector('.cart-bar');
+    const panelEl = document.querySelector('.panel');
+    if (!barEl || !panelEl) return;
+    const sync = () => { panelEl.style.paddingBottom = (barEl.offsetHeight + 16) + 'px'; };
+    sync();
+    if (window.ResizeObserver) {
+      cashierCartBarRO = new ResizeObserver(sync);
+      cashierCartBarRO.observe(barEl);
+    } else {
+      window.addEventListener('resize', sync);
+    }
   }
 
   // Miqdor +/- bosilganda BUTUN menyuni qayta chizib yubormaslik uchun — bu
@@ -4689,6 +4757,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
       cashierState.cart = {};
       cashierState.comment = '';
       cashierState.lastOrderRequestId = null;
+      // Yuborilgandan keyin keyingi buyurtma uchun "Olib ketish" / "Naqd"
+      // standart tanlovga qaytadi (oldingi buyurtmadagi tur saqlanib qolmasin).
+      cashierState.orderType = 'olib_ketish';
+      cashierState.paymentType = 'naqd';
       msgEl.textContent = '';
       renderCashierScreen(restaurantName, onBack);
       const topMsg = document.createElement('div');
