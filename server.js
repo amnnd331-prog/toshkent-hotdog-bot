@@ -942,6 +942,38 @@ function resolveStockPool(owner, branchId) {
   return branch;
 }
 
+function findStockItem(pool, id) {
+  return (pool.stock || []).find(s => s.id === id);
+}
+
+function addStockMovement(pool, entry) {
+  if (!pool.stockMovements) pool.stockMovements = [];
+  pool.stockMovements.unshift(Object.assign({
+    id: crypto.randomBytes(4).toString('hex'),
+    createdAt: new Date().toISOString()
+  }, entry));
+  if (pool.stockMovements.length > 500) pool.stockMovements.length = 500;
+}
+
+function checkLowStockAlert(owner, item, excludeUserId, branchId) {
+  if (item.minQty === null || item.minQty === undefined) return;
+  if (item.qty <= item.minQty) {
+    if (!item.lowStockAlertSent) {
+      item.lowStockAlertSent = true;
+      const text = `⚠️ <b>Kam qoldi:</b> ${escapeHtmlServer(item.name)} — ${item.qty} ${escapeHtmlServer(item.unit)} qoldi (chegara: ${item.minQty} ${escapeHtmlServer(item.unit)}).`;
+      const ownerMuted = isNotificationCategoryMuted(owner, 'lowStock');
+      const targets = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'sklad') && (s.branchId || null) === (branchId || null)).map(s => s.id))];
+      for (const t of new Set(targets)) {
+        if (String(t) === String(excludeUserId)) continue;
+        if (ownerMuted && String(t) === String(owner.id)) continue;
+        sendMessage(t, text);
+      }
+    }
+  } else {
+    item.lowStockAlertSent = false;
+  }
+}
+
 const EXPENSE_CATEGORIES = {
   ijara: 'Ijara',
   maosh: 'Maosh',
@@ -2008,7 +2040,9 @@ async function handleStartCommand(chatId, from, text) {
     }
     const owners = loadOwners();
     if (findOwner(owners, from.id) || findStaffInfo(owners, from.id)) {
-      await sendMessage(chatId, 'Salom! Mini App tugmasi orqali boshqaruv panelini oching.');
+      const skCtx = skResolveCtx(owners, from.id);
+      const skHint = skCtx ? "\n\n📦 Ostatka, 📖 retsept va 🧮 audit uchun /sklad buyrug'ini yuboring — tugmalar orqali tez qo'shasiz." : '';
+      await sendMessage(chatId, `Salom! Mini App tugmasi orqali boshqaruv panelini oching.${skHint}`);
       return;
     }
 
@@ -2165,12 +2199,392 @@ async function handleStartCommand(chatId, from, text) {
   await sendMessage(ADMIN_ID, infoText, daysKeyboard(reqId));
 }
 
+// ==========================================================================
+// SKLAD BOT-MENYU: "Retsept qo'shish", "Ostatka qo'shish" va "Audit"
+// funksiyalarini oshxona egasi (yoki "Egasi (hamkor)" xodimi) uchun
+// to'g'ridan-to'g'ri Telegram bot ichida, tugmalar orqali, sodda va tez
+// bajarish imkonini beradi. Bu — Mini App'dagi shu funksiyalarning O'RNINI
+// bosmaydi, faqat qo'shimcha tezkor yo'l: Mini App'dagi "Sklad", "Retsept"
+// va "Audit" bo'limlari avvalgidek to'liq ishlab turadi.
+// Holat (foydalanuvchi qaysi bosqichda ekani) userId bo'yicha xotirada
+// saqlanadi — bir nechta ega/hamkor bir vaqtda alohida-alohida foydalana oladi.
+// ==========================================================================
+const botFlowState = new Map();
+
+function skClearState(userId) {
+  botFlowState.delete(String(userId));
+}
+
+function skResolveCtx(owners, userId) {
+  const ctx = resolveOwnerContext(owners, userId);
+  if (!ctx || !ctxHasAnyRole(ctx, ['egasi', 'sklad'])) return null;
+  return ctx;
+}
+
+function skPool(ctx) {
+  return resolveStockPool(ctx.owner, ctx.role === 'egasi' ? null : ctx.branchId);
+}
+
+async function sendSkladMenu(chatId, userId) {
+  skClearState(userId);
+  await sendMessage(chatId,
+    "📋 <b>Sklad bo'limi</b>\nKerakli amalni tanlang:",
+    { inline_keyboard: [
+      [{ text: "📦 Ostatka qo'shish", callback_data: 'sk:stockadd' }],
+      [{ text: '📖 Retseptga mahsulot qo\'shish', callback_data: 'sk:recipe' }],
+      [{ text: '🧮 Audit topshirish', callback_data: 'sk:audit' }]
+    ] });
+}
+
+function skBackCancelRow() {
+  return [
+    [{ text: '⬅️ Sklad menyusi', callback_data: 'sk:menu' }],
+    [{ text: '❌ Bekor qilish', callback_data: 'sk:cancel' }]
+  ];
+}
+
+async function sendStockAddMenu(ctx, chatId) {
+  const pool = skPool(ctx);
+  const items = (pool ? (pool.stock || []) : []).slice().sort((a, b) => a.name.localeCompare(b.name, 'uz'));
+  const rows = items.slice(0, 40).map(it => ([{ text: `${it.name} (${it.qty} ${it.unit})`, callback_data: `sk:stockadd:pick:${it.id}` }]));
+  rows.push([{ text: "➕ Yangi mahsulot qo'shish", callback_data: 'sk:stockadd:new' }]);
+  rows.push(...skBackCancelRow());
+  await sendMessage(chatId, "📦 <b>Ostatka qo'shish</b>\nQaysi mahsulotga qo'shasiz? Yoki yangi mahsulot yarating:", { inline_keyboard: rows });
+}
+
+async function sendRecipeMenuList(ctx, chatId) {
+  const menu = (ctx.owner.menu || []).filter(m => !m.directStockId).slice().sort((a, b) => a.name.localeCompare(b.name, 'uz'));
+  if (!menu.length) {
+    await sendMessage(chatId, "Hozircha retsept belgilash mumkin bo'lgan taom yo'q. Avval Mini App orqali menyuga taom qo'shing.", { inline_keyboard: skBackCancelRow() });
+    return;
+  }
+  const rows = menu.slice(0, 40).map(m => {
+    const count = Array.isArray(m.recipe) ? m.recipe.length : 0;
+    return [{ text: `${m.name}${count ? ` (${count} ta ingredient)` : ''}`, callback_data: `sk:recipe:item:${m.id}` }];
+  });
+  rows.push(...skBackCancelRow());
+  await sendMessage(chatId, "📖 <b>Retseptga mahsulot qo'shish</b>\nQaysi taom uchun retsept belgilaysiz?", { inline_keyboard: rows });
+}
+
+async function sendRecipeIngredientList(ctx, chatId, menuItem) {
+  const pool = skPool(ctx);
+  const stock = (pool ? (pool.stock || []) : []).slice().sort((a, b) => a.name.localeCompare(b.name, 'uz'));
+  if (!stock.length) {
+    await sendMessage(chatId, "Skladda hali mahsulot yo'q. Avval \"Ostatka qo'shish\" orqali sklad mahsulotini qo'shing.", { inline_keyboard: skBackCancelRow() });
+    return;
+  }
+  const recipe = Array.isArray(menuItem.recipe) ? menuItem.recipe : [];
+  const rows = stock.slice(0, 40).map(s => {
+    const existing = recipe.find(r => r.stockId === s.id);
+    const label = existing ? `${s.name} ✅ (${existing.qty} ${s.unit})` : `${s.name} (${s.unit})`;
+    return [{ text: label, callback_data: `sk:recipe:ing:${menuItem.id}:${s.id}` }];
+  });
+  rows.push([{ text: '✅ Tugatish', callback_data: `sk:recipe:done:${menuItem.id}` }]);
+  rows.push(...skBackCancelRow());
+  await sendMessage(chatId, `📖 <b>${escapeHtmlServer(menuItem.name)}</b>\nQaysi sklad mahsulotini retseptga qo'shasiz? (✅ — retseptda allaqachon bor)`, { inline_keyboard: rows });
+}
+
+function skAuditPromptText(state) {
+  const cur = state.items[state.index];
+  return `🧮 <b>Audit</b> (${state.index + 1}/${state.items.length})\n` +
+    `${escapeHtmlServer(cur.name)} — hozir tizimda: <b>${cur.qty} ${escapeHtmlServer(cur.unit)}</b>\n\n` +
+    `Haqiqiy (ko'zdan kechirib o'lchangan) miqdorni yozing:`;
+}
+
+function skAuditKeyboard() {
+  return { inline_keyboard: [
+    [{ text: "⏭ O'tkazib yuborish", callback_data: 'sk:audit:skip' }],
+    [{ text: '✅ Shu yergacha yakunlash', callback_data: 'sk:audit:finish' }],
+    [{ text: '❌ Bekor qilish', callback_data: 'sk:cancel' }]
+  ] };
+}
+
+async function sendAuditPrompt(chatId, state) {
+  await sendMessage(chatId, skAuditPromptText(state), skAuditKeyboard());
+}
+
+async function finalizeAudit(userId, chatId) {
+  const state = botFlowState.get(String(userId));
+  if (!state || state.kind !== 'audit') return;
+  skClearState(userId);
+
+  if (!state.entries.length) {
+    await sendMessage(chatId, "Audit bekor qilindi — hech qanday mahsulot uchun miqdor kiritilmadi.");
+    return;
+  }
+
+  const owners = loadOwners();
+  const ctx = skResolveCtx(owners, userId);
+  if (!ctx) { await sendMessage(chatId, 'Ruxsatingiz yo\'q.'); return; }
+  const pool = resolveStockPool(ctx.owner, state.branchId);
+  if (!pool) { await sendMessage(chatId, "Bunday filial topilmadi."); return; }
+
+  const auditEntries = [];
+  for (const e of state.entries) {
+    const stockItem = findStockItem(pool, e.stockId);
+    if (!stockItem) continue;
+    const systemQty = stockItem.qty;
+    const diff = Math.round((e.actualQty - systemQty) * 1000) / 1000;
+    auditEntries.push({ stockId: stockItem.id, name: stockItem.name, unit: stockItem.unit, systemQty, actualQty: e.actualQty, diff });
+    if (diff !== 0) {
+      addStockMovement(pool, {
+        stockId: stockItem.id, stockName: stockItem.name, type: 'audit_tuzatish',
+        qty: diff, unit: stockItem.unit,
+        note: diff > 0 ? 'Audit: ortiqcha topildi' : 'Audit: kamomad topildi',
+        userId
+      });
+    }
+    stockItem.qty = e.actualQty;
+    checkLowStockAlert(ctx.owner, stockItem, userId, state.branchId);
+  }
+
+  if (!auditEntries.length) {
+    await sendMessage(chatId, "Hech qanday mos mahsulot topilmadi.");
+    return;
+  }
+
+  if (!pool.audits) pool.audits = [];
+  const audit = {
+    id: crypto.randomBytes(4).toString('hex'),
+    date: new Date().toISOString().slice(0, 10),
+    branchId: state.branchId,
+    entries: auditEntries,
+    createdBy: String(userId),
+    createdAt: new Date().toISOString()
+  };
+  pool.audits.unshift(audit);
+  if (pool.audits.length > 60) pool.audits.length = 60;
+
+  const kamomadCount = auditEntries.filter(e => e.diff < 0).length;
+  const ortiqchaCount = auditEntries.filter(e => e.diff > 0).length;
+  logStaffAction(ctx.owner, {
+    userId, role: ctx.role, action: 'audit_topshirdi',
+    note: `${auditEntries.length} mahsulot tekshirildi (bot orqali)${kamomadCount ? `, ${kamomadCount} ta kamomad` : ''}${ortiqchaCount ? `, ${ortiqchaCount} ta ortiqcha` : ''}`,
+    errorCount: kamomadCount
+  });
+
+  saveOwners(owners);
+
+  const lines = auditEntries.map(e => {
+    const mark = e.diff === 0 ? '✅' : (e.diff > 0 ? '➕' : '➖');
+    const diffText = e.diff !== 0 ? ` (${e.diff > 0 ? '+' : ''}${e.diff})` : '';
+    return `${mark} ${escapeHtmlServer(e.name)}: ${e.systemQty} → ${e.actualQty} ${escapeHtmlServer(e.unit)}${diffText}`;
+  }).join('\n');
+  await sendMessage(chatId, `✅ <b>Audit yakunlandi</b>\n${lines}`, { inline_keyboard: [[{ text: '⬅️ Sklad menyusi', callback_data: 'sk:menu' }]] });
+}
+
+// Foydalanuvchidan matn kutilayotgan bosqichlarni qayta ishlaydi (miqdor,
+// narx, yangi mahsulot nomi va h.k.). true qaytarsa — xabar shu yerda
+// to'liq ishlov berilgan (boshqa handlerlar ishga tushmasin).
+async function handleSkTextInput(from, chatId, text) {
+  const userId = String(from.id);
+  const state = botFlowState.get(userId);
+  if (!state) return false;
+
+  const owners = loadOwners();
+  const ctx = skResolveCtx(owners, userId);
+  if (!ctx) {
+    skClearState(userId);
+    await sendMessage(chatId, 'Ruxsatingiz yo\'q.');
+    return true;
+  }
+
+  const parseNum = (t) => {
+    const n = Number(String(t).trim().replace(',', '.'));
+    return n;
+  };
+
+  if (state.kind === 'stock_qty') {
+    const qtyNum = parseNum(text);
+    if (!Number.isFinite(qtyNum) || qtyNum <= 0) {
+      await sendMessage(chatId, "Iltimos, musbat son yuboring (masalan: 5 yoki 2.5). Bekor qilish uchun /bekor yozing.");
+      return true;
+    }
+    const pool = skPool(ctx);
+    const item = pool && findStockItem(pool, state.stockId);
+    if (!item) { skClearState(userId); await sendMessage(chatId, "Mahsulot topilmadi."); return true; }
+
+    item.qty = Math.round((item.qty + qtyNum) * 1000) / 1000;
+    addStockMovement(pool, { stockId: item.id, stockName: item.name, type: 'kirim', qty: qtyNum, unit: item.unit, note: "Bot orqali kiritildi", userId });
+    checkLowStockAlert(ctx.owner, item, userId, ctx.role === 'egasi' ? null : ctx.branchId);
+    logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'sklad_kirim', note: `${item.name}: +${qtyNum} ${item.unit} (bot)` });
+
+    if (item.price) {
+      if (!ctx.owner.expenses) ctx.owner.expenses = [];
+      ctx.owner.expenses.unshift({
+        id: crypto.randomBytes(4).toString('hex'),
+        amount: Math.round(qtyNum * item.price * 100) / 100,
+        category: 'sklad_xarid',
+        note: `${item.name} — ${qtyNum} ${item.unit} (bot)`,
+        createdAt: new Date().toISOString(),
+        createdBy: userId,
+        source: 'stock',
+        stockId: item.id
+      });
+      if (ctx.owner.expenses.length > 500) ctx.owner.expenses.length = 500;
+    }
+    saveOwners(owners);
+    skClearState(userId);
+    await sendMessage(chatId, `✅ <b>${escapeHtmlServer(item.name)}</b>: +${qtyNum} ${escapeHtmlServer(item.unit)}\nYangi qoldiq: ${item.qty} ${escapeHtmlServer(item.unit)}`,
+      { inline_keyboard: [[{ text: "📦 Yana ostatka qo'shish", callback_data: 'sk:stockadd' }], [{ text: '⬅️ Sklad menyusi', callback_data: 'sk:menu' }]] });
+    return true;
+  }
+
+  if (state.kind === 'stock_new_name') {
+    const nameTrim = String(text || '').trim();
+    if (nameTrim.length < 2 || nameTrim.length > 60) {
+      await sendMessage(chatId, "Iltimos, mahsulot nomini 2-60 belgi oralig'ida yozing. Bekor qilish uchun /bekor yozing.");
+      return true;
+    }
+    state.kind = 'stock_new_unit';
+    state.name = nameTrim;
+    await sendMessage(chatId, `Birlikni tanlang — <b>${escapeHtmlServer(nameTrim)}</b>:`, {
+      inline_keyboard: [
+        [{ text: 'kg', callback_data: 'sk:stockadd:unit:kg' }, { text: 'g', callback_data: 'sk:stockadd:unit:g' }],
+        [{ text: 'l', callback_data: 'sk:stockadd:unit:l' }, { text: 'ml', callback_data: 'sk:stockadd:unit:ml' }],
+        [{ text: 'dona', callback_data: 'sk:stockadd:unit:dona' }],
+        [{ text: '❌ Bekor qilish', callback_data: 'sk:cancel' }]
+      ]
+    });
+    return true;
+  }
+
+  if (state.kind === 'stock_new_qty') {
+    const qtyNum = parseNum(text);
+    if (!Number.isFinite(qtyNum) || qtyNum <= 0) {
+      await sendMessage(chatId, "Iltimos, musbat son yuboring (masalan: 10). Bekor qilish uchun /bekor yozing.");
+      return true;
+    }
+    state.qty = qtyNum;
+    state.kind = 'stock_new_price';
+    await sendMessage(chatId, `1 ${escapeHtmlServer(state.unit)} narxini yozing (so'm, masalan: 15000):`);
+    return true;
+  }
+
+  if (state.kind === 'stock_new_price') {
+    const priceNum = parseNum(text);
+    if (!Number.isFinite(priceNum) || priceNum <= 0) {
+      await sendMessage(chatId, "Iltimos, narxni musbat son bilan yozing (masalan: 15000). Bekor qilish uchun /bekor yozing.");
+      return true;
+    }
+    const pool = skPool(ctx);
+    if (!pool) { skClearState(userId); await sendMessage(chatId, 'Filial topilmadi.'); return true; }
+    if (!pool.stock) pool.stock = [];
+
+    let item = pool.stock.find(s => s.name.toLowerCase() === state.name.toLowerCase() && s.unit === state.unit);
+    if (item) {
+      item.qty = Math.round((item.qty + state.qty) * 1000) / 1000;
+      item.price = priceNum;
+    } else {
+      item = {
+        id: crypto.randomBytes(4).toString('hex'),
+        name: state.name,
+        qty: state.qty,
+        unit: state.unit,
+        price: priceNum,
+        minQty: null,
+        lowStockAlertSent: false,
+        addedAt: new Date().toISOString()
+      };
+      pool.stock.push(item);
+    }
+
+    addStockMovement(pool, { stockId: item.id, stockName: item.name, type: 'kirim', qty: state.qty, unit: item.unit, note: "Bot orqali kiritildi (yangi)", userId });
+    checkLowStockAlert(ctx.owner, item, userId, ctx.role === 'egasi' ? null : ctx.branchId);
+    logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'sklad_kirim', note: `${item.name}: +${state.qty} ${item.unit} (bot, yangi)` });
+
+    if (!ctx.owner.expenses) ctx.owner.expenses = [];
+    ctx.owner.expenses.unshift({
+      id: crypto.randomBytes(4).toString('hex'),
+      amount: Math.round(state.qty * priceNum * 100) / 100,
+      category: 'sklad_xarid',
+      note: `${item.name} — ${state.qty} ${item.unit} (bot)`,
+      createdAt: new Date().toISOString(),
+      createdBy: userId,
+      source: 'stock',
+      stockId: item.id
+    });
+    if (ctx.owner.expenses.length > 500) ctx.owner.expenses.length = 500;
+
+    saveOwners(owners);
+    skClearState(userId);
+    await sendMessage(chatId, `✅ <b>${escapeHtmlServer(item.name)}</b> skladga qo'shildi: ${item.qty} ${escapeHtmlServer(item.unit)} (narxi: ${fmtNum(priceNum)} so'm)`,
+      { inline_keyboard: [[{ text: "📦 Yana ostatka qo'shish", callback_data: 'sk:stockadd' }], [{ text: '⬅️ Sklad menyusi', callback_data: 'sk:menu' }]] });
+    return true;
+  }
+
+  if (state.kind === 'recipe_qty') {
+    const qtyNum = parseNum(text);
+    if (!Number.isFinite(qtyNum) || qtyNum <= 0) {
+      await sendMessage(chatId, "Iltimos, musbat son yuboring (masalan: 0.05). Bekor qilish uchun /bekor yozing.");
+      return true;
+    }
+    const menuItem = (ctx.owner.menu || []).find(m => m.id === state.menuId);
+    if (!menuItem) { skClearState(userId); await sendMessage(chatId, "Taom topilmadi."); return true; }
+    if (!Array.isArray(menuItem.recipe)) menuItem.recipe = [];
+    const existing = menuItem.recipe.find(r => r.stockId === state.stockId);
+    if (existing) existing.qty = qtyNum;
+    else menuItem.recipe.push({ stockId: state.stockId, qty: qtyNum });
+    saveOwners(owners);
+
+    await sendMessage(chatId, `✅ <b>${escapeHtmlServer(menuItem.name)}</b> retseptiga qo'shildi: ${qtyNum} ${escapeHtmlServer(state.unit)} — ${escapeHtmlServer(state.stockName)}`);
+    skClearState(userId);
+    await sendRecipeIngredientList(ctx, chatId, menuItem);
+    return true;
+  }
+
+  if (state.kind === 'audit') {
+    const cur = state.items[state.index];
+    if (!cur) { await finalizeAudit(userId, chatId); return true; }
+    const qtyNum = parseNum(text);
+    if (!Number.isFinite(qtyNum) || qtyNum < 0) {
+      await sendMessage(chatId, "Iltimos, 0 yoki musbat son yuboring (masalan: 3.5). Yoki quyidagi tugmalardan birini bosing.", skAuditKeyboard());
+      return true;
+    }
+    state.entries.push({ stockId: cur.id, actualQty: qtyNum });
+    state.index += 1;
+    if (state.index < state.items.length) {
+      await sendAuditPrompt(chatId, state);
+    } else {
+      await finalizeAudit(userId, chatId);
+    }
+    return true;
+  }
+
+  // Holat mavjud, lekin hozirgi bosqich tugma bosishni kutmoqda (masalan,
+  // birlik tanlash) — matnli javob unga mos kelmaydi.
+  await sendMessage(chatId, "Iltimos, yuqoridagi tugmalardan birini tanlang. Bekor qilish uchun /bekor yozing.");
+  return true;
+}
+
 async function handleTelegramUpdate(update) {
   if (update.message && update.message.text) {
     const msg = update.message;
     const text = msg.text.trim();
     const from = msg.from;
     const chatId = msg.chat.id;
+
+    if (msg.chat.type === 'private' && (text === '/bekor') && botFlowState.has(String(from.id))) {
+      skClearState(from.id);
+      await sendMessage(chatId, 'Bekor qilindi.');
+      return;
+    }
+
+    if (msg.chat.type === 'private' && (text === '/sklad' || text.startsWith('/sklad@'))) {
+      const owners = pruneExpiredOwners();
+      const ctx = skResolveCtx(owners, from.id);
+      if (!ctx) {
+        await sendMessage(chatId, "Bu buyruq faqat oshxona egasi (yoki uning hamkori) uchun mavjud.");
+        return;
+      }
+      await sendSkladMenu(chatId, from.id);
+      return;
+    }
+
+    if (msg.chat.type === 'private' && !text.startsWith('/') && botFlowState.has(String(from.id))) {
+      const handled = await handleSkTextInput(from, chatId, text);
+      if (handled) return;
+    }
 
     if ((msg.chat.type === 'group' || msg.chat.type === 'supergroup') && /^\/biriktir(@\S+)?$/.test(text)) {
       const owners = pruneExpiredOwners();
@@ -2504,6 +2918,172 @@ async function handleTelegramUpdate(update) {
     const data = cq.data || '';
     const chatId = cq.message && cq.message.chat && cq.message.chat.id;
     const messageId = cq.message && cq.message.message_id;
+
+    if (data === 'sk:menu') {
+      await answerCallbackQuery(cq.id);
+      const owners = loadOwners();
+      const ctx = skResolveCtx(owners, from.id);
+      if (!ctx) { await sendMessage(chatId, 'Ruxsatingiz yo\'q.'); return; }
+      await sendSkladMenu(chatId, from.id);
+      return;
+    }
+
+    if (data === 'sk:cancel') {
+      await answerCallbackQuery(cq.id);
+      skClearState(from.id);
+      await sendMessage(chatId, 'Bekor qilindi.', { inline_keyboard: [[{ text: '⬅️ Sklad menyusi', callback_data: 'sk:menu' }]] });
+      return;
+    }
+
+    if (data === 'sk:stockadd') {
+      await answerCallbackQuery(cq.id);
+      const owners = loadOwners();
+      const ctx = skResolveCtx(owners, from.id);
+      if (!ctx) { await sendMessage(chatId, 'Ruxsatingiz yo\'q.'); return; }
+      skClearState(from.id);
+      await sendStockAddMenu(ctx, chatId);
+      return;
+    }
+
+    if (data.startsWith('sk:stockadd:pick:')) {
+      await answerCallbackQuery(cq.id);
+      const stockId = data.slice('sk:stockadd:pick:'.length);
+      const owners = loadOwners();
+      const ctx = skResolveCtx(owners, from.id);
+      if (!ctx) { await sendMessage(chatId, 'Ruxsatingiz yo\'q.'); return; }
+      const pool = skPool(ctx);
+      const item = pool && findStockItem(pool, stockId);
+      if (!item) { await sendMessage(chatId, 'Mahsulot topilmadi.'); return; }
+      botFlowState.set(String(from.id), { kind: 'stock_qty', stockId: item.id, name: item.name, unit: item.unit });
+      await sendMessage(chatId, `<b>${escapeHtmlServer(item.name)}</b> — hozir: ${item.qty} ${escapeHtmlServer(item.unit)}\n\nNecha ${escapeHtmlServer(item.unit)} qo'shilsin? (masalan: 5)\n\nBekor qilish uchun /bekor yozing.`);
+      return;
+    }
+
+    if (data === 'sk:stockadd:new') {
+      await answerCallbackQuery(cq.id);
+      const owners = loadOwners();
+      const ctx = skResolveCtx(owners, from.id);
+      if (!ctx) { await sendMessage(chatId, 'Ruxsatingiz yo\'q.'); return; }
+      botFlowState.set(String(from.id), { kind: 'stock_new_name' });
+      await sendMessage(chatId, "Yangi mahsulot nomini yozing (masalan: \"Un\"):\n\nBekor qilish uchun /bekor yozing.");
+      return;
+    }
+
+    if (data.startsWith('sk:stockadd:unit:')) {
+      await answerCallbackQuery(cq.id);
+      const unit = data.slice('sk:stockadd:unit:'.length);
+      const state = botFlowState.get(String(from.id));
+      if (!state || state.kind !== 'stock_new_unit' || !Object.prototype.hasOwnProperty.call(STOCK_UNITS, unit)) {
+        await sendMessage(chatId, 'Bu amal muddati o\'tgan. Qaytadan /sklad buyrug\'ini yuboring.');
+        return;
+      }
+      state.unit = unit;
+      state.kind = 'stock_new_qty';
+      await sendMessage(chatId, `Miqdorni yozing (${escapeHtmlServer(unit)}, masalan: 10):`);
+      return;
+    }
+
+    if (data === 'sk:recipe') {
+      await answerCallbackQuery(cq.id);
+      const owners = loadOwners();
+      const ctx = skResolveCtx(owners, from.id);
+      if (!ctx) { await sendMessage(chatId, 'Ruxsatingiz yo\'q.'); return; }
+      skClearState(from.id);
+      await sendRecipeMenuList(ctx, chatId);
+      return;
+    }
+
+    if (data.startsWith('sk:recipe:item:')) {
+      await answerCallbackQuery(cq.id);
+      const menuId = data.slice('sk:recipe:item:'.length);
+      const owners = loadOwners();
+      const ctx = skResolveCtx(owners, from.id);
+      if (!ctx) { await sendMessage(chatId, 'Ruxsatingiz yo\'q.'); return; }
+      const menuItem = (ctx.owner.menu || []).find(m => m.id === menuId);
+      if (!menuItem) { await sendMessage(chatId, 'Taom topilmadi.'); return; }
+      if (menuItem.directStockId) {
+        await sendMessage(chatId, `<b>${escapeHtmlServer(menuItem.name)}</b> — "to'g'ridan skladdan" turida, unga alohida retsept qo'shib bo'lmaydi.`, { inline_keyboard: skBackCancelRow() });
+        return;
+      }
+      await sendRecipeIngredientList(ctx, chatId, menuItem);
+      return;
+    }
+
+    if (data.startsWith('sk:recipe:ing:')) {
+      await answerCallbackQuery(cq.id);
+      const rest = data.slice('sk:recipe:ing:'.length);
+      const sepIdx = rest.indexOf(':');
+      const menuId = sepIdx >= 0 ? rest.slice(0, sepIdx) : '';
+      const stockId = sepIdx >= 0 ? rest.slice(sepIdx + 1) : '';
+      const owners = loadOwners();
+      const ctx = skResolveCtx(owners, from.id);
+      if (!ctx) { await sendMessage(chatId, 'Ruxsatingiz yo\'q.'); return; }
+      const menuItem = (ctx.owner.menu || []).find(m => m.id === menuId);
+      if (!menuItem) { await sendMessage(chatId, 'Taom topilmadi.'); return; }
+      const pool = skPool(ctx);
+      const stockItem = pool && findStockItem(pool, stockId);
+      if (!stockItem) { await sendMessage(chatId, 'Sklad mahsuloti topilmadi.'); return; }
+      botFlowState.set(String(from.id), { kind: 'recipe_qty', menuId: menuItem.id, menuName: menuItem.name, stockId: stockItem.id, stockName: stockItem.name, unit: stockItem.unit });
+      await sendMessage(chatId, `1 dona "<b>${escapeHtmlServer(menuItem.name)}</b>" uchun necha ${escapeHtmlServer(stockItem.unit)} "${escapeHtmlServer(stockItem.name)}" kerak?\n(masalan: 0.05)\n\nBekor qilish uchun /bekor yozing.`);
+      return;
+    }
+
+    if (data.startsWith('sk:recipe:done:')) {
+      await answerCallbackQuery(cq.id, 'Saqlandi ✅');
+      const menuId = data.slice('sk:recipe:done:'.length);
+      skClearState(from.id);
+      const owners = loadOwners();
+      const ctx = skResolveCtx(owners, from.id);
+      if (!ctx) { await sendMessage(chatId, 'Ruxsatingiz yo\'q.'); return; }
+      const menuItem = (ctx.owner.menu || []).find(m => m.id === menuId);
+      const count = menuItem && Array.isArray(menuItem.recipe) ? menuItem.recipe.length : 0;
+      await sendMessage(chatId, `✅ <b>${escapeHtmlServer(menuItem ? menuItem.name : '')}</b> retsepti saqlandi (${count} ta ingredient).`, { inline_keyboard: [[{ text: '⬅️ Sklad menyusi', callback_data: 'sk:menu' }]] });
+      return;
+    }
+
+    if (data === 'sk:audit') {
+      await answerCallbackQuery(cq.id);
+      const owners = loadOwners();
+      const ctx = skResolveCtx(owners, from.id);
+      if (!ctx) { await sendMessage(chatId, 'Ruxsatingiz yo\'q.'); return; }
+      const pool = skPool(ctx);
+      const items = (pool ? (pool.stock || []) : []).slice().sort((a, b) => a.name.localeCompare(b.name, 'uz'));
+      if (!items.length) {
+        await sendMessage(chatId, "Skladda hali mahsulot yo'q. Avval \"Ostatka qo'shish\" orqali sklad mahsulotini qo'shing.", { inline_keyboard: skBackCancelRow() });
+        return;
+      }
+      const state = {
+        kind: 'audit',
+        branchId: ctx.role === 'egasi' ? null : ctx.branchId,
+        items: items.map(i => ({ id: i.id, name: i.name, unit: i.unit, qty: i.qty })),
+        index: 0,
+        entries: []
+      };
+      botFlowState.set(String(from.id), state);
+      await sendAuditPrompt(chatId, state);
+      return;
+    }
+
+    if (data === 'sk:audit:skip') {
+      await answerCallbackQuery(cq.id);
+      const state = botFlowState.get(String(from.id));
+      if (!state || state.kind !== 'audit') { await sendMessage(chatId, 'Bu amal muddati o\'tgan. Qaytadan /sklad buyrug\'ini yuboring.'); return; }
+      state.index += 1;
+      if (state.index < state.items.length) {
+        await sendAuditPrompt(chatId, state);
+      } else {
+        await finalizeAudit(from.id, chatId);
+      }
+      return;
+    }
+
+    if (data === 'sk:audit:finish') {
+      await answerCallbackQuery(cq.id);
+      const state = botFlowState.get(String(from.id));
+      if (!state || state.kind !== 'audit') { await sendMessage(chatId, 'Bu amal muddati o\'tgan. Qaytadan /sklad buyrug\'ini yuboring.'); return; }
+      await finalizeAudit(from.id, chatId);
+      return;
+    }
 
     if (data === 'obuna_menyu') {
       await answerCallbackQuery(cq.id);
@@ -6120,38 +6700,6 @@ const server = http.createServer((req, res) => {
       return sendJSON(res, 200, successResponse);
     });
     return;
-  }
-
-  function findStockItem(pool, id) {
-    return (pool.stock || []).find(s => s.id === id);
-  }
-
-  function addStockMovement(pool, entry) {
-    if (!pool.stockMovements) pool.stockMovements = [];
-    pool.stockMovements.unshift(Object.assign({
-      id: crypto.randomBytes(4).toString('hex'),
-      createdAt: new Date().toISOString()
-    }, entry));
-    if (pool.stockMovements.length > 500) pool.stockMovements.length = 500;
-  }
-
-  function checkLowStockAlert(owner, item, excludeUserId, branchId) {
-    if (item.minQty === null || item.minQty === undefined) return;
-    if (item.qty <= item.minQty) {
-      if (!item.lowStockAlertSent) {
-        item.lowStockAlertSent = true;
-        const text = `⚠️ <b>Kam qoldi:</b> ${escapeHtmlServer(item.name)} — ${item.qty} ${escapeHtmlServer(item.unit)} qoldi (chegara: ${item.minQty} ${escapeHtmlServer(item.unit)}).`;
-        const ownerMuted = isNotificationCategoryMuted(owner, 'lowStock');
-        const targets = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'sklad') && (s.branchId || null) === (branchId || null)).map(s => s.id))];
-        for (const t of new Set(targets)) {
-          if (String(t) === String(excludeUserId)) continue;
-          if (ownerMuted && String(t) === String(owner.id)) continue;
-          sendMessage(t, text);
-        }
-      }
-    } else {
-      item.lowStockAlertSent = false;
-    }
   }
 
   function checkStockAvailability(owner, orderItems, menu) {
