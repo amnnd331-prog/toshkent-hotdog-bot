@@ -4487,7 +4487,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (order.length <= 1) return '';
     return `
       <div class="cat-row sectioned-menu-tabs" id="${opts.tabRowId}">
-        <div class="cat-opt" data-section-id="${opts.listElId}">Hammasi</div>
         ${order.map((c, i) => `<div class="cat-opt" data-section-id="${opts.sectionIdPrefix}-${i}">${escapeHtml(c)}</div>`).join('')}
       </div>
     `;
