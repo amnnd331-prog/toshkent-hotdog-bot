@@ -1172,7 +1172,7 @@ const PREP_TIME_MINUTES_NORMALIZED = Object.fromEntries(
 // oshsa qizil bo'lib qoladi (0 dan target gacha yashil, target dan
 // target*RED gacha sariq, undan keyin qizil).
 const PREP_TIME_RED_MULTIPLIER = 1.5;
-const KITCHEN_TIMER_UPDATE_MS = 1000;
+const KITCHEN_TIMER_UPDATE_MS = 5000;
 
 // Buyurtmadagi har bir taom nomidan narx varianti qo'shimchasini
 // ("Nomi (200gr)" -> "Nomi") olib tashlab, solishtirish uchun tayyorlaydi.
@@ -1731,20 +1731,34 @@ function notifyKitchenGroup(owner, order, creatorLabel) {
 // Har KITCHEN_TIMER_UPDATE_MS millisekundda — oshxona guruhida hali
 // "tayyor" deb belgilanmagan barcha buyurtmalar xabarini yangi
 // o'tgan vaqt (MM:SS) va rang (🟢/🟡/🔴) bilan qayta tahrirlaydi.
-// Faqat mos kategoriyali (PREP_TIME_MINUTES'da bor) taomi bo'lgan
+// Faqat mos nomli (PREP_TIME_MINUTES'da bor) taomi bo'lgan
 // buyurtmalarda taymer qatori ko'rsatiladi.
+// Telegram bitta chatga juda tez-tez tahrir yuborilsa "flood control"
+// bilan javob beradi (error_code 429) va shundan keyin ma'lum vaqt
+// davomida O'SHA CHATGA umuman xabar/tahrir yubormaydi — bu esa yangi
+// buyurtma xabarlarining ham yetib bormay qolishiga olib kelishi mumkin.
+// Shu sababli 429 kelsa, o'sha kitchenGroupId uchun taymer yangilanishi
+// Telegram tavsiya qilgan vaqt davomida to'xtatib turiladi.
+const kitchenTimerBackoffUntil = new Map();
 setInterval(() => {
   const owners = loadOwners();
   for (const owner of owners) {
     if (!owner.kitchenGroupId) continue;
     if (!ownerCanUseFeature(owner, 'kitchen-group')) continue;
+    if (Date.now() < (kitchenTimerBackoffUntil.get(owner.kitchenGroupId) || 0)) continue;
     for (const order of (owner.orders || [])) {
       if (order.status !== 'yangi' && order.status !== 'tayyorlanmoqda') continue;
       if (!order.kitchenGroupMsgId) continue;
       if (orderPrepTargetSeconds(order) === null) continue;
       const text = kitchenGroupFullText(order);
       const keyboard = { inline_keyboard: [[{ text: '🏁 Tayyor', callback_data: `kgready:${owner.id}:${order.id}` }]] };
-      editMessageText(owner.kitchenGroupId, order.kitchenGroupMsgId, text, keyboard);
+      editMessageText(owner.kitchenGroupId, order.kitchenGroupMsgId, text, keyboard).then(result => {
+        if (result && result.error_code === 429) {
+          const retryAfterSec = (result.parameters && result.parameters.retry_after) || 30;
+          kitchenTimerBackoffUntil.set(owner.kitchenGroupId, Date.now() + retryAfterSec * 1000 + 2000);
+          console.error(`[kitchen-timer] flood control (429): chat=${owner.kitchenGroupId} retry_after=${retryAfterSec}s — taymer vaqtincha to'xtatildi`);
+        }
+      });
     }
   }
 }, KITCHEN_TIMER_UPDATE_MS);
