@@ -1180,10 +1180,15 @@ function normalizeItemNameForPrepMatch(name) {
   return String(name || '').replace(/\s*\([^)]*\)\s*$/, '').trim().toLowerCase();
 }
 
+// Menyuda alohida ko'rsatilmagan taomlar uchun standart tayyorlanish
+// vaqti (daqiqada). Shu tufayli taymer HAR BIR buyurtma uchun ishlaydi,
+// hatto uning taomi PREP_TIME_MINUTES ro'yxatida bo'lmasa ham.
+const DEFAULT_PREP_TIME_MINUTES = 10;
+
 // Buyurtma tarkibidagi taomlar nomiga qarab eng uzoq tayyorlanish
 // vaqtini (soniyada) topadi. Nomi PREP_TIME_MINUTES'da yo'q taomlar
-// hisobga olinmaydi; hech biri mos kelmasa null qaytadi (taymer
-// ko'rsatilmaydi).
+// hisobga olinmaydi; hech biri mos kelmasa DEFAULT_PREP_TIME_MINUTES
+// ishlatiladi (taymer baribir ko'rsatiladi va sanaydi).
 function orderPrepTargetSeconds(order) {
   let maxMinutes = 0;
   for (const it of (order.items || [])) {
@@ -1191,7 +1196,8 @@ function orderPrepTargetSeconds(order) {
     const minutes = PREP_TIME_MINUTES_NORMALIZED[key];
     if (minutes && minutes > maxMinutes) maxMinutes = minutes;
   }
-  return maxMinutes > 0 ? maxMinutes * 60 : null;
+  if (maxMinutes === 0) maxMinutes = DEFAULT_PREP_TIME_MINUTES;
+  return maxMinutes * 60;
 }
 
 
@@ -1213,7 +1219,7 @@ function kitchenTimerStatus(order) {
   let color = 'green';
   if (elapsedSec > targetSec * PREP_TIME_RED_MULTIPLIER) color = 'red';
   else if (elapsedSec > targetSec) color = 'yellow';
-  return { color, targetSec };
+  return { color, targetSec, elapsedSec };
 }
 
 const KITCHEN_TIMER_LABELS = {
@@ -1222,16 +1228,15 @@ const KITCHEN_TIMER_LABELS = {
   red: { emoji: '🔴', text: 'Ancha kechikdi' }
 };
 
-// Xabarga qo'shiladigan taymer qatori. Jonli sekund sanashning o'rniga —
-// Telegramning guruh chatlariga tez-tez tahrir yuborishni cheklashi
-// (flood control) sabab — faqat holat (yashil/sariq/qizil) o'zgarganda
-// tahrirlanadi (qarang: quyidagi setInterval). Sekundlarni Telegramning
-// o'zi xabar tagida ko'rsatib turadi.
+// Xabarga qo'shiladigan taymer qatori. O'tgan vaqt (elapsed) / maqsad
+// vaqti ko'rinishida ko'rsatiladi va har KITCHEN_TIMER_UPDATE_MS
+// millisekundda (quyidagi setInterval) xabar qayta tahrirlanib, sekundlar
+// yangilanib turadi.
 function kitchenTimerLine(order) {
   const status = kitchenTimerStatus(order);
   if (!status) return null;
   const label = KITCHEN_TIMER_LABELS[status.color];
-  return `${label.emoji} ${label.text} (maqsad: ${fmtMmSs(status.targetSec)})`;
+  return `${label.emoji} ${label.text} (${fmtMmSs(status.elapsedSec)} / ${fmtMmSs(status.targetSec)})`;
 }
 
 function orderIncomeAmount(o) {
