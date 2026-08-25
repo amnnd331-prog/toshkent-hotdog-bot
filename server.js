@@ -1153,6 +1153,64 @@ const ORDER_TYPES = { olib_ketish: 'Olib ketish', dostavka: 'Dostavka', zal: 'Za
 const CUSTOMER_ORDER_TYPES = { olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
 const PAYMENT_TYPES = { naqd: 'Naqd', karta: 'Karta', click: 'Click', dostavka_orqali: 'Naqd' };
 
+// Har bir kategoriya uchun tayyorlanish vaqti (daqiqada) — oshxona guruhidagi
+// jonli taymer shu vaqtga qarab yashil/sariq/qizil rangda ko'rsatiladi.
+// Solishtirish katta-kichik harf va bo'sh joylarga sezgir emas (masalan
+// "salatli", " Salatli " ham mos tushadi).
+const PREP_TIME_MINUTES = {
+  'SALAT': 5,
+  'QAZILI': 10,
+  'HOT-LET': 10,
+  'ASSORTI': 15,
+  'SHASHLIK ASSORTI': 20,
+  'GAMBURGER': 10
+};
+const PREP_TIME_MINUTES_NORMALIZED = Object.fromEntries(
+  Object.entries(PREP_TIME_MINUTES).map(([k, v]) => [k.trim().toLowerCase(), v])
+);
+// Sariq -> qizilga o'tish chegarasi: belgilangan vaqtdan necha barobar
+// oshsa qizil bo'lib qoladi (0 dan target gacha yashil, target dan
+// target*RED gacha sariq, undan keyin qizil).
+const PREP_TIME_RED_MULTIPLIER = 1.5;
+const KITCHEN_TIMER_UPDATE_MS = 10 * 1000;
+
+// Buyurtma tarkibidagi taomlar kategoriyasiga qarab eng uzoq tayyorlanish
+// vaqtini (soniyada) topadi. Kategoriyasi PREP_TIME_MINUTES'da yo'q
+// taomlar hisobga olinmaydi; hech biri mos kelmasa null qaytadi (taymer
+// ko'rsatilmaydi).
+function orderPrepTargetSeconds(order) {
+  let maxMinutes = 0;
+  for (const it of (order.items || [])) {
+    const key = String(it.category || '').trim().toLowerCase();
+    const minutes = PREP_TIME_MINUTES_NORMALIZED[key];
+    if (minutes && minutes > maxMinutes) maxMinutes = minutes;
+  }
+  return maxMinutes > 0 ? maxMinutes * 60 : null;
+}
+
+
+function fmtMmSs(totalSeconds) {
+  const s = Math.max(0, Math.floor(totalSeconds));
+  const mm = Math.floor(s / 60);
+  const ss = s % 60;
+  return `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
+}
+
+// Buyurtma yaratilgan paytdan boshlab o'tgan vaqtga qarab
+// 🟢 (vaqt ichida) / 🟡 (vaqtdan oshdi) / 🔴 (ancha oshdi) belgisi va
+// "MM:SS" ko'rinishidagi qator qaytaradi. targetSec null bo'lsa (mos
+// kategoriya topilmagan bo'lsa) null qaytaradi — bunday holda taymer
+// qatori umuman qo'shilmaydi.
+function kitchenTimerLine(order) {
+  const targetSec = orderPrepTargetSeconds(order);
+  if (targetSec === null) return null;
+  const elapsedSec = Math.max(0, (Date.now() - new Date(order.createdAt).getTime()) / 1000);
+  let emoji = '🟢';
+  if (elapsedSec > targetSec * PREP_TIME_RED_MULTIPLIER) emoji = '🔴';
+  else if (elapsedSec > targetSec) emoji = '🟡';
+  return `${emoji} ${fmtMmSs(elapsedSec)} / ${fmtMmSs(targetSec)}`;
+}
+
 function orderIncomeAmount(o) {
   if (o.status === 'bekor_qilindi') return 0;
   if (o.paymentProofStatus === 'kutilmoqda' || o.paymentProofStatus === 'rad_etildi') return 0;
@@ -1616,14 +1674,29 @@ function notifyDeliveryGroup(owner, order, creatorLabel) {
   });
 }
 
+// Oshxona guruhidagi buyurtma xabarining o'zgarmas (taymersiz) qismi —
+// dastlabki yuborishda ham, keyingi jonli taymer yangilanishlarida ham
+// shundan foydalaniladi.
+function kitchenGroupBaseText(order, creatorLabel) {
+  const itemsText = orderItemsTextWithPrices(order);
+  const typeLabel = ORDER_TYPES[order.orderType] || order.orderType;
+  const commentLine = order.comment ? `\n💬 Izoh: ${escapeHtmlServer(order.comment)}` : '';
+  return `👨‍🍳 <b>Yangi buyurtma</b> (${typeLabel})${creatorLabel ? '\n' + creatorLabel : ''}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm${commentLine}`;
+}
+
+function kitchenGroupFullText(order) {
+  const base = order.kitchenBaseText || kitchenGroupBaseText(order, order.kitchenCreatorLabel);
+  const timerLine = kitchenTimerLine(order);
+  return timerLine ? `${base}\n\n⏱ ${timerLine}` : base;
+}
+
 function notifyKitchenGroup(owner, order, creatorLabel) {
   if (!owner.kitchenGroupId) return;
   if (!ownerCanUseFeature(owner, 'kitchen-group')) return;
   try {
-    const itemsText = orderItemsTextWithPrices(order);
-    const typeLabel = ORDER_TYPES[order.orderType] || order.orderType;
-    const commentLine = order.comment ? `\n💬 Izoh: ${escapeHtmlServer(order.comment)}` : '';
-    const text = `👨‍🍳 <b>Yangi buyurtma</b> (${typeLabel})${creatorLabel ? '\n' + creatorLabel : ''}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm${commentLine}`;
+    order.kitchenCreatorLabel = creatorLabel || null;
+    order.kitchenBaseText = kitchenGroupBaseText(order, creatorLabel);
+    const text = kitchenGroupFullText(order);
     sendMessage(owner.kitchenGroupId, text, {
       inline_keyboard: [[
         { text: '🏁 Tayyor', callback_data: `kgready:${owner.id}:${order.id}` }
@@ -1635,6 +1708,8 @@ function notifyKitchenGroup(owner, order, creatorLabel) {
         const ord2 = o2 && (o2.orders || []).find(x => x.id === order.id);
         if (ord2) {
           ord2.kitchenGroupMsgId = result.result.message_id;
+          ord2.kitchenCreatorLabel = order.kitchenCreatorLabel;
+          ord2.kitchenBaseText = order.kitchenBaseText;
           saveOwners(owners2);
         }
       }
@@ -1645,6 +1720,27 @@ function notifyKitchenGroup(owner, order, creatorLabel) {
     console.error(`[notifyKitchenGroup kutilmagan xatosi] owner=${owner.id} order=${order.id}: ${(err && err.message) || err}`);
   }
 }
+
+// Har KITCHEN_TIMER_UPDATE_MS millisekundda — oshxona guruhida hali
+// "tayyor" deb belgilanmagan barcha buyurtmalar xabarini yangi
+// o'tgan vaqt (MM:SS) va rang (🟢/🟡/🔴) bilan qayta tahrirlaydi.
+// Faqat mos kategoriyali (PREP_TIME_MINUTES'da bor) taomi bo'lgan
+// buyurtmalarda taymer qatori ko'rsatiladi.
+setInterval(() => {
+  const owners = loadOwners();
+  for (const owner of owners) {
+    if (!owner.kitchenGroupId) continue;
+    if (!ownerCanUseFeature(owner, 'kitchen-group')) continue;
+    for (const order of (owner.orders || [])) {
+      if (order.status !== 'yangi' && order.status !== 'tayyorlanmoqda') continue;
+      if (!order.kitchenGroupMsgId) continue;
+      if (orderPrepTargetSeconds(order) === null) continue;
+      const text = kitchenGroupFullText(order);
+      const keyboard = { inline_keyboard: [[{ text: '🏁 Tayyor', callback_data: `kgready:${owner.id}:${order.id}` }]] };
+      editMessageText(owner.kitchenGroupId, order.kitchenGroupMsgId, text, keyboard);
+    }
+  }
+}, KITCHEN_TIMER_UPDATE_MS);
 
 // Dostavka buyurtmalarida — oshpaz "Tayyor" deb belgilagach, ENDI dostavka
 // guruhiga xabar boradi (avvalroq emas). Bu yerda tugma yo'q — chunki
@@ -6545,14 +6641,14 @@ const server = http.createServer((req, res) => {
         if (it.isCombo) {
           const combo = combosAvailable.find(c => c.id === it.id);
           if (!combo) return sendJSON(res, 200, { ok: false, reason: 'Menyuda mavjud bo\'lmagan combo tanlangan.' });
-          orderItems.push({ id: combo.id, name: combo.name, price: combo.price, qty, isCombo: true });
+          orderItems.push({ id: combo.id, name: combo.name, price: combo.price, qty, isCombo: true, category: combo.category || null });
           continue;
         }
         const menuItem = menu.find(m => m.id === it.id);
         if (!menuItem) return sendJSON(res, 200, { ok: false, reason: 'Menyuda mavjud bo\'lmagan taom tanlangan.' });
         const priceOpt = resolveMenuItemPriceOption(menuItem, it.priceId);
         if (!priceOpt.ok) return sendJSON(res, 200, { ok: false, reason: priceOpt.reason });
-        orderItems.push({ id: menuItem.id, name: priceOpt.label ? `${menuItem.name} (${priceOpt.label})` : menuItem.name, price: priceOpt.price, priceId: priceOpt.priceId, qty, directStockId: menuItem.directStockId || null });
+        orderItems.push({ id: menuItem.id, name: priceOpt.label ? `${menuItem.name} (${priceOpt.label})` : menuItem.name, price: priceOpt.price, priceId: priceOpt.priceId, qty, directStockId: menuItem.directStockId || null, category: menuItem.category || null });
       }
       const subtotal = orderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
 
@@ -6827,14 +6923,14 @@ const server = http.createServer((req, res) => {
         if (it.isCombo) {
           const combo = combosAvailable.find(c => c.id === it.id);
           if (!combo) return sendJSON(res, 200, { ok: false, reason: 'Menyuda mavjud bo\'lmagan combo tanlangan.' });
-          orderItems.push({ id: combo.id, name: combo.name, price: combo.price, qty, isCombo: true });
+          orderItems.push({ id: combo.id, name: combo.name, price: combo.price, qty, isCombo: true, category: combo.category || null });
           continue;
         }
         const menuItem = menu.find(m => m.id === it.id);
         if (!menuItem) return sendJSON(res, 200, { ok: false, reason: 'Menyuda mavjud bo\'lmagan taom tanlangan.' });
         const priceOpt = resolveMenuItemPriceOption(menuItem, it.priceId);
         if (!priceOpt.ok) return sendJSON(res, 200, { ok: false, reason: priceOpt.reason });
-        orderItems.push({ id: menuItem.id, name: priceOpt.label ? `${menuItem.name} (${priceOpt.label})` : menuItem.name, price: priceOpt.price, priceId: priceOpt.priceId, qty, directStockId: menuItem.directStockId || null });
+        orderItems.push({ id: menuItem.id, name: priceOpt.label ? `${menuItem.name} (${priceOpt.label})` : menuItem.name, price: priceOpt.price, priceId: priceOpt.priceId, qty, directStockId: menuItem.directStockId || null, category: menuItem.category || null });
       }
       const total = orderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
 
@@ -6986,14 +7082,14 @@ const server = http.createServer((req, res) => {
         if (it.isCombo) {
           const combo = combosAvailable.find(c => c.id === it.id);
           if (!combo) return sendJSON(res, 200, { ok: false, reason: 'Menyuda mavjud bo\'lmagan combo tanlangan.' });
-          newOrderItems.push({ id: combo.id, name: combo.name, price: combo.price, qty, isCombo: true });
+          newOrderItems.push({ id: combo.id, name: combo.name, price: combo.price, qty, isCombo: true, category: combo.category || null });
           continue;
         }
         const menuItem = menu.find(m => m.id === it.id);
         if (!menuItem) return sendJSON(res, 200, { ok: false, reason: 'Menyuda mavjud bo\'lmagan taom tanlangan.' });
         const priceOpt = resolveMenuItemPriceOption(menuItem, it.priceId);
         if (!priceOpt.ok) return sendJSON(res, 200, { ok: false, reason: priceOpt.reason });
-        newOrderItems.push({ id: menuItem.id, name: priceOpt.label ? `${menuItem.name} (${priceOpt.label})` : menuItem.name, price: priceOpt.price, priceId: priceOpt.priceId, qty, directStockId: menuItem.directStockId || null });
+        newOrderItems.push({ id: menuItem.id, name: priceOpt.label ? `${menuItem.name} (${priceOpt.label})` : menuItem.name, price: priceOpt.price, priceId: priceOpt.priceId, qty, directStockId: menuItem.directStockId || null, category: menuItem.category || null });
       }
       const newTotal = newOrderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
 
