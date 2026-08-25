@@ -1172,7 +1172,7 @@ const PREP_TIME_MINUTES_NORMALIZED = Object.fromEntries(
 // oshsa qizil bo'lib qoladi (0 dan target gacha yashil, target dan
 // target*RED gacha sariq, undan keyin qizil).
 const PREP_TIME_RED_MULTIPLIER = 1.5;
-const KITCHEN_TIMER_UPDATE_MS = 15000;
+const KITCHEN_TIMER_UPDATE_MS = 20000;
 
 // Buyurtmadagi har bir taom nomidan narx varianti qo'shimchasini
 // ("Nomi (200gr)" -> "Nomi") olib tashlab, solishtirish uchun tayyorlaydi.
