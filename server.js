@@ -1747,17 +1747,15 @@ function notifyKitchenGroup(owner, order, creatorLabel) {
 }
 
 // Har KITCHEN_TIMER_UPDATE_MS millisekundda — oshxona guruhida hali
-// "tayyor" deb belgilanmagan buyurtmalarning holatini (🟢/🟡/🔴)
-// tekshiradi va FAQAT holat o'zgargan payt (masalan yashildan sariqqa
-// o'tganda) xabarni tahrirlaydi — har tikda emas. Bu edit sonini
-// buyurtma boshiga bor-yo'g'i 2 taga tushiradi (flood control xavfini
-// deyarli yo'qqa chiqaradi).
+// "tayyor" deb belgilanmagan buyurtmalarning xabari AVTOMATIK tahrirlanadi
+// (har tikda, holat o'zgarmagan bo'lsa ham) — shu tarzda taymer va
+// rang (🟢/🟡/🔴) doim yangilanib turadi.
 //
 // Eski, uzoq vaqt "Tayyor" bosilmagan buyurtmalar (masalan sinov
 // uchun qolib ketgan) MAX_TIMER_AGE_MS'dan oshsa — taymer ularga
 // UMUMAN tegmaydi (chunki ular haqiqiy faol buyurtma emas, va
-// ko'plab shunday eski xabar bir vaqtda "qizil"ga o'tib, birdaniga
-// ko'p tahrir yuborilib, aynan flood control'ni keltirib chiqargan edi).
+// ko'plab shunday eski xabar bir vaqtda tahrirlanib, flood control'ni
+// keltirib chiqarishi mumkin edi).
 //
 // Qo'shimcha ehtiyot chorasi: bir tikda ko'pi bilan MAX_EDITS_PER_TICK
 // ta xabar tahrirlanadi — qolganlari navbatdagi tikka qoladi, shunday
@@ -1782,7 +1780,6 @@ setInterval(() => {
       if (ageMs > MAX_TIMER_AGE_MS) continue;
       const status = kitchenTimerStatus(order);
       if (!status) continue;
-      if (order.kitchenTimerColor === status.color) continue; // holat o'zgarmagan — tegmaymiz
 
       order.kitchenTimerColor = status.color;
       ownersChanged = true;
