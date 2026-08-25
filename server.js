@@ -1172,7 +1172,7 @@ const PREP_TIME_MINUTES_NORMALIZED = Object.fromEntries(
 // oshsa qizil bo'lib qoladi (0 dan target gacha yashil, target dan
 // target*RED gacha sariq, undan keyin qizil).
 const PREP_TIME_RED_MULTIPLIER = 1.5;
-const KITCHEN_TIMER_UPDATE_MS = 5000;
+const KITCHEN_TIMER_UPDATE_MS = 15000;
 
 // Buyurtmadagi har bir taom nomidan narx varianti qo'shimchasini
 // ("Nomi (200gr)" -> "Nomi") olib tashlab, solishtirish uchun tayyorlaydi.
@@ -1203,19 +1203,35 @@ function fmtMmSs(totalSeconds) {
   return `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
 }
 
-// Buyurtma yaratilgan paytdan boshlab o'tgan vaqtga qarab
-// 🟢 (vaqt ichida) / 🟡 (vaqtdan oshdi) / 🔴 (ancha oshdi) belgisi va
-// "MM:SS" ko'rinishidagi qator qaytaradi. targetSec null bo'lsa (mos
-// kategoriya topilmagan bo'lsa) null qaytaradi — bunday holda taymer
-// qatori umuman qo'shilmaydi.
-function kitchenTimerLine(order) {
+// Buyurtma yaratilgan paytdan boshlab o'tgan vaqtga qarab holatni
+// aniqlaydi: 'green' (vaqt ichida), 'yellow' (vaqtdan oshdi),
+// 'red' (ancha oshdi). targetSec bo'lmasa (mos taom topilmagan) null.
+function kitchenTimerStatus(order) {
   const targetSec = orderPrepTargetSeconds(order);
   if (targetSec === null) return null;
   const elapsedSec = Math.max(0, (Date.now() - new Date(order.createdAt).getTime()) / 1000);
-  let emoji = '🟢';
-  if (elapsedSec > targetSec * PREP_TIME_RED_MULTIPLIER) emoji = '🔴';
-  else if (elapsedSec > targetSec) emoji = '🟡';
-  return `${emoji} ${fmtMmSs(elapsedSec)} / ${fmtMmSs(targetSec)}`;
+  let color = 'green';
+  if (elapsedSec > targetSec * PREP_TIME_RED_MULTIPLIER) color = 'red';
+  else if (elapsedSec > targetSec) color = 'yellow';
+  return { color, targetSec };
+}
+
+const KITCHEN_TIMER_LABELS = {
+  green: { emoji: '🟢', text: 'Vaqt ichida' },
+  yellow: { emoji: '🟡', text: 'Vaqtdan oshdi' },
+  red: { emoji: '🔴', text: 'Ancha kechikdi' }
+};
+
+// Xabarga qo'shiladigan taymer qatori. Jonli sekund sanashning o'rniga —
+// Telegramning guruh chatlariga tez-tez tahrir yuborishni cheklashi
+// (flood control) sabab — faqat holat (yashil/sariq/qizil) o'zgarganda
+// tahrirlanadi (qarang: quyidagi setInterval). Sekundlarni Telegramning
+// o'zi xabar tagida ko'rsatib turadi.
+function kitchenTimerLine(order) {
+  const status = kitchenTimerStatus(order);
+  if (!status) return null;
+  const label = KITCHEN_TIMER_LABELS[status.color];
+  return `${label.emoji} ${label.text} (maqsad: ${fmtMmSs(status.targetSec)})`;
 }
 
 function orderIncomeAmount(o) {
@@ -1717,6 +1733,8 @@ function notifyKitchenGroup(owner, order, creatorLabel) {
           ord2.kitchenGroupMsgId = result.result.message_id;
           ord2.kitchenCreatorLabel = order.kitchenCreatorLabel;
           ord2.kitchenBaseText = order.kitchenBaseText;
+          const initialStatus = kitchenTimerStatus(ord2);
+          ord2.kitchenTimerColor = initialStatus ? initialStatus.color : null;
           saveOwners(owners2);
         }
       }
@@ -1729,39 +1747,62 @@ function notifyKitchenGroup(owner, order, creatorLabel) {
 }
 
 // Har KITCHEN_TIMER_UPDATE_MS millisekundda — oshxona guruhida hali
-// "tayyor" deb belgilanmagan barcha buyurtmalar xabarini yangi
-// o'tgan vaqt (MM:SS) va rang (🟢/🟡/🔴) bilan qayta tahrirlaydi.
-// Faqat mos nomli (PREP_TIME_MINUTES'da bor) taomi bo'lgan
-// buyurtmalarda taymer qatori ko'rsatiladi.
-// Telegram bitta chatga juda tez-tez tahrir yuborilsa "flood control"
-// bilan javob beradi (error_code 429) va shundan keyin ma'lum vaqt
-// davomida O'SHA CHATGA umuman xabar/tahrir yubormaydi — bu esa yangi
-// buyurtma xabarlarining ham yetib bormay qolishiga olib kelishi mumkin.
-// Shu sababli 429 kelsa, o'sha kitchenGroupId uchun taymer yangilanishi
-// Telegram tavsiya qilgan vaqt davomida to'xtatib turiladi.
+// "tayyor" deb belgilanmagan buyurtmalarning holatini (🟢/🟡/🔴)
+// tekshiradi va FAQAT holat o'zgargan payt (masalan yashildan sariqqa
+// o'tganda) xabarni tahrirlaydi — har tikda emas. Bu edit sonini
+// buyurtma boshiga bor-yo'g'i 2 taga tushiradi (flood control xavfini
+// deyarli yo'qqa chiqaradi).
+//
+// Eski, uzoq vaqt "Tayyor" bosilmagan buyurtmalar (masalan sinov
+// uchun qolib ketgan) MAX_TIMER_AGE_MS'dan oshsa — taymer ularga
+// UMUMAN tegmaydi (chunki ular haqiqiy faol buyurtma emas, va
+// ko'plab shunday eski xabar bir vaqtda "qizil"ga o'tib, birdaniga
+// ko'p tahrir yuborilib, aynan flood control'ni keltirib chiqargan edi).
+//
+// Qo'shimcha ehtiyot chorasi: bir tikda ko'pi bilan MAX_EDITS_PER_TICK
+// ta xabar tahrirlanadi — qolganlari navbatdagi tikka qoladi, shunday
+// qilib guruhga bir vaqtning o'zida ko'p so'rov ketmaydi.
+const MAX_TIMER_AGE_MS = 3 * 60 * 60 * 1000; // 3 soatdan eski buyurtmalarga tegilmaydi
+const MAX_EDITS_PER_TICK = 5;
 const kitchenTimerBackoffUntil = new Map();
 setInterval(() => {
   const owners = loadOwners();
+  let editsThisTick = 0;
+  let ownersChanged = false;
   for (const owner of owners) {
+    if (editsThisTick >= MAX_EDITS_PER_TICK) break;
     if (!owner.kitchenGroupId) continue;
     if (!ownerCanUseFeature(owner, 'kitchen-group')) continue;
     if (Date.now() < (kitchenTimerBackoffUntil.get(owner.kitchenGroupId) || 0)) continue;
     for (const order of (owner.orders || [])) {
+      if (editsThisTick >= MAX_EDITS_PER_TICK) break;
       if (order.status !== 'yangi' && order.status !== 'tayyorlanmoqda') continue;
       if (!order.kitchenGroupMsgId) continue;
-      if (orderPrepTargetSeconds(order) === null) continue;
+      const ageMs = Date.now() - new Date(order.createdAt).getTime();
+      if (ageMs > MAX_TIMER_AGE_MS) continue;
+      const status = kitchenTimerStatus(order);
+      if (!status) continue;
+      if (order.kitchenTimerColor === status.color) continue; // holat o'zgarmagan — tegmaymiz
+
+      order.kitchenTimerColor = status.color;
+      ownersChanged = true;
+      editsThisTick++;
       const text = kitchenGroupFullText(order);
       const keyboard = { inline_keyboard: [[{ text: '🏁 Tayyor', callback_data: `kgready:${owner.id}:${order.id}` }]] };
       editMessageText(owner.kitchenGroupId, order.kitchenGroupMsgId, text, keyboard).then(result => {
         if (result && result.error_code === 429) {
-          const retryAfterSec = (result.parameters && result.parameters.retry_after) || 30;
+          const retryAfterSec = Math.max((result.parameters && result.parameters.retry_after) || 30, 60);
           kitchenTimerBackoffUntil.set(owner.kitchenGroupId, Date.now() + retryAfterSec * 1000 + 2000);
           console.error(`[kitchen-timer] flood control (429): chat=${owner.kitchenGroupId} retry_after=${retryAfterSec}s — taymer vaqtincha to'xtatildi`);
+        } else if (!result || result.ok === false) {
+          console.error(`[kitchen-timer] tahrirlash muvaffaqiyatsiz: chat=${owner.kitchenGroupId} order=${order.id} javob=${result ? JSON.stringify(result.description || result) : 'tarmoq xatosi'}`);
         }
       });
     }
   }
+  if (ownersChanged) saveOwners(owners);
 }, KITCHEN_TIMER_UPDATE_MS);
+
 
 // Dostavka buyurtmalarida — oshpaz "Tayyor" deb belgilagach, ENDI dostavka
 // guruhiga xabar boradi (avvalroq emas). Bu yerda tugma yo'q — chunki
