@@ -1715,7 +1715,7 @@ function kitchenGroupBaseText(order, creatorLabel) {
 function kitchenGroupFullText(order) {
   const base = order.kitchenBaseText || kitchenGroupBaseText(order, order.kitchenCreatorLabel);
   const timerLine = kitchenTimerLine(order);
-  return timerLine ? `${base}\n\n⏱ ${timerLine}` : base;
+  return timerLine ? `⏱ ${timerLine}\n\n${base}` : base;
 }
 
 function notifyKitchenGroup(owner, order, creatorLabel) {
