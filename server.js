@@ -1152,6 +1152,10 @@ const ORDER_TYPES = { olib_ketish: 'Olib ketish', dostavka: 'Dostavka', zal: 'Za
 // mijozning botdagi buyurtma oynasida bu tur ko'rsatilmaydi (pastda CUSTOMER_ORDER_TYPES'ga qarang).
 const CUSTOMER_ORDER_TYPES = { olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
 const PAYMENT_TYPES = { naqd: 'Naqd', karta: 'Karta', click: 'Click', dostavka_orqali: 'Naqd' };
+// Hisobotlarda (kunlik hisobot va h.k.) "dostavka_orqali" (kuryerga naqd berilgan)
+// alohida qatorda "Dostavka orqali" deb ko'rsatiladi — mijoz/bot tomonida esa
+// PAYMENT_TYPES dagidek "Naqd" bo'lib qolaveradi.
+const REPORT_PAYMENT_TYPES = { ...PAYMENT_TYPES, dostavka_orqali: 'Dostavka orqali' };
 
 function orderIncomeAmount(o) {
   if (o.status === 'bekor_qilindi') return 0;
@@ -4211,7 +4215,7 @@ function buildDailyReportText(owner, dateKey) {
   lines.push('');
   lines.push('💳 To\'lov turlari bo\'yicha:');
   for (const key of Object.keys(PAYMENT_TYPES)) {
-    if (r.paymentBreakdown[key]) lines.push(`  • ${PAYMENT_TYPES[key]}: ${fmtNum(r.paymentBreakdown[key])} so'm`);
+    if (r.paymentBreakdown[key]) lines.push(`  • ${REPORT_PAYMENT_TYPES[key]}: ${fmtNum(r.paymentBreakdown[key])} so'm`);
   }
   lines.push('');
   lines.push(`🧾 Xarajat: <b>${fmtNum(r.expense)} so'm</b>`);
