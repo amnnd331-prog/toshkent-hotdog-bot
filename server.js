@@ -1153,10 +1153,10 @@ const ORDER_TYPES = { olib_ketish: 'Olib ketish', dostavka: 'Dostavka', zal: 'Za
 const CUSTOMER_ORDER_TYPES = { olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
 const PAYMENT_TYPES = { naqd: 'Naqd', karta: 'Karta', click: 'Click', dostavka_orqali: 'Naqd' };
 
-// Har bir kategoriya uchun tayyorlanish vaqti (daqiqada) — oshxona guruhidagi
+// Har bir taom NOMI uchun tayyorlanish vaqti (daqiqada) — oshxona guruhidagi
 // jonli taymer shu vaqtga qarab yashil/sariq/qizil rangda ko'rsatiladi.
-// Solishtirish katta-kichik harf va bo'sh joylarga sezgir emas (masalan
-// "salatli", " Salatli " ham mos tushadi).
+// Solishtirish katta-kichik harf va bo'sh joylarga sezgir emas, shuningdek
+// narx varianti qo'shimchasini ("Nomi (200gr)" kabi) e'tiborga olmaydi.
 const PREP_TIME_MINUTES = {
   'SALAT': 5,
   'QAZILI': 10,
@@ -1172,21 +1172,28 @@ const PREP_TIME_MINUTES_NORMALIZED = Object.fromEntries(
 // oshsa qizil bo'lib qoladi (0 dan target gacha yashil, target dan
 // target*RED gacha sariq, undan keyin qizil).
 const PREP_TIME_RED_MULTIPLIER = 1.5;
-const KITCHEN_TIMER_UPDATE_MS = 10 * 1000;
+const KITCHEN_TIMER_UPDATE_MS = 1000;
 
-// Buyurtma tarkibidagi taomlar kategoriyasiga qarab eng uzoq tayyorlanish
-// vaqtini (soniyada) topadi. Kategoriyasi PREP_TIME_MINUTES'da yo'q
-// taomlar hisobga olinmaydi; hech biri mos kelmasa null qaytadi (taymer
+// Buyurtmadagi har bir taom nomidan narx varianti qo'shimchasini
+// ("Nomi (200gr)" -> "Nomi") olib tashlab, solishtirish uchun tayyorlaydi.
+function normalizeItemNameForPrepMatch(name) {
+  return String(name || '').replace(/\s*\([^)]*\)\s*$/, '').trim().toLowerCase();
+}
+
+// Buyurtma tarkibidagi taomlar nomiga qarab eng uzoq tayyorlanish
+// vaqtini (soniyada) topadi. Nomi PREP_TIME_MINUTES'da yo'q taomlar
+// hisobga olinmaydi; hech biri mos kelmasa null qaytadi (taymer
 // ko'rsatilmaydi).
 function orderPrepTargetSeconds(order) {
   let maxMinutes = 0;
   for (const it of (order.items || [])) {
-    const key = String(it.category || '').trim().toLowerCase();
+    const key = normalizeItemNameForPrepMatch(it.name);
     const minutes = PREP_TIME_MINUTES_NORMALIZED[key];
     if (minutes && minutes > maxMinutes) maxMinutes = minutes;
   }
   return maxMinutes > 0 ? maxMinutes * 60 : null;
 }
+
 
 
 function fmtMmSs(totalSeconds) {
