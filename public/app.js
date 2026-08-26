@@ -2756,26 +2756,58 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
   function branchListHtml(branches) {
     if (!branches || !branches.length) return `<div class="bosh">Hozircha filiallar yo'q.</div>`;
-    return branches.map(b => `
-      <div class="owner-item">
-        <div>
-          <div class="owner-id">${escapeHtml(b.name)}</div>
-          <div class="owner-username">${escapeHtml(b.address)}</div>
-          ${b.phone ? `<div class="owner-expiry">${escapeHtml(b.phone)}</div>` : ''}
+    return branches.map(b => {
+      const dgBound = !!b.deliveryGroupId;
+      const kgBound = !!b.kitchenGroupId;
+      return `
+      <div class="owner-item" style="flex-direction:column; align-items:stretch; gap:8px;">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+          <div>
+            <div class="owner-id">${escapeHtml(b.name)}</div>
+            <div class="owner-username">${escapeHtml(b.address)}</div>
+            ${b.phone ? `<div class="owner-expiry">${escapeHtml(b.phone)}</div>` : ''}
+          </div>
+          <button data-remove-branch-id="${escapeHtml(b.id)}">O'chirish</button>
         </div>
-        <button data-remove-branch-id="${escapeHtml(b.id)}">O'chirish</button>
+        <div style="font-size:var(--fs-xs); background:rgba(120,120,120,.12); border-radius:8px; padding:8px;">
+          <div style="margin-bottom:4px;">${icon('send', 'icon-xs')} Guruh ulash — bu filial kodini nusxalab, kerakli guruhga yuboring:</div>
+          <div style="display:flex; align-items:center; gap:6px; margin-bottom:4px;">
+            <code style="flex:1; word-break:break-all;">/biriktir ${escapeHtml(b.id)}</code>
+            <button type="button" class="btn ikkinchi" data-copy-cmd="/biriktir ${escapeHtml(b.id)}" style="padding:4px 8px;">${icon('link', 'icon-xs')}</button>
+            <span style="color:${dgBound ? 'var(--tg-theme-link-color,#2ea6ff)' : 'inherit'};">${dgBound ? '✅' : '—'}</span>
+          </div>
+          <div style="display:flex; align-items:center; gap:6px;">
+            <code style="flex:1; word-break:break-all;">/oshpaz_biriktir ${escapeHtml(b.id)}</code>
+            <button type="button" class="btn ikkinchi" data-copy-cmd="/oshpaz_biriktir ${escapeHtml(b.id)}" style="padding:4px 8px;">${icon('link', 'icon-xs')}</button>
+            <span style="color:${kgBound ? 'var(--tg-theme-link-color,#2ea6ff)' : 'inherit'};">${kgBound ? '✅' : '—'}</span>
+          </div>
+        </div>
       </div>
-    `).join('');
+    `;
+    }).join('');
   }
 
-  let branchState = { branches: [] };
+  let branchState = { branches: [], centralBranchName: null };
 
-  function branchOptionsHtml(selectedId) {
-    const opts = [`<option value="">— Markaziy (filialsiz) —</option>`];
-    for (const b of branchState.branches) {
-      opts.push(`<option value="${escapeHtml(b.id)}" ${selectedId === b.id ? 'selected' : ''}>${escapeHtml(b.name)}</option>`);
+  function centralLocationLabel() {
+    return branchState.centralBranchName || 'Markaziy';
+  }
+
+  // opts.includeCentral = false -> markaziy variantini chiqarmaydi (masalan,
+  // omborga o'tkazish shakli, chunki markazidan markaziyga o'tkazib bo'lmaydi).
+  // opts.centralSuffix -> markaziy nomiga qo'shimcha so'z (masalan " sklad").
+  function branchOptionsHtml(selectedId, opts) {
+    const o = opts || {};
+    const includeCentral = o.includeCentral !== false;
+    const centralText = centralLocationLabel() + (o.centralSuffix || '');
+    const parts = [];
+    if (includeCentral) {
+      parts.push(`<option value="">— ${escapeHtml(centralText)} (filialsiz) —</option>`);
     }
-    return opts.join('');
+    for (const b of branchState.branches) {
+      parts.push(`<option value="${escapeHtml(b.id)}" ${selectedId === b.id ? 'selected' : ''}>${escapeHtml(b.name)}</option>`);
+    }
+    return parts.join('');
   }
 
   async function loadBranchAndRender() {
@@ -2783,6 +2815,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const res = await apiPost('/api/branch-list', { initData });
     if (res.networkError) { if (listEl) renderNetworkErrorInline(listEl, res.reason, loadBranchAndRender); return; }
     branchState.branches = res.ok ? res.branches : [];
+    branchState.centralBranchName = res.ok ? (res.centralBranchName || null) : null;
     if (listEl) listEl.innerHTML = branchListHtml(branchState.branches);
     const limitEl = document.getElementById('branchLimitLabel');
     if (limitEl) {
@@ -2790,6 +2823,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
         ? `${branchState.branches.length} / ${res.maxBranches} filial ishlatilmoqda`
         : '';
     }
+    const centralNameInput = document.getElementById('centralBranchNameInput');
+    if (centralNameInput && document.activeElement !== centralNameInput) centralNameInput.value = branchState.centralBranchName || '';
     const staffBranchSelect = document.getElementById('staffBranchInput');
     if (staffBranchSelect) staffBranchSelect.innerHTML = branchOptionsHtml(null);
   }
@@ -3569,6 +3604,13 @@ const tg = window.Telegram && window.Telegram.WebApp;
         ${koAlertsListSkeletonHtml()}
         <div class="section-label" id="koBranchesSectionLabel">${icon('users', 'icon-xs')} Filiallar</div>
         <div class="kartochka">
+          <h2>Markaziy (joriy) joylashuv nomi</h2>
+          <div class="bosh">Yangi filial qo'shgandan keyin, hozirgi (bosh) oshxonangizga ham nom qo'yishingiz mumkin — masalan "1-oshxona".</div>
+          <input type="text" id="centralBranchNameInput" placeholder="Masalan: 1-oshxona" value="${escapeHtml(branchState.centralBranchName || '')}" style="margin-top:8px;">
+          <button class="btn" id="saveCentralBranchNameBtn">Saqlash</button>
+          <div class="xabar" id="centralBranchNameMsg"></div>
+        </div>
+        <div class="kartochka">
           <h2>Filial qo'shish</h2>
           <input type="text" id="branchNameInput" placeholder="Filial nomi (masalan: Chilonzor filiali)">
           <input type="text" id="branchAddressInput" placeholder="Manzil">
@@ -3630,10 +3672,36 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
     document.getElementById('branchList').addEventListener('click', async (e) => {
       const id = e.target.getAttribute('data-remove-branch-id');
-      if (!id) return;
-      e.target.disabled = true;
-      await apiPost('/api/branch-remove', { initData, id });
-      loadBranchAndRender();
+      if (id) {
+        e.target.disabled = true;
+        await apiPost('/api/branch-remove', { initData, id });
+        loadBranchAndRender();
+        return;
+      }
+      const copyBtn = e.target.closest('[data-copy-cmd]');
+      if (copyBtn) {
+        const cmd = copyBtn.getAttribute('data-copy-cmd');
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(cmd).catch(() => {});
+        }
+      }
+    });
+
+    document.getElementById('saveCentralBranchNameBtn').addEventListener('click', async () => {
+      const name = document.getElementById('centralBranchNameInput').value.trim();
+      const msgEl = document.getElementById('centralBranchNameMsg');
+      msgEl.textContent = 'Saqlanmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/central-branch-rename', { initData, name });
+      if (res.ok) {
+        msgEl.textContent = 'Saqlandi.';
+        msgEl.className = 'xabar ok';
+        branchState.centralBranchName = res.centralBranchName || null;
+        loadBranchAndRender();
+      } else {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
     });
 
     document.getElementById('getCustomerLinkBtn').addEventListener('click', async () => {
@@ -6091,7 +6159,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         ${role === 'egasi' ? `
         <div class="kartochka">
           <h2>Joylashuv</h2>
-          <select id="stockBranchSelect">${branchOptionsHtml(null).replace('— Markaziy (filialsiz) —', 'Markaziy sklad')}</select>
+          <select id="stockBranchSelect">${branchOptionsHtml(null, { centralSuffix: ' sklad' })}</select>
         </div>` : ''}
         <div class="kartochka">
           <h2>Mahsulot kiritish (kirim)</h2>
@@ -6138,7 +6206,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         const sel = document.getElementById('stockBranchSelect');
         if (sel) {
           const current = sel.value;
-          sel.innerHTML = branchOptionsHtml(current).replace('— Markaziy (filialsiz) —', 'Markaziy sklad');
+          sel.innerHTML = branchOptionsHtml(current, { centralSuffix: ' sklad' });
         }
       });
     }
@@ -6236,7 +6304,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       <div class="modal" style="max-width:380px;">
         <h3>Filialga o'tkazish</h3>
         <p>${escapeHtml(item.name)} — omborda: ${item.qty} ${escapeHtml(item.unit)}</p>
-        <select id="transferBranchSelect">${branchOptionsHtml(null).replace('<option value="">— Markaziy (filialsiz) —</option>', '')}</select>
+        <select id="transferBranchSelect">${branchOptionsHtml(null, { includeCentral: false })}</select>
         <input type="text" id="transferQtyInput" placeholder="Miqdor (${escapeHtml(item.unit)})" inputmode="decimal">
         <div class="xabar" id="transferMsg"></div>
         <div class="btn-row">
@@ -6497,7 +6565,16 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `).join('');
   }
 
-  let cashflowState = { period: 'today' };
+  let cashflowState = { period: 'today', branchId: undefined };
+
+  function cashflowLocationOptionsHtml(selected) {
+    const parts = [`<option value="__all__" ${selected === undefined ? 'selected' : ''}>Barcha joylashuvlar (umumiy)</option>`];
+    parts.push(`<option value="" ${selected === null ? 'selected' : ''}>${escapeHtml(centralLocationLabel())}</option>`);
+    for (const b of branchState.branches) {
+      parts.push(`<option value="${escapeHtml(b.id)}" ${selected === b.id ? 'selected' : ''}>${escapeHtml(b.name)}</option>`);
+    }
+    return parts.join('');
+  }
   let cashflowCategories = { ijara: 'Ijara', maosh: 'Maosh', kommunal: 'Kommunal', mahsulot: 'Mahsulot xaridi', boshqa: 'Boshqa' };
 
   function cfFormatSum(n) {
@@ -6596,6 +6673,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <button class="btn ikkinchi" id="cfBackBtn" style="margin-bottom:12px;">← Orqaga</button>
         <button class="btn ikkinchi" id="cfZReportBtn" style="margin-bottom:12px;">${icon('clipboard', 'icon-xs')} Kunlik Z-hisobot</button>
         <button class="btn ikkinchi" id="cfOrderHistoryBtn" style="margin-bottom:12px;">${icon('clipboard', 'icon-xs')} Buyurtmalar tarixi</button>
+        ${branchState.branches.length ? `
+        <div class="kartochka">
+          <h2>Joylashuv</h2>
+          <select id="cfBranchSelect">${cashflowLocationOptionsHtml(cashflowState.branchId)}</select>
+        </div>` : ''}
         <div class="tab-row">
           <div class="tab-opt ${cashflowState.period === 'today' ? 'selected' : ''}" data-cf-period="today">Bugun</div>
           <div class="tab-opt ${cashflowState.period === 'week' ? 'selected' : ''}" data-cf-period="week">Hafta</div>
@@ -6614,6 +6696,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         </div>` : ''}
         <div class="kartochka">
           <h2>Xarajat qo'shish</h2>
+          ${branchState.branches.length ? `<select id="cfExpenseBranchSelect">${branchOptionsHtml(cashflowState.branchId || null)}</select>` : ''}
           <input type="text" id="cfAmountInput" placeholder="Summa (so'm)" inputmode="numeric">
           <select id="cfCategoryInput">${cfCategoryOptionsHtml()}</select>
           <input type="text" id="cfNoteInput" placeholder="Izoh (ixtiyoriy)">
@@ -6642,10 +6725,21 @@ const tg = window.Telegram && window.Telegram.WebApp;
       renderCashflowScreen(profile, onBack);
     });
 
+    const cfBranchSelectEl = document.getElementById('cfBranchSelect');
+    if (cfBranchSelectEl) {
+      cfBranchSelectEl.addEventListener('change', (e) => {
+        const v = e.target.value;
+        cashflowState.branchId = v === '__all__' ? undefined : (v || null);
+        renderCashflowScreen(profile, onBack);
+      });
+    }
+
     document.getElementById('cfAddExpenseBtn').addEventListener('click', async () => {
       const amount = document.getElementById('cfAmountInput').value.trim();
       const category = document.getElementById('cfCategoryInput').value;
       const note = document.getElementById('cfNoteInput').value.trim();
+      const branchSelectEl = document.getElementById('cfExpenseBranchSelect');
+      const branchId = branchSelectEl ? (branchSelectEl.value || null) : null;
       const msgEl = document.getElementById('cfExpenseMsg');
       if (!amount || !/^\d+$/.test(amount) || parseInt(amount, 10) <= 0) {
         msgEl.textContent = 'To\'g\'ri summa kiriting.';
@@ -6654,7 +6748,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       }
       msgEl.textContent = 'Qo\'shilmoqda...';
       msgEl.className = 'xabar';
-      const res = await apiPost('/api/expense-add', { initData, amount, category, note });
+      const res = await apiPost('/api/expense-add', { initData, amount, category, note, branchId });
       if (res.ok) {
         document.getElementById('cfAmountInput').value = '';
         document.getElementById('cfNoteInput').value = '';
@@ -6674,7 +6768,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadCfTrendChart() {
     const el = document.getElementById('cfTrendChart');
     if (!el) return;
-    const res = await apiPost('/api/z-report-list', { initData });
+    const res = await apiPost('/api/z-report-list', { initData, branchId: cashflowState.branchId });
     if (res.networkError) { renderNetworkErrorInline(el, res.reason, loadCfTrendChart); return; }
     if (!res.ok || !res.reports || !res.reports.length) {
       el.innerHTML = `<div class="bosh">Grafik uchun hali yopilgan kun yo'q. "Kunlik Z-hisobot" bo'limidan kunni yoping.</div>`;
@@ -6715,7 +6809,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const listEl = document.getElementById('cfExpenseList');
     const msgEl = document.getElementById('cfExpenseMsg');
     if (!statsEl || !listEl) return;
-    const res = await apiPost('/api/cashflow', { initData });
+    const res = await apiPost('/api/cashflow', { initData, branchId: cashflowState.branchId });
     if (res.networkError) {
       renderNetworkErrorInline(statsEl, res.reason, () => loadCashflowData(profile, onBack));
       listEl.innerHTML = '';
@@ -7785,11 +7879,19 @@ const tg = window.Telegram && window.Telegram.WebApp;
     input.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
   }
 
+  let zReportState = { branchId: undefined };
+
   function renderZReportScreen(profile, onBack) {
     ekran(`
       <div class="panel">
         <div class="salom" style="font-size:20px;">Kunlik Z-hisobot</div>
         <button class="btn ikkinchi" id="zrBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        ${branchState.branches.length ? `
+        <div class="kartochka">
+          <h2>Joylashuv</h2>
+          <select id="zrBranchSelect">${cashflowLocationOptionsHtml(zReportState.branchId)}</select>
+          <div class="bosh" style="margin-top:6px;">"Bugungi kunni yopish" tanlangan joylashuv uchun alohida yopiladi.</div>
+        </div>` : ''}
         <div class="kartochka">
           <div class="bosh">Kunni yopib, bugungi savdo/xarajat/sof foydani rasmiy hisobot sifatida saqlaydi.</div>
           <button class="btn" id="zrCreateBtn" style="margin-top:10px;">Bugungi kunni yopish</button>
@@ -7817,11 +7919,20 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
     document.getElementById('zrBackBtn').addEventListener('click', () => onBack && onBack());
 
+    const zrBranchSelectEl = document.getElementById('zrBranchSelect');
+    if (zrBranchSelectEl) {
+      zrBranchSelectEl.addEventListener('change', (e) => {
+        const v = e.target.value;
+        zReportState.branchId = v === '__all__' ? undefined : (v || null);
+        loadZReportList();
+      });
+    }
+
     document.getElementById('zrCreateBtn').addEventListener('click', async () => {
       const msgEl = document.getElementById('zrMsg');
       msgEl.textContent = 'Yopilmoqda...';
       msgEl.className = 'xabar';
-      const res = await apiPost('/api/z-report-create', { initData });
+      const res = await apiPost('/api/z-report-create', { initData, branchId: zReportState.branchId || null });
       if (res.ok) {
         msgEl.textContent = res.wasUpdate ? 'Bugungi hisobot yangilandi.' : 'Bugungi kun yopildi.';
         msgEl.className = 'xabar ok';
@@ -7865,7 +7976,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const listEl = document.getElementById('zrList');
     const chartEl = document.getElementById('zrChart');
     if (!listEl) return;
-    const res = await apiPost('/api/z-report-list', { initData });
+    const res = await apiPost('/api/z-report-list', { initData, branchId: zReportState.branchId });
     if (res.networkError) {
       renderNetworkErrorInline(listEl, res.reason, loadZReportList);
       if (chartEl) chartEl.innerHTML = '';
