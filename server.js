@@ -7402,6 +7402,13 @@ const server = http.createServer((req, res) => {
         .slice()
         .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
 
+      if (ctx.role === 'egasi') {
+        const branchId = Object.prototype.hasOwnProperty.call(payload, 'branchId') ? payload.branchId : undefined;
+        orders = orders.filter(o => matchesBranchFilter(o, branchId));
+      } else if (ctx.branchId) {
+        orders = orders.filter(o => (o.branchId || null) === ctx.branchId);
+      }
+
       if (ctxHasRole(ctx, 'dostavka')) {
         orders = orders.filter(o => o.orderType === 'dostavka' && o.status === 'tayyor' && !o.deliveredBy);
       }
@@ -8703,28 +8710,30 @@ const server = http.createServer((req, res) => {
       const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'dashboard')) return sendJSON(res, 200, featureBlockedResult('dashboard'));
 
+      const branchId = Object.prototype.hasOwnProperty.call(payload, 'branchId') ? payload.branchId : undefined;
+
       const now = new Date();
       const todayStart = tzDayStart(now);
       const yesterdayStart = new Date(todayStart.getTime() - 86400000);
 
-      const today = cashflowBucket(owner, todayStart);
+      const today = cashflowBucket(owner, todayStart, branchId);
 
       const yesterdayOrders = (owner.orders || []).filter(o => {
         const d = new Date(o.createdAt);
-        return d >= yesterdayStart && d < todayStart;
+        return d >= yesterdayStart && d < todayStart && matchesBranchFilter(o, branchId);
       });
       const yesterdayIncome = yesterdayOrders.reduce((s, o) => s + orderIncomeAmount(o), 0);
       const yesterdayExpense = (owner.expenses || []).filter(e => {
         const d = new Date(e.createdAt);
-        return d >= yesterdayStart && d < todayStart;
+        return d >= yesterdayStart && d < todayStart && matchesBranchFilter(e, branchId);
       }).reduce((s, e) => s + (e.amount || 0), 0);
 
       const todayCourierDeliveries = (owner.orders || []).filter(o =>
-        o.orderType === 'dostavka' && o.deliveredBy && new Date(o.deliveredAt || o.createdAt) >= todayStart).length;
+        o.orderType === 'dostavka' && o.deliveredBy && new Date(o.deliveredAt || o.createdAt) >= todayStart && matchesBranchFilter(o, branchId)).length;
       const yesterdayCourierDeliveries = (owner.orders || []).filter(o => {
         if (o.orderType !== 'dostavka' || !o.deliveredBy) return false;
         const d = new Date(o.deliveredAt || o.createdAt);
-        return d >= yesterdayStart && d < todayStart;
+        return d >= yesterdayStart && d < todayStart && matchesBranchFilter(o, branchId);
       }).length;
 
       const summary = {
@@ -8756,11 +8765,13 @@ const server = http.createServer((req, res) => {
       const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'dashboard')) return sendJSON(res, 200, featureBlockedResult('dashboard'));
 
+      const branchId = Object.prototype.hasOwnProperty.call(payload, 'branchId') ? payload.branchId : undefined;
+
       const now = new Date();
       const todayStart = tzDayStart(now);
       const thresholdMs = ORDER_DELAY_THRESHOLD_MINUTES * 60 * 1000;
 
-      const todaysOrders = (owner.orders || []).filter(o => new Date(o.createdAt) >= todayStart);
+      const todaysOrders = (owner.orders || []).filter(o => new Date(o.createdAt) >= todayStart && matchesBranchFilter(o, branchId));
 
       let yangi = 0, tayyorlanmoqda = 0, tayyor = 0, kechikayotgan = 0;
       for (const o of todaysOrders) {
@@ -8794,9 +8805,12 @@ const server = http.createServer((req, res) => {
       const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'dashboard')) return sendJSON(res, 200, featureBlockedResult('dashboard'));
 
+      const branchId = Object.prototype.hasOwnProperty.call(payload, 'branchId') ? payload.branchId : undefined;
       const alerts = [];
 
-      const stockPools = [owner, ...(owner.branches || [])];
+      const stockPools = branchId === undefined
+        ? [owner, ...(owner.branches || [])]
+        : (branchId === null ? [owner] : [findBranch(owner, branchId)].filter(Boolean));
       let lowStockCount = 0;
       for (const pool of stockPools) {
         for (const item of (pool.stock || [])) {
@@ -8814,7 +8828,7 @@ const server = http.createServer((req, res) => {
       const now = new Date();
       const todayStart = tzDayStart(now);
       const thresholdMs = ORDER_DELAY_THRESHOLD_MINUTES * 60 * 1000;
-      const todaysOrders = (owner.orders || []).filter(o => new Date(o.createdAt) >= todayStart);
+      const todaysOrders = (owner.orders || []).filter(o => new Date(o.createdAt) >= todayStart && matchesBranchFilter(o, branchId));
       let delayedCount = 0;
       for (const o of todaysOrders) {
         if (o.status === 'tayyor') continue;
@@ -8828,7 +8842,7 @@ const server = http.createServer((req, res) => {
       }
 
       const todayDateKey = tzDateKey(now);
-      const dailyReportClosed = (owner.zReports || []).some(z => z.date === todayDateKey);
+      const dailyReportClosed = (owner.zReports || []).some(z => z.date === todayDateKey && (branchId === undefined || (z.branchId || null) === (branchId || null)));
       if (!dailyReportClosed) {
         alerts.push({
           type: 'daily_report_open', level: 'info', text: 'Bugungi kun yakuni uchun hisob yopilmagan',
