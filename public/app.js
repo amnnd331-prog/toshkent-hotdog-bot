@@ -2139,6 +2139,19 @@ const tg = window.Telegram && window.Telegram.WebApp;
     setAppHeader(existing.logoUrl, existing.name, 'Egasi');
     const accSections = [
       {
+        key: 'workHours', icon: 'clock', title: 'Ish vaqti',
+        hint: p.workHours ? `Hozirgi: ${p.workHours}` : 'Ochilish va yopilish vaqti',
+        body: `
+          <div class="kartochka">
+            <div class="bosh">Oshxonangiz qaysi soatlarda ishlashini kiriting. Mijozlar shu vaqtdan tashqarida buyurtma bera olmaydi.</div>
+            <label class="field-label">Ish vaqti</label>
+            <input type="text" id="pWorkHours" placeholder="09:00 - 23:00" value="${escapeHtml(p.workHours || '')}">
+            <button class="btn" id="saveWorkHoursBtn" style="margin-top:8px;">Saqlash</button>
+            <div class="xabar" id="workHoursMsg"></div>
+          </div>
+        `
+      },
+      {
         key: 'categories', icon: 'restaurant', title: "Menyu bo'limlari",
         hint: 'Kategoriyalar tartibi',
         body: `
@@ -2313,8 +2326,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <input type="text" id="pAddress" placeholder="Shahar, ko'cha, uy" value="${escapeHtml(p.address || '')}">
           <label class="field-label">Telefon *</label>
           <input type="text" id="pPhone" placeholder="+998901234567" value="${escapeHtml(p.phone || '')}">
-          <label class="field-label">Ish vaqti</label>
-          <input type="text" id="pWorkHours" placeholder="09:00 - 23:00" value="${escapeHtml(p.workHours || '')}">
           ${logoPickerHtml('pLogo', pendingLogo)}
           <label class="field-label">Brend rangi (mijozlar menyusi va ilova shu rangda ko'rinadi)</label>
           ${brandSwatchesHtml(pendingBrandColor, p.name)}
@@ -2365,7 +2376,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         name: document.getElementById('pName').value.trim(),
         address: document.getElementById('pAddress').value.trim(),
         phone: document.getElementById('pPhone').value.trim(),
-        workHours: document.getElementById('pWorkHours').value.trim(),
+        workHours: p.workHours || '',
         logoUrl: pendingLogo,
         brandColor: pendingBrandColor
       };
@@ -2379,6 +2390,30 @@ const tg = window.Telegram && window.Telegram.WebApp;
         return;
       }
       renderOwnerHomeScreen(res.profile);
+    });
+
+    document.getElementById('saveWorkHoursBtn').addEventListener('click', async () => {
+      const msgEl = document.getElementById('workHoursMsg');
+      const workHours = document.getElementById('pWorkHours').value.trim();
+      msgEl.textContent = 'Saqlanmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/save-profile', {
+        initData,
+        name: p.name || '',
+        address: p.address || '',
+        phone: p.phone || '',
+        workHours,
+        logoUrl: p.logoUrl || '',
+        brandColor: p.brandColor || ''
+      });
+      if (!res.ok) {
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      msgEl.textContent = 'Saqlandi.';
+      msgEl.className = 'xabar ok';
+      p.workHours = res.profile.workHours || '';
     });
 
     document.getElementById('addCategoryBtn').addEventListener('click', async () => {
