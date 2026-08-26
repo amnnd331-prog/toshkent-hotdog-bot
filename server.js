@@ -4597,7 +4597,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/verify') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData } = payload;
       if (!initData) return sendJSON(res, 400, { ok: false, reason: 'initData yo\'q' });
 
@@ -4640,7 +4640,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/profile-register') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, firstName, lastName, phone } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -4680,7 +4680,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/staff-list') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -4697,7 +4697,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/add-staff') {
     readBody(req, async (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, input, role, roles, branchId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -4763,7 +4763,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/create-staff-invite') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, role, roles, branchId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -4822,7 +4822,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/set-staff-roles') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, id, roles } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -4854,7 +4854,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/set-staff-branch') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, id, branchId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -4884,7 +4884,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/remove-staff') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, id } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -4906,7 +4906,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/branch-list') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -4927,7 +4927,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/central-branch-rename') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, name } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -4949,7 +4949,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/branch-add') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, name, address, phone } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -5001,7 +5001,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/branch-rename') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, id, name, address, phone } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -5033,7 +5033,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/branch-remove') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, id } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -5055,7 +5055,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/menu-list') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -5077,7 +5077,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/category-list') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -5097,7 +5097,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/category-add') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, name } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -5132,7 +5132,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/category-remove') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, id } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -5162,7 +5162,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/category-reorder') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, orderedIds } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -5199,7 +5199,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/menu-add') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, name, price, prices, category, description, imageUrl, directStockId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -5264,7 +5264,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/menu-update') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, id, name, price, prices, category, description, imageUrl, available, directStockId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -5339,7 +5339,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/menu-remove') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, id } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -5366,7 +5366,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/combo-list') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -5386,7 +5386,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/combo-add') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, name, itemIds, priceMode, price, category, imageUrl } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -5449,7 +5449,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/combo-update') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, id, name, itemIds, priceMode, price, category, imageUrl, available } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -5513,7 +5513,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/combo-remove') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, id } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -5543,7 +5543,7 @@ const server = http.createServer((req, res) => {
   // tekshiriladi).
   if (req.method === 'POST' && req.url === '/api/partner-register-link') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       if (!BOT_USERNAME || BOT_USERNAME === 'BOT_USERNAME_BU_YERGA') {
@@ -5556,7 +5556,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/customer-link') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
@@ -5575,7 +5575,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/delivery-group-status') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
@@ -5596,7 +5596,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/delivery-group-remove') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
@@ -5616,7 +5616,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/kitchen-group-status') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
@@ -5637,7 +5637,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/kitchen-group-remove') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
@@ -5657,7 +5657,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/promo-list') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
@@ -5672,7 +5672,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/promo-add') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, title, description, discountPercent, minTotal } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -5715,7 +5715,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/promo-toggle') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, id } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -5736,7 +5736,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/promo-remove') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, id } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -5769,7 +5769,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/banner-list') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
@@ -5784,7 +5784,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/banner-add') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, imageUrl, title, link, startAt, endAt } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -5840,7 +5840,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/banner-update') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, id, imageUrl, title, link, startAt, endAt } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -5898,7 +5898,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/banner-toggle') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, id } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -5919,7 +5919,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/banner-remove') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, id } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -5939,7 +5939,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/bonus-settings-get') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
@@ -5955,7 +5955,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/bonus-settings-save') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, enabled, earnPercent } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -5979,7 +5979,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/restaurant-brand') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { ownerId } = payload;
       if (!ownerId) return sendJSON(res, 200, { ok: false });
       const owner = findOwner(loadOwners(), ownerId);
@@ -5996,7 +5996,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/customer-restaurants-list') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -6023,7 +6023,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/customer-verify') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, ownerId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -6065,7 +6065,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/kitchen-status') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, ownerId } = payload || {};
       const owner = ownerId ? findOwner(loadOwners(), ownerId) : null;
       const hours = getOwnerWorkHours(owner);
@@ -6095,7 +6095,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/kitchen-remind') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, ownerId } = payload || {};
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -6122,7 +6122,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/customer-menu-list') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, ownerId, branchId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -6158,7 +6158,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/customer-favorite-toggle') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, ownerId, itemId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -6183,7 +6183,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/customer-address-list') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, ownerId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -6202,7 +6202,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/customer-address-save') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, ownerId, addressId, label, addressNote, location, extraPhone } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -6262,7 +6262,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/customer-address-remove') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, ownerId, addressId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -6286,7 +6286,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/customer-orders-history') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, ownerId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -6309,7 +6309,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/customer-confirm-received') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, ownerId, orderId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -6337,7 +6337,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/customer-notifications') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, ownerId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -6443,7 +6443,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/support-send') {
     readBody(req, async (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, ownerId, text } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -6485,7 +6485,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/support-thread') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, ownerId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -6512,7 +6512,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/support-inbox') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -6554,7 +6554,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/support-thread-staff') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, customerId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -6584,7 +6584,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/support-reply') {
     readBody(req, async (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, customerId, text } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -6629,7 +6629,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/owner-admin-support-send') {
     readBody(req, async (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, text } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -6667,7 +6667,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/owner-admin-support-thread') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -6695,7 +6695,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/admin-support-inbox') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -6733,7 +6733,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/admin-support-thread') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, ownerId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -6758,7 +6758,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/admin-support-reply') {
     readBody(req, async (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, ownerId, text } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -6790,7 +6790,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/customer-order') {
     readBody(req, async (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, ownerId, items, orderType, paymentType, promoId, usePoints, location, addressNote, extraPhone, comment, requestId, branchId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -7164,7 +7164,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/create-order') {
     readBody(req, async (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, items, orderType, paymentType, requestId, comment } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -7326,7 +7326,7 @@ const server = http.createServer((req, res) => {
   // (yangi / tayyorlanmoqda) buyurtmalarni tahrirlash mumkin.
   if (req.method === 'POST' && req.url === '/api/edit-order') {
     readBody(req, async (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, orderId, items, orderType, paymentType, comment } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -7568,7 +7568,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/orders-list') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -7645,7 +7645,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/order-history') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -7793,7 +7793,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/order-history-export') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -7854,7 +7854,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/my-stats') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, period } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -7911,7 +7911,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/shift-status') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -7933,7 +7933,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/shift-toggle') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -7977,7 +7977,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/update-order-status') {
     readBody(req, async (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, orderId, status } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -8040,7 +8040,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/staff-mark-received') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, orderId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -8076,7 +8076,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/deliver-order') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, orderId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -8113,7 +8113,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/reject-delivery-order') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, orderId, reason, returnedItems } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -8202,7 +8202,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/undo-deliver-order') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, orderId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -8239,7 +8239,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/stock-list') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -8263,7 +8263,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/stock-add') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, name, qty, unit, price, minQty } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -8354,7 +8354,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/stock-remove') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, id, branchId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -8388,7 +8388,7 @@ const server = http.createServer((req, res) => {
   // harakatlar tarixiga yoziladi va yo'qotish summasi Moliyaga xarajat sifatida tushadi.
   if (req.method === 'POST' && req.url === '/api/stock-writeoff') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, id, qty, reason, note, branchId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -8460,7 +8460,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/stock-movements') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -8484,7 +8484,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/stock-transfer') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, stockId, branchId, qty } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -8550,7 +8550,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/menu-set-recipe') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, menuId, recipe } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -8593,7 +8593,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/audit-submit') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, entries } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -8670,7 +8670,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/audit-list') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -8797,7 +8797,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/expense-add') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, amount, note, category, branchId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -8842,7 +8842,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/expense-remove') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, id } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -8865,7 +8865,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/cashflow') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -8887,7 +8887,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/dashboard-summary') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -8942,7 +8942,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/order-status-counts') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -8982,7 +8982,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/dashboard-alerts') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -9053,7 +9053,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/branch-report') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, period } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -9093,7 +9093,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/restricted-customers') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -9131,7 +9131,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/owner-reviews') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, targetOwnerId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -9166,7 +9166,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/toggle-customer-restriction') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, customerId, action } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -9246,7 +9246,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/z-report-create') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -9285,7 +9285,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/z-report-list') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -9441,7 +9441,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/ai-analytics') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, period, branchId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -9474,7 +9474,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/daily-report-preview') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -9499,7 +9499,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/daily-report-send-now') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -9520,7 +9520,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/daily-report-toggle') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, enabled } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -9541,7 +9541,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/ai-director-preview') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -9565,7 +9565,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/ai-director-send-now') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -9586,7 +9586,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/ai-director-toggle') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, enabled } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -9607,7 +9607,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/ai-director-weekly-preview') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -9632,7 +9632,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/ai-director-weekly-send-now') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -9653,7 +9653,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/ai-director-weekly-toggle') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, enabled } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -9674,7 +9674,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/ai-ask') {
     readBody(req, async (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, question } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -9718,7 +9718,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/staff-activity-log') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, staffId, limit } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -9750,7 +9750,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/notification-error-log') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -9769,7 +9769,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/notification-error-log-clear') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -9790,7 +9790,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/notification-prefs-get') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -9815,7 +9815,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/notification-prefs-save') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -9843,7 +9843,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/owner-payment-card-get') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -9860,7 +9860,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/owner-payment-card-set') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -9882,7 +9882,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/staff-performance-report') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, period } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -9924,7 +9924,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/my-profile') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -9950,7 +9950,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/super-admin-reset-reports') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -9977,7 +9977,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/save-profile') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, name, address, phone, workHours, logoUrl, brandColor } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -10039,7 +10039,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/feature-list') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
@@ -10052,7 +10052,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/admin-payment-requisites-get') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
@@ -10065,7 +10065,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/admin-payment-requisites-set') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, cardNumber, cardHolder, clickNumber, paymeNumber } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -10086,7 +10086,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/tariff-list') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
@@ -10102,7 +10102,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/tariff-add') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, name, price, maxBranches } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -10152,7 +10152,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/tariff-rename') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, id, name, price, reminderDays, maxBranches } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -10205,7 +10205,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/tariff-remove') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, id, force } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -10242,7 +10242,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/tariff-set-features') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, id, features } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -10270,7 +10270,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/subscription-plan-list') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
@@ -10290,7 +10290,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/subscription-plan-add') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, label, days, price, discountNote, tariffId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -10340,7 +10340,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/subscription-plan-update') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, id, label, days, price, discountNote, tariffId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -10387,7 +10387,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/subscription-plan-remove') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, id } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -10408,7 +10408,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/system-status') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
@@ -10468,7 +10468,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/owners') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
@@ -10508,7 +10508,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/owner-set-tariff') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, id, tariffId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -10538,7 +10538,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/owner-set-expiry') {
     readBody(req, async (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, id, action, days, date } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -10631,7 +10631,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/set-owner-credentials') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, id, login, password } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -10670,7 +10670,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/remove-owner-credentials') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, id } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -10695,7 +10695,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/owner-confirm-password') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, password } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -10720,7 +10720,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/owner-change-password') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, currentPassword, newPassword } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -10760,7 +10760,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/owner-remove-password') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, currentPassword } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -10796,7 +10796,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/owner-login') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { login, password } = payload;
       const loginNorm = normalizeLogin(login);
       if (!loginNorm || !password) {
@@ -10830,7 +10830,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/owner-logout') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData } = payload;
       if (typeof initData === 'string' && initData.startsWith('sess_')) {
         const token = initData.slice('sess_'.length);
@@ -10849,7 +10849,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/add-owner') {
     readBody(req, async (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, input, days, price, paid } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -10911,7 +10911,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/update-owner-billing') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, id, price, paid } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -10952,7 +10952,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/remove-owner') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, id } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -10976,7 +10976,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/trash-list') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
@@ -11001,7 +11001,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/trash-restore') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, trashId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -11029,7 +11029,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/trash-purge-now') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, trashId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -11052,7 +11052,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/trash-log') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
@@ -11066,7 +11066,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/backup-export') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
@@ -11105,7 +11105,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/backup-import-preview') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
@@ -11152,7 +11152,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/backup-import-confirm') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
@@ -11205,7 +11205,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/create-invite') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
@@ -11224,7 +11224,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/subscription-status') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
@@ -11262,7 +11262,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/subscription-history') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
@@ -11284,7 +11284,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/subscription-select-plan') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
@@ -11312,7 +11312,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/admin-pending-subscription-payments') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
@@ -11335,7 +11335,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/admin-subscription-decide') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
@@ -11448,7 +11448,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/broadcast-send') {
     readBody(req, async (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const { initData, targetType, text, imageUrl, buttonText, buttonUrl } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
@@ -11509,7 +11509,7 @@ const server = http.createServer((req, res) => {
 
   if (req.method === 'POST' && req.url === '/api/broadcast-history') {
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
       const check = verifyAuth(payload.initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
