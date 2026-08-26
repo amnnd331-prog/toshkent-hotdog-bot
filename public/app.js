@@ -8842,6 +8842,15 @@ const tg = window.Telegram && window.Telegram.WebApp;
   function customerCheckoutModalBodyHtml() {
     return `
       <h3>Buyurtmani rasmiylashtirish</h3>
+      ${(customerState.branches && customerState.branches.length > 0) ? `
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; background:var(--bg-secondary); border:1px solid var(--border-color); border-radius:var(--radius-md); padding:8px 12px; margin-bottom:12px;">
+          <div style="min-width:0;">
+            <div style="font-size:var(--fs-xs); color:var(--text-secondary); margin-bottom:2px;">Buyurtma filiali</div>
+            <div style="font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${icon('pin', 'icon-xs')} ${escapeHtml(customerCurrentBranchLabel())}</div>
+          </div>
+          <button type="button" id="cCheckoutBranchChangeBtn" style="flex-shrink:0; background:none; border:1px solid var(--border-color); border-radius:var(--radius-pill); padding:4px 12px; font-size:var(--fs-xs); font-weight:600; color:var(--text-secondary); cursor:pointer;">O'zgartirish</button>
+        </div>
+      ` : ''}
       <div class="type-row" id="cOrderTypeRow">
         ${Object.entries(CUSTOMER_ORDER_TYPE_LABELS).map(([k, label]) => `
           <div class="type-opt ${customerState.orderType === k ? 'selected' : ''}" data-corder-type="${k}">${label}</div>
@@ -9067,6 +9076,17 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const modalEl = overlay.querySelector('.modal');
 
     modalEl.querySelector('#cCloseCheckoutBtn').addEventListener('click', () => { overlay.remove(); updateCustomerCartFab(); });
+
+    const checkoutBranchChangeBtn = modalEl.querySelector('#cCheckoutBranchChangeBtn');
+    if (checkoutBranchChangeBtn) {
+      checkoutBranchChangeBtn.addEventListener('click', () => {
+        if (!confirm('Filialni almashtirsangiz, savatchangizdagi mahsulotlar yo\'qoladi. Davom etasizmi?')) return;
+        stopCustomerHistoryPolling();
+        customerState.cart = {};
+        overlay.remove();
+        renderCustomerBranchPicker(customerState.ownerId);
+      });
+    }
 
     modalEl.querySelector('#cOrderTypeRow').addEventListener('click', (e) => {
       const t = e.target.getAttribute('data-corder-type');
@@ -9998,19 +10018,15 @@ const tg = window.Telegram && window.Telegram.WebApp;
     customerState.cardOnlyRestricted = !!verifyRes.customer.cardOnlyRestricted;
     customerState.personRegistered = !!verifyRes.personRegistered;
 
-    // 3-bosqich: agar oshxonaning bir nechta filiali bo'lsa, mijoz avval
-    // qaysi filialdan buyurtma berishini tanlaydi — shundan keyingina o'sha
-    // filialning mustaqil menyusi yuklanadi. Oldin tanlangan filiali
-    // (shu qurilmada saqlangan) hali ham mavjud bo'lsa, qayta so'ralmaydi.
+    // 3-bosqich (yangilangan): mijozdan filialni ilova ochilishi bilanoq
+    // so'ramaymiz — avval markaziy (yoki oldin shu qurilmada tanlangan)
+    // filial menyusi ko'rsatiladi, mijoz erkin ko'rib-tanlaydi. Filialni
+    // tasdiqlash/almashtirish so'rovi endi buyurtma rasmiylashtirish
+    // (checkout) oynasida, "Buyurtma berish" tugmasidan oldin ko'rsatiladi.
     if (customerState.branches.length > 0) {
       const stored = getStoredCustomerBranch();
       const storedValid = stored === '__central__' || customerState.branches.some(b => String(b.id) === String(stored));
-      if (storedValid) {
-        customerState.branchId = stored === '__central__' ? null : stored;
-      } else {
-        renderCustomerBranchPicker(ownerId);
-        return;
-      }
+      customerState.branchId = storedValid ? (stored === '__central__' ? null : stored) : null;
     } else {
       customerState.branchId = null;
     }
