@@ -1753,6 +1753,26 @@ function kitchenGroupFullText(order) {
   return timerLine ? `⏱ ${timerLine}\n\n${base}` : base;
 }
 
+// Buyurtma "tayyor" yoki "bekor qilindi" holatiga o'tgach (ilova orqali
+// bo'lsa ham, guruhdagi tugma orqali bo'lsa ham) — endi tebranib turadigan
+// ⏱ taймer o'rniga QOTGAN (frozen) yakuniy qator ko'rsatiladi: nechi
+// daqiqa-soniyada tayyor bo'lganini darhol ko'rsatadi, keyingi 20 soniyalik
+// siklni kutmaydi (chunki tsikl faqat 'yangi'/'tayyorlanmoqda' holatidagi
+// buyurtmalarni ko'rib chiqadi va bu buyurtmaga endi umuman tegmaydi).
+function kitchenGroupFinalText(order) {
+  const base = order.kitchenBaseText || kitchenGroupBaseText(order, order.kitchenCreatorLabel);
+  if (order.status === 'tayyor') {
+    const readyAt = order.readyAt || order.updatedAt;
+    const ms = readyAt ? (new Date(readyAt).getTime() - new Date(order.createdAt).getTime()) : null;
+    const durationText = ms !== null ? ` (${fmtMmSs(ms / 1000)} da)` : '';
+    return `🏁 Tayyor${durationText}\n\n${base}`;
+  }
+  if (order.status === 'bekor_qilindi') {
+    return `❌ Bekor qilindi\n\n${base}`;
+  }
+  return kitchenGroupFullText(order);
+}
+
 function notifyKitchenGroup(owner, order, creatorLabel) {
   const groups = resolveOrderGroupIds(owner, order);
   if (!groups.kitchenGroupId) return;
@@ -1804,43 +1824,78 @@ function notifyKitchenGroup(owner, order, creatorLabel) {
 const MAX_TIMER_AGE_MS = 3 * 60 * 60 * 1000; // 3 soatdan eski buyurtmalarga tegilmaydi
 const MAX_EDITS_PER_TICK = 5;
 const kitchenTimerBackoffUntil = new Map();
+// Barcha oshxona guruh xabarlari (turli egalar/filiallar) o'rtasida
+// navbat bilan (round-robin) yangilash uchun ko'rsatkich. MUHIM: avvalgi
+// versiyada har tikda ro'yxat DOIM boshidan boshlab tekshirilib,
+// birinchi topilgan MAX_EDITS_PER_TICK ta buyurtma yangilanardi va
+// ortig'iga navbat yetmasa shu tikda tashlab ketilardi. Agar bitta
+// (asosiy) filialda doim MAX_EDITS_PER_TICK'dan ko'p faol buyurtma bo'lsa,
+// ro'yxatda undan keyin turgan boshqa filiallarning buyurtmalari HECH
+// QACHON navbatga yetmay, taymeri butunlay yangilanmay qolardi (aynan
+// "boshqa filialda taymer ishlamayabdi / bir marta ishlab keyin to'xtadi"
+// muammosi shundan edi). Endi navbat oldingi to'xtagan joydan davom
+// etadi — shu bilan hamma buyurtma, band bo'lsa ham, ertami-kechmi
+// o'z yangilanish navbatini oladi.
+let kitchenTimerRRIndex = 0;
 setInterval(() => {
   const owners = loadOwners();
-  let editsThisTick = 0;
   let ownersChanged = false;
+
+  const candidates = [];
   for (const owner of owners) {
-    if (editsThisTick >= MAX_EDITS_PER_TICK) break;
     const hasAnyKitchenGroup = !!owner.kitchenGroupId || (owner.branches || []).some(b => b.kitchenGroupId);
     if (!hasAnyKitchenGroup) continue;
     if (!ownerCanUseFeature(owner, 'kitchen-group')) continue;
     for (const order of (owner.orders || [])) {
-      if (editsThisTick >= MAX_EDITS_PER_TICK) break;
-      if (order.status !== 'yangi' && order.status !== 'tayyorlanmoqda') continue;
-      if (!order.kitchenGroupMsgId) continue;
-      const ageMs = Date.now() - new Date(order.createdAt).getTime();
-      if (ageMs > MAX_TIMER_AGE_MS) continue;
-      const groups = resolveOrderGroupIds(owner, order);
-      if (!groups.kitchenGroupId) continue;
-      if (Date.now() < (kitchenTimerBackoffUntil.get(groups.kitchenGroupId) || 0)) continue;
-      const status = kitchenTimerStatus(order);
-      if (!status) continue;
-
-      order.kitchenTimerColor = status.color;
-      ownersChanged = true;
-      editsThisTick++;
-      const text = kitchenGroupFullText(order);
-      const keyboard = { inline_keyboard: [[{ text: '🏁 Tayyor', callback_data: `kgready:${owner.id}:${order.id}` }]] };
-      editMessageText(groups.kitchenGroupId, order.kitchenGroupMsgId, text, keyboard).then(result => {
-        if (result && result.error_code === 429) {
-          const retryAfterSec = Math.max((result.parameters && result.parameters.retry_after) || 30, 60);
-          kitchenTimerBackoffUntil.set(groups.kitchenGroupId, Date.now() + retryAfterSec * 1000 + 2000);
-          console.error(`[kitchen-timer] flood control (429): chat=${groups.kitchenGroupId} retry_after=${retryAfterSec}s — taymer vaqtincha to'xtatildi`);
-        } else if (!result || result.ok === false) {
-          console.error(`[kitchen-timer] tahrirlash muvaffaqiyatsiz: chat=${groups.kitchenGroupId} order=${order.id} javob=${result ? JSON.stringify(result.description || result) : 'tarmoq xatosi'}`);
-        }
-      });
+      // Bitta buyurtmadagi kutilmagan xato (masalan noto'g'ri/yetishmayotgan
+      // maydon) endi FAQAT shu buyurtmani o'tkazib yuboradi — avvalgi
+      // versiyada bunday xato butun tsiklni (shu owner'dan keyingi barcha
+      // owner/filiallarni) shu tikda to'xtatib qo'yishi mumkin edi.
+      try {
+        if (order.status !== 'yangi' && order.status !== 'tayyorlanmoqda') continue;
+        if (!order.kitchenGroupMsgId) continue;
+        const ageMs = Date.now() - new Date(order.createdAt).getTime();
+        if (ageMs > MAX_TIMER_AGE_MS) continue;
+        const groups = resolveOrderGroupIds(owner, order);
+        if (!groups.kitchenGroupId) continue;
+        if (Date.now() < (kitchenTimerBackoffUntil.get(groups.kitchenGroupId) || 0)) continue;
+        const status = kitchenTimerStatus(order);
+        if (!status) continue;
+        candidates.push({ owner, order, groups, status });
+      } catch (err) {
+        console.error(`[kitchen-timer] buyurtmani tekshirishda xato: owner=${owner.id} order=${order && order.id}: ${(err && err.message) || err}`);
+      }
     }
   }
+
+  if (candidates.length > 0) {
+    const startIdx = kitchenTimerRRIndex % candidates.length;
+    const batchSize = Math.min(MAX_EDITS_PER_TICK, candidates.length);
+    for (let i = 0; i < batchSize; i++) {
+      const { owner, order, groups, status } = candidates[(startIdx + i) % candidates.length];
+      try {
+        order.kitchenTimerColor = status.color;
+        ownersChanged = true;
+        const text = kitchenGroupFullText(order);
+        const keyboard = { inline_keyboard: [[{ text: '🏁 Tayyor', callback_data: `kgready:${owner.id}:${order.id}` }]] };
+        editMessageText(groups.kitchenGroupId, order.kitchenGroupMsgId, text, keyboard).then(result => {
+          if (result && result.error_code === 429) {
+            const retryAfterSec = Math.max((result.parameters && result.parameters.retry_after) || 30, 60);
+            kitchenTimerBackoffUntil.set(groups.kitchenGroupId, Date.now() + retryAfterSec * 1000 + 2000);
+            console.error(`[kitchen-timer] flood control (429): chat=${groups.kitchenGroupId} retry_after=${retryAfterSec}s — taymer vaqtincha to'xtatildi`);
+          } else if (!result || result.ok === false) {
+            console.error(`[kitchen-timer] tahrirlash muvaffaqiyatsiz: chat=${groups.kitchenGroupId} order=${order.id} javob=${result ? JSON.stringify(result.description || result) : 'tarmoq xatosi'}`);
+          }
+        }).catch(err => {
+          console.error(`[kitchen-timer] editMessageText va'da xatosi: owner=${owner.id} order=${order.id}: ${(err && err.message) || err}`);
+        });
+      } catch (err) {
+        console.error(`[kitchen-timer] xabarni tahrirlashda xato: owner=${owner.id} order=${order.id}: ${(err && err.message) || err}`);
+      }
+    }
+    kitchenTimerRRIndex = (startIdx + batchSize) % candidates.length;
+  }
+
   if (ownersChanged) saveOwners(owners);
 }, KITCHEN_TIMER_UPDATE_MS);
 
@@ -1883,7 +1938,8 @@ function notifyDeliveryGroupOrderReady(owner, order) {
   });
 }
 
-function syncGroupMessagesForOrder(owner, order) {
+function syncGroupMessagesForOrder(owner, order, opts) {
+  const skipKitchenTextFinalize = !!(opts && opts.skipKitchenTextFinalize);
   const groups = resolveOrderGroupIds(owner, order);
   const targets = [
     { chatId: groups.deliveryGroupId, msgId: order.deliveryGroupMsgId, prefix: 'dg' },
@@ -1908,6 +1964,20 @@ function syncGroupMessagesForOrder(owner, order) {
     } else if (order.status === 'tayyorlanmoqda') {
       kb = { inline_keyboard: [[{ text: '🏁 Tayyor', callback_data: `${t.prefix}ready:${owner.id}:${order.id}` }]] };
     }
+
+    // Oshxona guruhidagi buyurtma "tayyor" yoki "bekor qilindi" bo'lib
+    // qolgan bo'lsa — bu terminal holat, va 20 soniyalik davriy taймer
+    // endi bu buyurtmaga umuman tegmaydi (faqat 'yangi'/'tayyorlanmoqda'
+    // buyurtmalarni ko'rib chiqadi). Shu sabab bu yerda, DARHOL, xabar
+    // MATNINI ham (nafaqat tugmalarni) yakuniy holatga yangilaymiz — aks
+    // holda eski ⏱ taймer qatori abadiy o'sha qiymatda "qotib" qolardi.
+    if (t.prefix === 'kg' && !skipKitchenTextFinalize && (order.status === 'tayyor' || order.status === 'bekor_qilindi')) {
+      editMessageText(t.chatId, t.msgId, kitchenGroupFinalText(order), kb.inline_keyboard.length ? kb : null).catch(err => {
+        console.error(`[syncGroupMessagesForOrder xatosi] owner=${owner.id} order=${order.id} chat=${t.chatId}: ${(err && err.message) || err}`);
+      });
+      continue;
+    }
+
     telegramApi('editMessageReplyMarkup', {
       chat_id: t.chatId, message_id: t.msgId,
       reply_markup: JSON.stringify(kb)
@@ -3624,7 +3694,7 @@ async function handleTelegramUpdate(update) {
           await editMessageText(chatId, messageId,
             `${cq.message.text || ''}\n\n🏁 Tayyor — ${displayName(from)}`, null);
         }
-        syncGroupMessagesForOrder(owner, order);
+        syncGroupMessagesForOrder(owner, order, { skipKitchenTextFinalize: isKitchen });
         notifyDeliveryGroupOrderReady(owner, order);
         if (order.customerId) {
           const readyMsg = order.orderType === 'dostavka'
