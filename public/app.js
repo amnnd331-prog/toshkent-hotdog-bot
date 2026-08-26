@@ -3836,11 +3836,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
     loadCategoriesAndRender();
   }
 
-  async function loadCategoriesAndRender() {
+  async function loadCategoriesAndRender(branchId) {
     const listEl = document.getElementById('categoryList');
     const selectEl = document.getElementById('menuCategoryInput');
     if (!listEl && !selectEl) return;
-    const res = await apiPost('/api/category-list', { initData });
+    const res = await apiPost('/api/category-list', { initData, branchId: branchId || null });
     ownerCategoriesCache = (res.ok && Array.isArray(res.categories)) ? res.categories : [];
 
     if (listEl) {
@@ -4096,7 +4096,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       }
       msgEl.textContent = 'Qo\'shilmoqda...';
       msgEl.className = 'xabar';
-      const res = await apiPost('/api/menu-add', { initData, name, price, prices: priceOptions, category, description, imageUrl, directStockId });
+      const res = await apiPost('/api/menu-add', { initData, name, price, prices: priceOptions, category, description, imageUrl, directStockId, branchId: currentStockBranchId });
       if (res.ok) {
         msgEl.textContent = 'Qo\'shildi.';
         msgEl.className = 'xabar ok';
@@ -4117,21 +4117,21 @@ const tg = window.Telegram && window.Telegram.WebApp;
       }
     });
 
-    loadCategoriesAndRender();
+    loadCategoriesAndRender(currentStockBranchId);
     loadMenuAndRender();
   }
 
   async function loadMenuAndRender() {
     const listEl = document.getElementById('menuList');
     if (!listEl) return;
-    const res = await apiPost('/api/menu-list', { initData });
+    const res = await apiPost('/api/menu-list', { initData, branchId: currentStockBranchId });
     if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, loadMenuAndRender); return; }
     const menu = res.ok ? res.menu : [];
     listEl.innerHTML = ownerMenuListHtml(menu);
     listEl.querySelectorAll('[data-remove-menu-id]').forEach(btn => {
       btn.addEventListener('click', async () => {
         btn.disabled = true;
-        await apiPost('/api/menu-remove', { initData, id: btn.getAttribute('data-remove-menu-id') });
+        await apiPost('/api/menu-remove', { initData, id: btn.getAttribute('data-remove-menu-id'), branchId: currentStockBranchId });
         loadMenuAndRender();
       });
     });
@@ -4154,7 +4154,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         const id = btn.getAttribute('data-toggle-avail-id');
         const menuItem = menu.find(m => m.id === id);
         btn.disabled = true;
-        await apiPost('/api/menu-update', { initData, id, available: menuItem ? menuItem.available === false : true });
+        await apiPost('/api/menu-update', { initData, id, available: menuItem ? menuItem.available === false : true, branchId: currentStockBranchId });
         loadMenuAndRender();
       });
     });
@@ -6202,6 +6202,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <div class="kartochka">
           <h2>Joylashuv</h2>
           <select id="stockBranchSelect">${branchOptionsHtml(null, { centralSuffix: ' sklad' })}</select>
+          <div class="staff-hint" style="margin-top:6px;">Tanlangan joylashuv shu ekrandagi sklad va menyuni boshqaradi — har bir filialning menyusi mustaqil.</div>
         </div>` : ''}
         <div class="kartochka">
           <h2>Mahsulot kiritish (kirim)</h2>
@@ -6241,6 +6242,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
         currentStockBranchId = e.target.value || null;
         loadStockAndRender();
         loadMovementsAndRender();
+        loadCategoriesAndRender(currentStockBranchId);
+        loadMenuAndRender();
       });
 
       apiPost('/api/branch-list', { initData }).then(res => {
@@ -8066,12 +8069,13 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
   let recipeEditorMenuId = null;
   let recipeEditorStock = [];
+  let recipeEditorBranchId = null;
 
   async function loadMenuDirectStockOptions() {
     const select = document.getElementById('menuDirectStockInput');
     if (!select) return;
     select.innerHTML = '<option value="">Yuklanmoqda...</option>';
-    const res = await apiPost('/api/stock-list', { initData });
+    const res = await apiPost('/api/stock-list', { initData, branchId: currentStockBranchId });
     if (!select.isConnected) return;
     const stock = (res.ok && Array.isArray(res.stock)) ? res.stock : [];
     if (!stock.length) {
@@ -8084,7 +8088,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
   async function openRecipeEditor(menuItem) {
     recipeEditorMenuId = menuItem.id;
-    const res = await apiPost('/api/stock-list', { initData });
+    recipeEditorBranchId = currentStockBranchId;
+    const res = await apiPost('/api/stock-list', { initData, branchId: recipeEditorBranchId });
     recipeEditorStock = res.ok ? res.stock : [];
     renderRecipeEditorOverlay(menuItem);
   }
@@ -8143,7 +8148,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const msgEl = document.getElementById('recipeMsg');
       msgEl.textContent = 'Saqlanmoqda...';
       msgEl.className = 'xabar';
-      const res = await apiPost('/api/menu-set-recipe', { initData, menuId: recipeEditorMenuId, recipe });
+      const res = await apiPost('/api/menu-set-recipe', { initData, menuId: recipeEditorMenuId, recipe, branchId: recipeEditorBranchId });
       if (res.ok) {
         overlay.remove();
         loadMenuAndRender();
@@ -8157,14 +8162,15 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function renderMenuItemEditOverlay(menuItem) {
     let pendingImage = menuItem.imageUrl || '';
     const isDirectInitially = !!menuItem.directStockId;
+    const overlayBranchId = currentStockBranchId;
 
-    const stockRes = await apiPost('/api/stock-list', { initData });
+    const stockRes = await apiPost('/api/stock-list', { initData, branchId: overlayBranchId });
     const stockList = (stockRes.ok && Array.isArray(stockRes.stock)) ? stockRes.stock : [];
     const stockOptionsHtml = stockList.length
       ? stockList.map(s => `<option value="${escapeHtml(s.id)}" ${s.id === menuItem.directStockId ? 'selected' : ''}>${escapeHtml(s.name)} (${escapeHtml(STOCK_UNIT_LABELS[s.unit] || s.unit)})</option>`).join('')
       : '';
 
-    const catRes = await apiPost('/api/category-list', { initData });
+    const catRes = await apiPost('/api/category-list', { initData, branchId: overlayBranchId });
     const categoriesList = (catRes.ok && Array.isArray(catRes.categories)) ? catRes.categories : [];
     let categoryOptionsHtml = '<option value="">— Bo\'lim tanlanmagan —</option>';
     if (menuItem.category && !categoriesList.some(c => c.name === menuItem.category)) {
@@ -8265,7 +8271,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       msgEl.textContent = 'Saqlanmoqda...';
       msgEl.className = 'xabar';
       const res = await apiPost('/api/menu-update', {
-        initData, id: menuItem.id, name, price, prices: priceOptions, category, description, imageUrl: pendingImage, directStockId
+        initData, id: menuItem.id, name, price, prices: priceOptions, category, description, imageUrl: pendingImage, directStockId, branchId: overlayBranchId
       });
       if (res.ok) {
         overlay.remove();
