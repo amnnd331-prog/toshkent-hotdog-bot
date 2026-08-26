@@ -492,14 +492,16 @@ function kitchenTashkentDate(input) {
   return new Date(d.getTime() + KITCHEN_TZ_OFFSET_MS);
 }
 
-// "09:00 - 23:00" (yoki "9:00-23:00" kabi) matnni { openHour, openMinute, closeHour, closeMinute }
-// ko'rinishiga o'giradi. Noto'g'ri/bo'sh bo'lsa null qaytaradi.
+// "09:00 - 23:00", "9:00-23:00", "9-23", "9:00 dan 23:00 gacha" kabi matnni
+// { openHour, openMinute, closeHour, closeMinute } ko'rinishiga o'giradi.
+// Noto'g'ri/bo'sh bo'lsa null qaytaradi. Daqiqa ko'rsatilmasa 00 deb olinadi,
+// ajratuvchi sifatida "-", "–", "—" yoki so'zlashuv uslubidagi "dan...gacha" qabul qilinadi.
 function parseWorkHoursRange(str) {
   if (!str) return null;
-  const m = String(str).match(/(\d{1,2})[:.](\d{2})\s*[-–—]\s*(\d{1,2})[:.](\d{2})/);
+  const m = String(str).match(/(\d{1,2})(?:[:.](\d{2}))?\s*(?:[-–—]|dan)\s*(\d{1,2})(?:[:.](\d{2}))?\s*(?:gacha)?/i);
   if (!m) return null;
-  const openHour = parseInt(m[1], 10), openMinute = parseInt(m[2], 10);
-  const closeHour = parseInt(m[3], 10), closeMinute = parseInt(m[4], 10);
+  const openHour = parseInt(m[1], 10), openMinute = m[2] !== undefined ? parseInt(m[2], 10) : 0;
+  const closeHour = parseInt(m[3], 10), closeMinute = m[4] !== undefined ? parseInt(m[4], 10) : 0;
   if ([openHour, closeHour].some(h => h < 0 || h > 23)) return null;
   if ([openMinute, closeMinute].some(mm => mm < 0 || mm > 59)) return null;
   return { openHour, openMinute, closeHour, closeMinute };
@@ -10001,6 +10003,12 @@ const server = http.createServer((req, res) => {
       if (!addressTrim) return sendJSON(res, 200, { ok: false, reason: 'Manzilni kiriting.' });
       if (!phoneTrim || !isPlausiblePhone(phoneTrim)) {
         return sendJSON(res, 200, { ok: false, reason: 'Telefon raqamini O\'zbekiston formatida kiriting (masalan: +998901234567).' });
+      }
+      // Ish vaqti noto'g'ri formatda kiritilsa, oldin jim tarzda standart
+      // (10:00-03:00) vaqtga tushib qolar edi va owner buni sezmas edi.
+      // Endi bunday holatda aniq xatolik qaytariladi.
+      if (workHoursTrim && !parseWorkHoursRange(workHoursTrim)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Ish vaqti formati noto\'g\'ri. Masalan: 09:00 - 23:00 (yoki "9:00 dan 23:00 gacha").' });
       }
       if (logoTrim && !isValidImageValue(logoTrim)) {
         return sendJSON(res, 200, { ok: false, reason: 'Logotip rasmi noto\'g\'ri yoki hajmi juda katta. Boshqa rasm tanlang.' });
