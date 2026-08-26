@@ -961,6 +961,23 @@ function findStockItem(pool, id) {
   return (pool.stock || []).find(s => s.id === id);
 }
 
+// 1-bosqich: har bir filial o'zining mustaqil menyusiga ega. Filial
+// qo'shilganda markaziy menyu (va bo'limlar) unga boshlang'ich nuqta
+// sifatida nusxalanadi (bu nusxalash /api/branch-add ichida sodir bo'ladi).
+// Shu funksiya "pool" — ya'ni markaziy (owner) yoki tanlangan filialning
+// menyu/bo'lim massivlarini o'z ichiga olgan obyektni qaytaradi.
+// Eski (bu funksiyadan oldin yaratilgan) filiallarda menu/categories
+// hali bo'lmasligi mumkin — shunday holatda ham markaziy menyudan
+// boshlang'ich nusxa olib, keyingi tahrirlar mustaqil davom etadi.
+function resolveMenuPool(owner, branchId) {
+  if (!branchId) return owner;
+  const branch = findBranch(owner, branchId);
+  if (!branch) return null;
+  if (!Array.isArray(branch.menu)) branch.menu = JSON.parse(JSON.stringify(owner.menu || []));
+  if (!Array.isArray(branch.categories)) branch.categories = JSON.parse(JSON.stringify(ensureOwnerCategories(owner)));
+  return branch;
+}
+
 function addStockMovement(pool, entry) {
   if (!pool.stockMovements) pool.stockMovements = [];
   pool.stockMovements.unshift(Object.assign({
@@ -4959,7 +4976,12 @@ const server = http.createServer((req, res) => {
         name: trimmedName,
         address: trimmedAddress,
         phone: phone ? String(phone).trim() : null,
-        createdAt: new Date().toISOString()
+        createdAt: new Date().toISOString(),
+        // 1-bosqich: markaziy menyu va bo'limlar boshlang'ich nuqta sifatida
+        // filialga nusxalanadi — shu paytdan boshlab filial menyusi mustaqil
+        // tahrirlanadi va markaziy menyudagi keyingi o'zgarishlarga bog'liq bo'lmaydi.
+        menu: JSON.parse(JSON.stringify(owner.menu || [])),
+        categories: JSON.parse(JSON.stringify(ensureOwnerCategories(owner)))
       };
       owner.branches.push(newBranch);
       saveOwners(owners);
@@ -5034,8 +5056,12 @@ const server = http.createServer((req, res) => {
       const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
       if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
 
-      const menuWithStock = (ctx.owner.menu || []).map(m => Object.assign({}, m, { outOfStock: menuItemOutOfStock(ctx.owner, m) }));
-      return sendJSON(res, 200, { ok: true, menu: menuWithStock, categories: sortedOwnerCategories(ctx.owner), role: ctx.role });
+      const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
+      const pool = resolveMenuPool(ctx.owner, branchId);
+      if (!pool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi' });
+
+      const menuWithStock = (pool.menu || []).map(m => Object.assign({}, m, { outOfStock: menuItemOutOfStock(ctx.owner, m) }));
+      return sendJSON(res, 200, { ok: true, menu: menuWithStock, categories: sortedOwnerCategories(pool), role: ctx.role, branchId, branches: ctx.owner.branches || [] });
     });
     return;
   }
@@ -5051,7 +5077,11 @@ const server = http.createServer((req, res) => {
       const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
       if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
 
-      return sendJSON(res, 200, { ok: true, categories: sortedOwnerCategories(ctx.owner) });
+      const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
+      const pool = resolveMenuPool(ctx.owner, branchId);
+      if (!pool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi' });
+
+      return sendJSON(res, 200, { ok: true, categories: sortedOwnerCategories(pool), branchId });
     });
     return;
   }
@@ -5070,10 +5100,14 @@ const server = http.createServer((req, res) => {
       const owner = ctx.owner;
       if (!ctx.isAdminActing && !ownerCanUseFeature(owner, 'category-manage')) return sendJSON(res, 200, featureBlockedResult('category-manage'));
 
+      const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
+      const pool = resolveMenuPool(owner, branchId);
+      if (!pool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi' });
+
       const nameTrim = String(name || '').trim();
       if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Bo\'lim nomini kiriting.' });
 
-      const categories = ensureOwnerCategories(owner);
+      const categories = ensureOwnerCategories(pool);
       const exists = categories.some(c => c.name.toLowerCase() === nameTrim.toLowerCase());
       if (exists) return sendJSON(res, 200, { ok: false, reason: 'Bunday bo\'lim allaqachon mavjud.' });
 
@@ -5082,7 +5116,7 @@ const server = http.createServer((req, res) => {
       categories.push(category);
       saveOwners(owners);
 
-      return sendJSON(res, 200, { ok: true, category, categories: sortedOwnerCategories(owner) });
+      return sendJSON(res, 200, { ok: true, category, categories: sortedOwnerCategories(pool) });
     });
     return;
   }
@@ -5102,13 +5136,17 @@ const server = http.createServer((req, res) => {
       if (!ctx.isAdminActing && !ownerCanUseFeature(owner, 'category-manage')) return sendJSON(res, 200, featureBlockedResult('category-manage'));
       if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
 
-      ensureOwnerCategories(owner);
-      owner.categories = owner.categories.filter(c => c.id !== id);
+      const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
+      const pool = resolveMenuPool(owner, branchId);
+      if (!pool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi' });
 
-      owner.categories.sort((a, b) => a.order - b.order).forEach((c, i) => { c.order = i; });
+      ensureOwnerCategories(pool);
+      pool.categories = pool.categories.filter(c => c.id !== id);
+
+      pool.categories.sort((a, b) => a.order - b.order).forEach((c, i) => { c.order = i; });
       saveOwners(owners);
 
-      return sendJSON(res, 200, { ok: true, categories: sortedOwnerCategories(owner) });
+      return sendJSON(res, 200, { ok: true, categories: sortedOwnerCategories(pool) });
     });
     return;
   }
@@ -5128,7 +5166,11 @@ const server = http.createServer((req, res) => {
       if (!ctx.isAdminActing && !ownerCanUseFeature(owner, 'category-manage')) return sendJSON(res, 200, featureBlockedResult('category-manage'));
       if (!Array.isArray(orderedIds)) return sendJSON(res, 200, { ok: false, reason: 'Tartib ro\'yxati noto\'g\'ri.' });
 
-      const categories = ensureOwnerCategories(owner);
+      const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
+      const pool = resolveMenuPool(owner, branchId);
+      if (!pool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi' });
+
+      const categories = ensureOwnerCategories(pool);
       const byId = new Map(categories.map(c => [c.id, c]));
       let nextOrder = 0;
       orderedIds.forEach(id => {
@@ -5141,7 +5183,7 @@ const server = http.createServer((req, res) => {
         .forEach(c => { c.order = nextOrder++; });
 
       saveOwners(owners);
-      return sendJSON(res, 200, { ok: true, categories: sortedOwnerCategories(owner) });
+      return sendJSON(res, 200, { ok: true, categories: sortedOwnerCategories(pool) });
     });
     return;
   }
@@ -5159,6 +5201,11 @@ const server = http.createServer((req, res) => {
       if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi menyuni boshqara oladi'));
       const owner = ctx.owner;
       if (!ctx.isAdminActing && !ownerCanUseFeature(owner, 'menu-manage')) return sendJSON(res, 200, featureBlockedResult('menu-manage'));
+
+      const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
+      const pool = resolveMenuPool(owner, branchId);
+      if (!pool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi' });
+      const stockPool = resolveStockPool(owner, branchId);
 
       const nameTrim = String(name || '').trim();
       if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Taom nomini kiriting.' });
@@ -5180,12 +5227,12 @@ const server = http.createServer((req, res) => {
 
       let directStockIdVal = null;
       if (directStockId !== undefined && directStockId !== null && directStockId !== '') {
-        const stockItem = findStockItem(owner, directStockId);
-        if (!stockItem) return sendJSON(res, 200, { ok: false, reason: 'Bunday sklad mahsuloti (markaziy skladda) topilmadi.' });
+        const stockItem = findStockItem(stockPool, directStockId);
+        if (!stockItem) return sendJSON(res, 200, { ok: false, reason: 'Bunday sklad mahsuloti topilmadi.' });
         directStockIdVal = directStockId;
       }
 
-      if (!owner.menu) owner.menu = [];
+      if (!pool.menu) pool.menu = [];
       const item = {
         id: crypto.randomBytes(4).toString('hex'),
         name: nameTrim,
@@ -5198,7 +5245,7 @@ const server = http.createServer((req, res) => {
         directStockId: directStockIdVal,
         addedAt: new Date().toISOString()
       };
-      owner.menu.push(item);
+      pool.menu.push(item);
       saveOwners(owners);
 
       return sendJSON(res, 200, { ok: true, item });
@@ -5221,7 +5268,12 @@ const server = http.createServer((req, res) => {
       if (!ctx.isAdminActing && !ownerCanUseFeature(owner, 'menu-manage')) return sendJSON(res, 200, featureBlockedResult('menu-manage'));
       if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
 
-      const item = (owner.menu || []).find(m => m.id === id);
+      const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
+      const pool = resolveMenuPool(owner, branchId);
+      if (!pool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi' });
+      const stockPool = resolveStockPool(owner, branchId);
+
+      const item = (pool.menu || []).find(m => m.id === id);
       if (!item) return sendJSON(res, 200, { ok: false, reason: 'Taom topilmadi.' });
 
       if (name !== undefined) {
@@ -5264,8 +5316,8 @@ const server = http.createServer((req, res) => {
           if (Array.isArray(item.recipe) && item.recipe.length) {
             return sendJSON(res, 200, { ok: false, reason: 'Bu taomda retsept bor — avval retseptni tozalang, keyin turi o\'zgartiring.' });
           }
-          const stockItem = findStockItem(owner, directTrim);
-          if (!stockItem) return sendJSON(res, 200, { ok: false, reason: 'Bunday sklad mahsuloti (markaziy skladda) topilmadi.' });
+          const stockItem = findStockItem(stockPool, directTrim);
+          if (!stockItem) return sendJSON(res, 200, { ok: false, reason: 'Bunday sklad mahsuloti topilmadi.' });
           item.directStockId = directTrim;
         }
       }
@@ -5291,7 +5343,11 @@ const server = http.createServer((req, res) => {
       if (!ctx.isAdminActing && !ownerCanUseFeature(owner, 'menu-manage')) return sendJSON(res, 200, featureBlockedResult('menu-manage'));
       if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
 
-      owner.menu = (owner.menu || []).filter(m => m.id !== id);
+      const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
+      const pool = resolveMenuPool(owner, branchId);
+      if (!pool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi' });
+
+      pool.menu = (pool.menu || []).filter(m => m.id !== id);
       saveOwners(owners);
 
       return sendJSON(res, 200, { ok: true });
@@ -8378,7 +8434,12 @@ const server = http.createServer((req, res) => {
       if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi retsept belgilay oladi'));
       const owner = ctx.owner;
 
-      const menuItem = (owner.menu || []).find(m => m.id === menuId);
+      const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
+      const pool = resolveMenuPool(owner, branchId);
+      if (!pool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi' });
+      const stockPool = resolveStockPool(owner, branchId);
+
+      const menuItem = (pool.menu || []).find(m => m.id === menuId);
       if (!menuItem) return sendJSON(res, 200, { ok: false, reason: 'Taom topilmadi.' });
       if (!Array.isArray(recipe)) return sendJSON(res, 200, { ok: false, reason: 'Noto\'g\'ri retsept formati.' });
 
@@ -8388,7 +8449,7 @@ const server = http.createServer((req, res) => {
 
       const cleanRecipe = [];
       for (const r of recipe) {
-        const stockItem = findStockItem(owner, r.stockId);
+        const stockItem = findStockItem(stockPool, r.stockId);
         if (!stockItem) return sendJSON(res, 200, { ok: false, reason: 'Retseptda mavjud bo\'lmagan sklad mahsuloti bor.' });
         const qtyNum = Number(r.qty);
         if (!Number.isFinite(qtyNum) || qtyNum <= 0) return sendJSON(res, 200, { ok: false, reason: 'Retsept miqdori musbat son bo\'lishi kerak.' });
