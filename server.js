@@ -933,6 +933,21 @@ function generateBranchId() {
   return crypto.randomBytes(6).toString('hex');
 }
 
+// Buyurtma qaysi guruhlarga (dostavka/oshxona) yuborilishi kerakligini
+// aniqlaydi: agar buyurtma bir filialga tegishli bo'lsa va o'sha filialning
+// o'ZINING guruhi ulangan bo'lsa — shu guruh ishlatiladi; aks holda markaziy
+// (owner darajasidagi) guruhga tushadi. Shu tarzda har bir filial o'z
+// alohida guruhiga ega bo'lishi mumkin, lekin ulanmagan filiallar markaziy
+// guruhdan foydalanishda davom etadi.
+function resolveOrderGroupIds(owner, order) {
+  const branch = order && order.branchId ? findBranch(owner, order.branchId) : null;
+  const deliveryGroupId = (branch && branch.deliveryGroupId) || owner.deliveryGroupId || null;
+  const deliveryGroupThreadId = (branch && branch.deliveryGroupId) ? (branch.deliveryGroupThreadId || null) : (owner.deliveryGroupThreadId || null);
+  const kitchenGroupId = (branch && branch.kitchenGroupId) || owner.kitchenGroupId || null;
+  const kitchenGroupThreadId = (branch && branch.kitchenGroupId) ? (branch.kitchenGroupThreadId || null) : (owner.kitchenGroupThreadId || null);
+  return { deliveryGroupId, deliveryGroupThreadId, kitchenGroupId, kitchenGroupThreadId };
+}
+
 function resolveStockPool(owner, branchId) {
   if (!branchId) return owner;
   const branch = findBranch(owner, branchId);
@@ -1668,7 +1683,8 @@ function orderItemsTextWithPrices(order) {
 }
 
 function notifyDeliveryGroup(owner, order, creatorLabel) {
-  if (!owner.deliveryGroupId) return;
+  const groups = resolveOrderGroupIds(owner, order);
+  if (!groups.deliveryGroupId) return;
   if (!ownerCanUseFeature(owner, 'delivery-group')) return;
   const itemsText = orderItemsTextWithPrices(order);
   const mapsLink = locationMapsLink(order.location);
@@ -1682,12 +1698,12 @@ function notifyDeliveryGroup(owner, order, creatorLabel) {
   const headerEmoji = order.orderType === 'dostavka' ? '🚚' : '🥡';
   const text = `${headerEmoji} <b>Yangi buyurtma</b> (${typeLabel})${creatorLabel ? '\n' + creatorLabel : ''}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm\nTo'lov: ${PAYMENT_TYPES[order.paymentType] || order.paymentType}` +
     (addressLines ? `\n\n${addressLines}` : '');
-  sendMessage(owner.deliveryGroupId, text, {
+  sendMessage(groups.deliveryGroupId, text, {
     inline_keyboard: [[
       { text: '✅ Qabul qilish', callback_data: `dgaccept:${owner.id}:${order.id}` },
       { text: '🏁 Tayyor', callback_data: `dgready:${owner.id}:${order.id}` }
     ]]
-  }, owner.deliveryGroupThreadId).then(result => {
+  }, groups.deliveryGroupThreadId).then(result => {
     if (result && result.ok && result.result && result.result.message_id) {
       const owners2 = loadOwners();
       const o2 = findOwner(owners2, owner.id);
@@ -1719,17 +1735,18 @@ function kitchenGroupFullText(order) {
 }
 
 function notifyKitchenGroup(owner, order, creatorLabel) {
-  if (!owner.kitchenGroupId) return;
+  const groups = resolveOrderGroupIds(owner, order);
+  if (!groups.kitchenGroupId) return;
   if (!ownerCanUseFeature(owner, 'kitchen-group')) return;
   try {
     order.kitchenCreatorLabel = creatorLabel || null;
     order.kitchenBaseText = kitchenGroupBaseText(order, creatorLabel);
     const text = kitchenGroupFullText(order);
-    sendMessage(owner.kitchenGroupId, text, {
+    sendMessage(groups.kitchenGroupId, text, {
       inline_keyboard: [[
         { text: '🏁 Tayyor', callback_data: `kgready:${owner.id}:${order.id}` }
       ]]
-    }, owner.kitchenGroupThreadId).then(result => {
+    }, groups.kitchenGroupThreadId).then(result => {
       if (result && result.ok && result.result && result.result.message_id) {
         const owners2 = loadOwners();
         const o2 = findOwner(owners2, owner.id);
@@ -1774,15 +1791,18 @@ setInterval(() => {
   let ownersChanged = false;
   for (const owner of owners) {
     if (editsThisTick >= MAX_EDITS_PER_TICK) break;
-    if (!owner.kitchenGroupId) continue;
+    const hasAnyKitchenGroup = !!owner.kitchenGroupId || (owner.branches || []).some(b => b.kitchenGroupId);
+    if (!hasAnyKitchenGroup) continue;
     if (!ownerCanUseFeature(owner, 'kitchen-group')) continue;
-    if (Date.now() < (kitchenTimerBackoffUntil.get(owner.kitchenGroupId) || 0)) continue;
     for (const order of (owner.orders || [])) {
       if (editsThisTick >= MAX_EDITS_PER_TICK) break;
       if (order.status !== 'yangi' && order.status !== 'tayyorlanmoqda') continue;
       if (!order.kitchenGroupMsgId) continue;
       const ageMs = Date.now() - new Date(order.createdAt).getTime();
       if (ageMs > MAX_TIMER_AGE_MS) continue;
+      const groups = resolveOrderGroupIds(owner, order);
+      if (!groups.kitchenGroupId) continue;
+      if (Date.now() < (kitchenTimerBackoffUntil.get(groups.kitchenGroupId) || 0)) continue;
       const status = kitchenTimerStatus(order);
       if (!status) continue;
 
@@ -1791,13 +1811,13 @@ setInterval(() => {
       editsThisTick++;
       const text = kitchenGroupFullText(order);
       const keyboard = { inline_keyboard: [[{ text: '🏁 Tayyor', callback_data: `kgready:${owner.id}:${order.id}` }]] };
-      editMessageText(owner.kitchenGroupId, order.kitchenGroupMsgId, text, keyboard).then(result => {
+      editMessageText(groups.kitchenGroupId, order.kitchenGroupMsgId, text, keyboard).then(result => {
         if (result && result.error_code === 429) {
           const retryAfterSec = Math.max((result.parameters && result.parameters.retry_after) || 30, 60);
-          kitchenTimerBackoffUntil.set(owner.kitchenGroupId, Date.now() + retryAfterSec * 1000 + 2000);
-          console.error(`[kitchen-timer] flood control (429): chat=${owner.kitchenGroupId} retry_after=${retryAfterSec}s — taymer vaqtincha to'xtatildi`);
+          kitchenTimerBackoffUntil.set(groups.kitchenGroupId, Date.now() + retryAfterSec * 1000 + 2000);
+          console.error(`[kitchen-timer] flood control (429): chat=${groups.kitchenGroupId} retry_after=${retryAfterSec}s — taymer vaqtincha to'xtatildi`);
         } else if (!result || result.ok === false) {
-          console.error(`[kitchen-timer] tahrirlash muvaffaqiyatsiz: chat=${owner.kitchenGroupId} order=${order.id} javob=${result ? JSON.stringify(result.description || result) : 'tarmoq xatosi'}`);
+          console.error(`[kitchen-timer] tahrirlash muvaffaqiyatsiz: chat=${groups.kitchenGroupId} order=${order.id} javob=${result ? JSON.stringify(result.description || result) : 'tarmoq xatosi'}`);
         }
       });
     }
@@ -1812,7 +1832,8 @@ setInterval(() => {
 // orqali (kuryer taxtasidan) bajaradi, shu sabab bu shunchaki xabar beruvchi
 // (informatsion) xabar.
 function notifyDeliveryGroupOrderReady(owner, order) {
-  if (!owner.deliveryGroupId) return;
+  const groups = resolveOrderGroupIds(owner, order);
+  if (!groups.deliveryGroupId) return;
   if (!ownerCanUseFeature(owner, 'delivery-group')) return;
   if (order.orderType !== 'dostavka') return;
   const itemsText = orderItemsTextWithPrices(order);
@@ -1824,11 +1845,11 @@ function notifyDeliveryGroupOrderReady(owner, order) {
   ].filter(Boolean).join('\n');
   const text = `🚚 <b>Buyurtma tayyor — yetkazishga oling</b>\n${orderCustomerContactLabel(order)}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm\nTo'lov: ${PAYMENT_TYPES[order.paymentType] || order.paymentType}` +
     (addressLines ? `\n\n${addressLines}` : '');
-  sendMessage(owner.deliveryGroupId, text, {
+  sendMessage(groups.deliveryGroupId, text, {
     inline_keyboard: [[
       { text: '✅ Yetkazildi', callback_data: `dgdelivered:${owner.id}:${order.id}` }
     ]]
-  }, owner.deliveryGroupThreadId).then(result => {
+  }, groups.deliveryGroupThreadId).then(result => {
     if (result && result.ok && result.result && result.result.message_id) {
       const owners2 = loadOwners();
       const o2 = findOwner(owners2, owner.id);
@@ -1844,9 +1865,10 @@ function notifyDeliveryGroupOrderReady(owner, order) {
 }
 
 function syncGroupMessagesForOrder(owner, order) {
+  const groups = resolveOrderGroupIds(owner, order);
   const targets = [
-    { chatId: owner.deliveryGroupId, msgId: order.deliveryGroupMsgId, prefix: 'dg' },
-    { chatId: owner.kitchenGroupId, msgId: order.kitchenGroupMsgId, prefix: 'kg' }
+    { chatId: groups.deliveryGroupId, msgId: order.deliveryGroupMsgId, prefix: 'dg' },
+    { chatId: groups.kitchenGroupId, msgId: order.kitchenGroupMsgId, prefix: 'kg' }
   ].filter(t => t.chatId && t.msgId);
   if (!targets.length) return;
 
@@ -2750,7 +2772,14 @@ async function handleTelegramUpdate(update) {
       if (handled) return;
     }
 
-    if ((msg.chat.type === 'group' || msg.chat.type === 'supergroup') && /^\/biriktir(@\S+)?$/.test(text)) {
+    // /biriktir va /oshpaz_biriktir buyruqlari ixtiyoriy filial kodi bilan
+    // yozilishi mumkin (masalan "/biriktir a1b2c3d4e5f6") — shunda ushbu
+    // guruh aynan o'sha filialga bog'lanadi va faqat o'sha filial
+    // buyurtmalari shu guruhga keladi. Kod ko'rsatilmasa — avvalgidek
+    // markaziy (owner darajasidagi) guruh sifatida biriktiriladi. Filial
+    // kodini Mini App'dagi "Filiallar" bo'limidan tayyor buyruq shaklida
+    // nusxalab olish mumkin — shu bilan jarayon soddalashtirildi.
+    if ((msg.chat.type === 'group' || msg.chat.type === 'supergroup') && /^\/biriktir(@\S+)?(\s+\S+)?$/.test(text)) {
       const owners = pruneExpiredOwners();
       const owner = findOwner(owners, from.id);
       if (!isOwnerAccessValid(owner)) {
@@ -2763,32 +2792,44 @@ async function handleTelegramUpdate(update) {
         await sendMessage(chatId, featureBlockedResult('delivery-group').reason);
         return;
       }
-      owner.deliveryGroupId = String(chatId);
-      owner.deliveryGroupTitle = msg.chat.title || null;
-      owner.deliveryGroupThreadId = msg.message_thread_id || null;
+      const branchCode = text.split(/\s+/)[1] || null;
+      let branch = null;
+      if (branchCode) {
+        branch = findBranch(owner, branchCode);
+        if (!branch) { await sendMessage(chatId, `❌ "${escapeHtmlServer(branchCode)}" kodli filial topilmadi. Kodni Mini App'dagi Filiallar bo'limidan qaytadan nusxalab ko'ring.`); return; }
+      }
+      const target = branch || owner;
+      target.deliveryGroupId = String(chatId);
+      target.deliveryGroupTitle = msg.chat.title || null;
+      target.deliveryGroupThreadId = msg.message_thread_id || null;
       saveOwners(owners);
+      const scopeLabel = branch ? `<b>${escapeHtmlServer(branch.name)}</b> filiali` : `<b>${escapeHtmlServer((owner.profile && owner.profile.name) || 'oshxona')}</b>`;
       await sendMessage(chatId,
-        `✅ Bu guruh <b>${escapeHtmlServer((owner.profile && owner.profile.name) || 'oshxona')}</b> uchun admin guruhi sifatida biriktirildi.\n` +
-        `Endi mijozlar istalgan turda (Stolga, Olib ketish yoki Dostavka) buyurtma bersa, "Qabul qilish" va "Tayyor" tugmali xabarlar shu guruhga keladi.` +
-        (owner.deliveryGroupThreadId ? `\n\n📌 Xabarlar aynan shu mavzu (topic)ga yozib boriladi.` : ''),
-        null, owner.deliveryGroupThreadId);
+        `✅ Bu guruh ${scopeLabel} uchun admin guruhi sifatida biriktirildi.\n` +
+        `Endi ${branch ? 'shu filialga tegishli' : 'mijozlar istalgan turda (Stolga, Olib ketish yoki Dostavka)'} buyurtma bersa, "Qabul qilish" va "Tayyor" tugmali xabarlar shu guruhga keladi.` +
+        (target.deliveryGroupThreadId ? `\n\n📌 Xabarlar aynan shu mavzu (topic)ga yozib boriladi.` : ''),
+        null, target.deliveryGroupThreadId);
       return;
     }
 
     if ((msg.chat.type === 'group' || msg.chat.type === 'supergroup') && /^\/bekor_biriktir(@\S+)?$/.test(text)) {
       const owners = loadOwners();
       const owner = findOwner(owners, from.id);
-      if (owner && String(owner.deliveryGroupId) === String(chatId)) {
-        owner.deliveryGroupId = null;
-        owner.deliveryGroupTitle = null;
-        owner.deliveryGroupThreadId = null;
-        saveOwners(owners);
-        await sendMessage(chatId, 'Bu guruh admin guruhi sifatidan olib tashlandi.');
+      if (owner) {
+        const pools = [owner, ...(owner.branches || [])];
+        const target = pools.find(p => String(p.deliveryGroupId) === String(chatId));
+        if (target) {
+          target.deliveryGroupId = null;
+          target.deliveryGroupTitle = null;
+          target.deliveryGroupThreadId = null;
+          saveOwners(owners);
+          await sendMessage(chatId, 'Bu guruh admin guruhi sifatidan olib tashlandi.');
+        }
       }
       return;
     }
 
-    if ((msg.chat.type === 'group' || msg.chat.type === 'supergroup') && /^\/oshpaz_biriktir(@\S+)?$/.test(text)) {
+    if ((msg.chat.type === 'group' || msg.chat.type === 'supergroup') && /^\/oshpaz_biriktir(@\S+)?(\s+\S+)?$/.test(text)) {
       const owners = pruneExpiredOwners();
       const owner = findOwner(owners, from.id);
       if (!isOwnerAccessValid(owner)) {
@@ -2801,27 +2842,39 @@ async function handleTelegramUpdate(update) {
         await sendMessage(chatId, featureBlockedResult('kitchen-group').reason);
         return;
       }
-      owner.kitchenGroupId = String(chatId);
-      owner.kitchenGroupTitle = msg.chat.title || null;
-      owner.kitchenGroupThreadId = msg.message_thread_id || null;
+      const branchCode = text.split(/\s+/)[1] || null;
+      let branch = null;
+      if (branchCode) {
+        branch = findBranch(owner, branchCode);
+        if (!branch) { await sendMessage(chatId, `❌ "${escapeHtmlServer(branchCode)}" kodli filial topilmadi. Kodni Mini App'dagi Filiallar bo'limidan qaytadan nusxalab ko'ring.`); return; }
+      }
+      const target = branch || owner;
+      target.kitchenGroupId = String(chatId);
+      target.kitchenGroupTitle = msg.chat.title || null;
+      target.kitchenGroupThreadId = msg.message_thread_id || null;
       saveOwners(owners);
+      const scopeLabel = branch ? `<b>${escapeHtmlServer(branch.name)}</b> filiali` : `<b>${escapeHtmlServer((owner.profile && owner.profile.name) || 'oshxona')}</b>`;
       await sendMessage(chatId,
-        `✅ Bu guruh <b>${escapeHtmlServer((owner.profile && owner.profile.name) || 'oshxona')}</b> uchun Oshpazlar guruhi sifatida biriktirildi.\n` +
-        `Endi har bir yangi buyurtma (Stolga, Olib ketish yoki Dostavka) shu guruhga ham, "Qabul qilish" va "Tayyor" tugmalari bilan yuboriladi.` +
-        (owner.kitchenGroupThreadId ? `\n\n📌 Xabarlar aynan shu mavzu (topic)ga yozib boriladi.` : ''),
-        null, owner.kitchenGroupThreadId);
+        `✅ Bu guruh ${scopeLabel} uchun Oshpazlar guruhi sifatida biriktirildi.\n` +
+        `Endi ${branch ? 'shu filialga tegishli' : 'har bir'} yangi buyurtma shu guruhga ham, "Qabul qilish" va "Tayyor" tugmalari bilan yuboriladi.` +
+        (target.kitchenGroupThreadId ? `\n\n📌 Xabarlar aynan shu mavzu (topic)ga yozib boriladi.` : ''),
+        null, target.kitchenGroupThreadId);
       return;
     }
 
     if ((msg.chat.type === 'group' || msg.chat.type === 'supergroup') && /^\/oshpaz_bekor_biriktir(@\S+)?$/.test(text)) {
       const owners = loadOwners();
       const owner = findOwner(owners, from.id);
-      if (owner && String(owner.kitchenGroupId) === String(chatId)) {
-        owner.kitchenGroupId = null;
-        owner.kitchenGroupTitle = null;
-        owner.kitchenGroupThreadId = null;
-        saveOwners(owners);
-        await sendMessage(chatId, 'Bu guruh Oshpazlar guruhi sifatidan olib tashlandi.');
+      if (owner) {
+        const pools = [owner, ...(owner.branches || [])];
+        const target = pools.find(p => String(p.kitchenGroupId) === String(chatId));
+        if (target) {
+          target.kitchenGroupId = null;
+          target.kitchenGroupTitle = null;
+          target.kitchenGroupThreadId = null;
+          saveOwners(owners);
+          await sendMessage(chatId, 'Bu guruh Oshpazlar guruhi sifatidan olib tashlandi.');
+        }
       }
       return;
     }
@@ -4837,7 +4890,34 @@ const server = http.createServer((req, res) => {
       const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
       if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
 
-      return sendJSON(res, 200, { ok: true, branches: ctx.owner.branches || [], maxBranches: ownerMaxBranches(ctx.owner) });
+      return sendJSON(res, 200, {
+        ok: true,
+        branches: ctx.owner.branches || [],
+        maxBranches: ownerMaxBranches(ctx.owner),
+        centralBranchName: ctx.owner.centralBranchName || null
+      });
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/api/central-branch-rename') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
+      const { initData, name } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
+      const owner = ownerCtx.owner;
+
+      const trimmedName = String(name || '').trim();
+      owner.centralBranchName = trimmedName || null;
+      saveOwners(owners);
+
+      return sendJSON(res, 200, { ok: true, centralBranchName: owner.centralBranchName });
     });
     return;
   }
@@ -7272,15 +7352,16 @@ const server = http.createServer((req, res) => {
         order.additions.push(addition);
         saveOwners(owners);
 
-        if (ctx.owner.kitchenGroupId && ownerCanUseFeature(ctx.owner, 'kitchen-group')) {
+        const addGroups = resolveOrderGroupIds(ctx.owner, order);
+        if (addGroups.kitchenGroupId && ownerCanUseFeature(ctx.owner, 'kitchen-group')) {
           const addItemsText = addedItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
           const orderLabel = `#${order.orderNumber || order.id}`;
           const addText = `➕ <b>Qo'shimcha buyurtma</b> (Buyurtma ${orderLabel})\n${addItemsText}`;
-          sendMessage(ctx.owner.kitchenGroupId, addText, {
+          sendMessage(addGroups.kitchenGroupId, addText, {
             inline_keyboard: [[
               { text: '🏁 Tayyor', callback_data: `kgaddready:${ctx.owner.id}:${order.id}:${addition.id}` }
             ]]
-          }, ctx.owner.kitchenGroupThreadId).then(result => {
+          }, addGroups.kitchenGroupThreadId).then(result => {
             if (result && result.ok && result.result && result.result.message_id) {
               const owners2 = loadOwners();
               const o2 = findOwner(owners2, ctx.owner.id);
@@ -8447,9 +8528,16 @@ const server = http.createServer((req, res) => {
     return tzDayStartFromKey(monthKey);
   }
 
-  function cashflowBucket(owner, fromDate) {
-    const orders = (owner.orders || []).filter(o => new Date(o.createdAt) >= fromDate);
-    const expenses = (owner.expenses || []).filter(e => new Date(e.createdAt) >= fromDate);
+  // branchId === undefined -> barcha joylashuvlar (markaziy + filiallar) birga.
+  // branchId === null -> faqat markaziy. branchId === '<id>' -> faqat shu filial.
+  function matchesBranchFilter(item, branchId) {
+    if (branchId === undefined) return true;
+    return (item.branchId || null) === (branchId || null);
+  }
+
+  function cashflowBucket(owner, fromDate, branchId) {
+    const orders = (owner.orders || []).filter(o => new Date(o.createdAt) >= fromDate && matchesBranchFilter(o, branchId));
+    const expenses = (owner.expenses || []).filter(e => new Date(e.createdAt) >= fromDate && matchesBranchFilter(e, branchId));
 
     const dostavkaOrders = orders.filter(o => o.orderType === 'dostavka' && o.paymentType === 'dostavka_orqali');
     const kassaOrders = orders.filter(o => !(o.orderType === 'dostavka' && o.paymentType === 'dostavka_orqali'));
@@ -8485,14 +8573,14 @@ const server = http.createServer((req, res) => {
     };
   }
 
-  function computeCashflow(owner) {
+  function computeCashflow(owner, branchId) {
     const now = new Date();
     const todayStart = tzDayStart(now);
     const weekStart = tzWeekStart(now);
     const monthStart = tzMonthStart(now);
 
-    const orders = owner.orders || [];
-    const expenses = owner.expenses || [];
+    const orders = (owner.orders || []).filter(o => matchesBranchFilter(o, branchId));
+    const expenses = (owner.expenses || []).filter(e => matchesBranchFilter(e, branchId));
     const dailySeries = [];
 
     for (let i = 13; i >= 0; i--) {
@@ -8505,9 +8593,9 @@ const server = http.createServer((req, res) => {
     }
 
     return {
-      today: cashflowBucket(owner, todayStart),
-      week: cashflowBucket(owner, weekStart),
-      month: cashflowBucket(owner, monthStart),
+      today: cashflowBucket(owner, todayStart, branchId),
+      week: cashflowBucket(owner, weekStart, branchId),
+      month: cashflowBucket(owner, monthStart, branchId),
       dailySeries
     };
   }
@@ -8515,7 +8603,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/expense-add') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const { initData, amount, note, category } = payload;
+      const { initData, amount, note, category, branchId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -8532,6 +8620,11 @@ const server = http.createServer((req, res) => {
       }
       const categoryKey = Object.prototype.hasOwnProperty.call(EXPENSE_CATEGORIES, category) ? category : 'boshqa';
       const noteStr = String(note || '').trim().slice(0, 200);
+      let branchIdVal = null;
+      if (branchId) {
+        if (!findBranch(owner, branchId)) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi.' });
+        branchIdVal = branchId;
+      }
 
       if (!owner.expenses) owner.expenses = [];
       const expense = {
@@ -8539,6 +8632,7 @@ const server = http.createServer((req, res) => {
         amount: amountNum,
         category: categoryKey,
         note: noteStr,
+        branchId: branchIdVal,
         createdAt: new Date().toISOString(),
         createdBy: userId
       };
@@ -8587,10 +8681,11 @@ const server = http.createServer((req, res) => {
       const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'cashflow')) return sendJSON(res, 200, featureBlockedResult('cashflow'));
 
-      const cashflow = computeCashflow(owner);
-      const recentExpenses = (owner.expenses || []).slice(0, 30);
+      const branchId = Object.prototype.hasOwnProperty.call(payload, 'branchId') ? (payload.branchId || null) : undefined;
+      const cashflow = computeCashflow(owner, branchId);
+      const recentExpenses = (owner.expenses || []).filter(e => matchesBranchFilter(e, branchId)).slice(0, 30);
 
-      return sendJSON(res, 200, { ok: true, cashflow, expenses: recentExpenses, categories: EXPENSE_CATEGORIES });
+      return sendJSON(res, 200, { ok: true, cashflow, expenses: recentExpenses, categories: EXPENSE_CATEGORIES, branches: owner.branches || [], centralBranchName: owner.centralBranchName || null });
     });
     return;
   }
@@ -8771,7 +8866,7 @@ const server = http.createServer((req, res) => {
       const orders = (owner.orders || []).filter(o => new Date(o.createdAt) >= fromDate);
 
       const buckets = new Map();
-      buckets.set(null, { branchId: null, branchName: 'Markaziy', orderCount: 0, income: 0, kassaIncome: 0, dostavkaIncome: 0 });
+      buckets.set(null, { branchId: null, branchName: owner.centralBranchName || 'Markaziy', orderCount: 0, income: 0, kassaIncome: 0, dostavkaIncome: 0 });
       for (const b of (owner.branches || [])) {
         buckets.set(b.id, { branchId: b.id, branchName: b.name, orderCount: 0, income: 0, kassaIncome: 0, dostavkaIncome: 0 });
       }
@@ -8899,17 +8994,17 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  function buildZReport(owner, dateKey) {
+  function buildZReport(owner, dateKey, branchId) {
     const dayStart = tzDayStartFromKey(dateKey);
     const dayEnd = new Date(dayStart.getTime() + 86400000);
 
     const orders = (owner.orders || []).filter(o => {
       const t = new Date(o.createdAt);
-      return t >= dayStart && t < dayEnd;
+      return t >= dayStart && t < dayEnd && matchesBranchFilter(o, branchId);
     });
     const expenses = (owner.expenses || []).filter(e => {
       const t = new Date(e.createdAt);
-      return t >= dayStart && t < dayEnd;
+      return t >= dayStart && t < dayEnd && matchesBranchFilter(e, branchId);
     });
 
     const dostavkaOrders = orders.filter(o => o.orderType === 'dostavka' && o.paymentType === 'dostavka_orqali');
@@ -8960,13 +9055,15 @@ const server = http.createServer((req, res) => {
       const owner = ownerCtx.owner;
       if (!ownerCanUseFeature(owner, 'z-report')) return sendJSON(res, 200, featureBlockedResult('z-report'));
 
+      const branchId = payload.branchId ? (findBranch(owner, payload.branchId) ? payload.branchId : null) : null;
       const dateKey = tzDateKey(new Date());
-      const built = buildZReport(owner, dateKey);
+      const built = buildZReport(owner, dateKey, branchId);
 
       if (!owner.zReports) owner.zReports = [];
-      const existing = owner.zReports.find(z => z.date === dateKey);
+      const existing = owner.zReports.find(z => z.date === dateKey && (z.branchId || null) === (branchId || null));
       const report = Object.assign({
         id: existing ? existing.id : crypto.randomBytes(4).toString('hex'),
+        branchId: branchId || null,
         createdAt: new Date().toISOString(),
         createdBy: userId
       }, built);
@@ -8996,8 +9093,11 @@ const server = http.createServer((req, res) => {
       if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
       const owner = ownerCtx.owner;
 
-      const reports = (owner.zReports || []).slice().sort((a, b) => b.date.localeCompare(a.date)).slice(0, 30);
-      return sendJSON(res, 200, { ok: true, reports });
+      const branchId = Object.prototype.hasOwnProperty.call(payload, 'branchId') ? (payload.branchId || null) : undefined;
+      const reports = (owner.zReports || [])
+        .filter(z => matchesBranchFilter(z, branchId))
+        .slice().sort((a, b) => b.date.localeCompare(a.date)).slice(0, 30);
+      return sendJSON(res, 200, { ok: true, reports, branches: owner.branches || [], centralBranchName: owner.centralBranchName || null });
     });
     return;
   }
