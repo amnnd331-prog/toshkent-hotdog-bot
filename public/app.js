@@ -2789,6 +2789,35 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
   let branchState = { branches: [], centralBranchName: null };
 
+  // Egasi bosh sahifada qaysi filialni ko'rib turganini boshqaradi.
+  // 'barchasi' -> barcha filiallar birlashtirilgan (eski xatti-harakat, branchId yubormaydi).
+  // 'markaziy' -> faqat markaziy (filialsiz), server tomonga branchId: null yuboriladi.
+  // '<branchId>' -> faqat shu filial.
+  let activeBranchId = (function () {
+    try { return localStorage.getItem('koActiveBranchId') || 'barchasi'; } catch (e) { return 'barchasi'; }
+  })();
+
+  function setActiveBranchId(val) {
+    activeBranchId = val || 'barchasi';
+    try { localStorage.setItem('koActiveBranchId', activeBranchId); } catch (e) {}
+  }
+
+  function activeBranchIdForApi() {
+    if (activeBranchId === 'barchasi') return undefined;
+    if (activeBranchId === 'markaziy') return null;
+    return activeBranchId;
+  }
+
+  function koBranchSwitcherOptionsHtml() {
+    const parts = [];
+    parts.push(`<option value="barchasi">Barcha filiallar</option>`);
+    parts.push(`<option value="markaziy">${escapeHtml(branchState.centralBranchName || 'Markaziy')}</option>`);
+    for (const b of (branchState.branches || [])) {
+      parts.push(`<option value="${escapeHtml(b.id)}">${escapeHtml(b.name)}</option>`);
+    }
+    return parts.join('');
+  }
+
   function centralLocationLabel() {
     return branchState.centralBranchName || 'Markaziy';
   }
@@ -2827,6 +2856,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (centralNameInput && document.activeElement !== centralNameInput) centralNameInput.value = branchState.centralBranchName || '';
     const staffBranchSelect = document.getElementById('staffBranchInput');
     if (staffBranchSelect) staffBranchSelect.innerHTML = branchOptionsHtml(null);
+    const branchSwitcher = document.getElementById('koBranchSwitcher');
+    if (branchSwitcher) {
+      branchSwitcher.innerHTML = koBranchSwitcherOptionsHtml();
+      branchSwitcher.value = activeBranchId;
+    }
   }
 
   const KO_MONTH_NAMES = ['Yanvar', 'Fevral', 'Mart', 'Aprel', 'May', 'Iyun',
@@ -2848,7 +2882,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <div class="ko-home-header-logo">${icon('chef-hat', 'icon-md')}</div>
           <div class="ko-home-header-titles">
             <div class="ko-home-header-title">${escapeHtml(restaurantName || '')}</div>
-            <div class="ko-home-header-subtitle">Oshxona Menejeri</div>
+            <select id="koBranchSwitcher" class="ko-branch-switcher">${koBranchSwitcherOptionsHtml()}</select>
           </div>
         </div>
         <div class="ko-home-header-right">
@@ -2865,8 +2899,16 @@ const tg = window.Telegram && window.Telegram.WebApp;
   function wireKoHomeHeader(profile) {
     const menuBtn = document.getElementById('koHeaderMenuBtn');
     const bellBtn = document.getElementById('koHeaderBellBtn');
+    const branchSwitcher = document.getElementById('koBranchSwitcher');
     if (menuBtn) menuBtn.addEventListener('click', () => openKoSidebar(profile));
     if (bellBtn) bellBtn.addEventListener('click', () => renderNotificationsScreen(profile, () => renderOwnerHomeScreen(profile)));
+    if (branchSwitcher) {
+      branchSwitcher.value = activeBranchId;
+      branchSwitcher.addEventListener('change', () => {
+        setActiveBranchId(branchSwitcher.value);
+        renderOwnerHomeScreen(profile);
+      });
+    }
   }
 
   function koBottomNavHtml(activeKey) {
@@ -3015,7 +3057,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadKoKpiGrid(profile) {
     const el = document.getElementById('koKpiGrid');
     if (!el) return;
-    const res = await apiPost('/api/dashboard-summary', { initData });
+    const res = await apiPost('/api/dashboard-summary', { initData, branchId: activeBranchIdForApi() });
     const el2 = document.getElementById('koKpiGrid');
     if (!el2) return;
     if (res.networkError) {
@@ -3075,7 +3117,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadKoStatusBanner(profile) {
     const el = document.getElementById('koStatusBanner');
     if (!el) return;
-    const res = await apiPost('/api/order-status-counts', { initData });
+    const res = await apiPost('/api/order-status-counts', { initData, branchId: activeBranchIdForApi() });
     const el2 = document.getElementById('koStatusBanner');
     if (!el2) return;
     if (res.networkError) { renderNetworkErrorInline(el2, res.reason, () => loadKoStatusBanner(profile)); return; }
@@ -3277,7 +3319,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadKoAlertsList(profile) {
     const el = document.getElementById('koAlertsList');
     if (!el) return;
-    const res = await apiPost('/api/dashboard-alerts', { initData });
+    const res = await apiPost('/api/dashboard-alerts', { initData, branchId: activeBranchIdForApi() });
     const el2 = document.getElementById('koAlertsList');
     if (!el2) return;
     if (res.networkError) { renderNetworkErrorInline(el2, res.reason, () => loadKoAlertsList(profile)); return; }
@@ -3312,7 +3354,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadNotificationsList(profile) {
     const el = document.getElementById('notifList');
     if (!el) return;
-    const res = await apiPost('/api/dashboard-alerts', { initData });
+    const res = await apiPost('/api/dashboard-alerts', { initData, branchId: activeBranchIdForApi() });
     const el2 = document.getElementById('notifList');
     if (!el2) return;
     if (res.networkError) { renderNetworkErrorInline(el2, res.reason, () => loadNotificationsList(profile)); return; }
@@ -5205,7 +5247,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function refreshOrdersBoard(role, restaurantName, onReturn) {
     const board = document.getElementById('ordersBoard');
     if (!board) { stopOrdersPolling(); return; }
-    const res = await apiPost('/api/orders-list', { initData });
+    const res = await apiPost('/api/orders-list', { initData, branchId: role === 'egasi' ? activeBranchIdForApi() : undefined });
     if (!res.ok) {
 
       if (res.networkError && lastOrdersSnapshot === null) {
