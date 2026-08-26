@@ -5059,8 +5059,9 @@ const server = http.createServer((req, res) => {
       const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
       const pool = resolveMenuPool(ctx.owner, branchId);
       if (!pool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi' });
+      const stockPool = resolveStockPool(ctx.owner, branchId) || ctx.owner;
 
-      const menuWithStock = (pool.menu || []).map(m => Object.assign({}, m, { outOfStock: menuItemOutOfStock(ctx.owner, m) }));
+      const menuWithStock = (pool.menu || []).map(m => Object.assign({}, m, { outOfStock: menuItemOutOfStock(stockPool, m) }));
       return sendJSON(res, 200, { ok: true, menu: menuWithStock, categories: sortedOwnerCategories(pool), role: ctx.role, branchId, branches: ctx.owner.branches || [] });
     });
     return;
@@ -7188,7 +7189,15 @@ const server = http.createServer((req, res) => {
         return sendJSON(res, 200, { ok: false, reason: '"Naqd" to\'lovi (dostavkada) faqat Dostavka buyurtmalarida mavjud.' });
       }
 
-      const menu = ctx.owner.menu || [];
+      // 4-bosqich: kassir/ega o'zi biriktirilgan (yoki tanlagan) filialning
+      // mustaqil menyusi va skladi asosida buyurtma yaratadi. Combo'lar
+      // hamon markaziy darajada qoladi (filiallarga bog'lanmagan).
+      const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
+      const menuPool = resolveMenuPool(ctx.owner, branchId);
+      if (branchId && !menuPool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi.' });
+      const stockPool = resolveStockPool(ctx.owner, branchId) || ctx.owner;
+
+      const menu = menuPool.menu || [];
       const combosAvailable = ctx.owner.combos || [];
       const orderItems = [];
       for (const it of items) {
@@ -7210,7 +7219,7 @@ const server = http.createServer((req, res) => {
 
       if (!ctx.owner.stock) ctx.owner.stock = [];
 
-      const stockCheck = checkStockAvailability(ctx.owner, orderItems, menu);
+      const stockCheck = checkStockAvailabilityPooled(ctx.owner, orderItems, menu, stockPool);
       if (!stockCheck.ok) {
         return sendJSON(res, 200, { ok: false, reason: stockCheck.reason });
       }
@@ -7237,38 +7246,37 @@ const server = http.createServer((req, res) => {
         const menuItem = menu.find(m => m.id === it.id);
 
         if (menuItem && menuItem.directStockId) {
-          const stockItem = findStockItem(ctx.owner, menuItem.directStockId);
+          const stockItem = findStockItem(stockPool, menuItem.directStockId);
           if (stockItem) {
             const consumeQty = it.qty;
             stockItem.qty = Math.max(0, Math.round((stockItem.qty - consumeQty) * 1000) / 1000);
-            addStockMovement(ctx.owner, {
+            addStockMovement(stockPool, {
               stockId: stockItem.id, stockName: stockItem.name, type: 'chiqim',
               qty: consumeQty, unit: stockItem.unit,
               note: `To'g'ridan sotildi: ${menuItem.name} x${it.qty}`,
               userId
             });
-            checkLowStockAlert(ctx.owner, stockItem, userId);
+            checkLowStockAlert(ctx.owner, stockItem, userId, branchId);
           }
           continue;
         }
         const recipe = (menuItem && Array.isArray(menuItem.recipe)) ? menuItem.recipe : [];
         for (const ing of recipe) {
-          const stockItem = findStockItem(ctx.owner, ing.stockId);
+          const stockItem = findStockItem(stockPool, ing.stockId);
           if (!stockItem) continue;
           const consumeQty = Math.round(ing.qty * it.qty * 1000) / 1000;
           stockItem.qty = Math.max(0, Math.round((stockItem.qty - consumeQty) * 1000) / 1000);
-          addStockMovement(ctx.owner, {
+          addStockMovement(stockPool, {
             stockId: stockItem.id, stockName: stockItem.name, type: 'chiqim',
             qty: consumeQty, unit: stockItem.unit,
             note: `Buyurtma: ${menuItem.name} x${it.qty}`,
             userId
           });
-          checkLowStockAlert(ctx.owner, stockItem, userId);
+          checkLowStockAlert(ctx.owner, stockItem, userId, branchId);
         }
       }
 
       if (!ctx.owner.orders) ctx.owner.orders = [];
-      const orderBranchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
       const commentFinal = String(comment || '').trim().slice(0, 300) || null;
       const order = {
         id: crypto.randomBytes(4).toString('hex'),
@@ -7279,7 +7287,7 @@ const server = http.createServer((req, res) => {
         paymentType,
         comment: commentFinal,
         status: 'yangi',
-        branchId: orderBranchId,
+        branchId,
 
         createdAt: new Date().toISOString(),
         createdBy: userId
@@ -7347,7 +7355,14 @@ const server = http.createServer((req, res) => {
         return sendJSON(res, 200, { ok: false, reason: '"Naqd" to\'lovi (dostavkada) faqat Dostavka buyurtmalarida mavjud.' });
       }
 
-      const menu = ctx.owner.menu || [];
+      // 4-bosqich: buyurtma qaysi filialga tegishli bo'lsa (order.branchId),
+      // tahrirlash ham o'sha filialning mustaqil menyusi/skladi asosida
+      // amalga oshiriladi (combo'lar hamon markaziy darajada qoladi).
+      const branchId = order.branchId || null;
+      const menuPool = resolveMenuPool(ctx.owner, branchId) || ctx.owner;
+      const stockPool = resolveStockPool(ctx.owner, branchId) || ctx.owner;
+
+      const menu = menuPool.menu || [];
       const combosAvailable = ctx.owner.combos || [];
       const newOrderItems = [];
       for (const it of items) {
@@ -7386,44 +7401,54 @@ const server = http.createServer((req, res) => {
       if (!ctx.owner.stock) ctx.owner.stock = [];
 
       // Har bir mahsulot ro'yxati uchun kerakli ombor miqdorlarini hisoblaydi
-      // (create-order'dagi checkStockAvailability bilan bir xil mantiq).
+      // (create-order'dagi checkStockAvailabilityPooled bilan bir xil mantiq):
+      // combo'lar markaziy ombordan, oddiy taomlar esa filial (yoki markaziy)
+      // skladidan alohida hisoblanadi.
       function stockNeedsForItems(orderItems) {
-        const needed = new Map();
+        const neededCombo = new Map();
+        const neededPool = new Map();
         for (const it of orderItems) {
           if (it.isCombo) {
             const combo = findCombo(ctx.owner, it.id);
             if (!combo) continue;
             for (const need of comboStockNeeds(ctx.owner, combo, it.qty)) {
-              needed.set(need.stockId, Math.round(((needed.get(need.stockId) || 0) + need.qty) * 1000) / 1000);
+              neededCombo.set(need.stockId, Math.round(((neededCombo.get(need.stockId) || 0) + need.qty) * 1000) / 1000);
             }
             continue;
           }
           const menuItem = menu.find(m => m.id === it.id);
           if (menuItem && menuItem.directStockId) {
-            needed.set(menuItem.directStockId, Math.round(((needed.get(menuItem.directStockId) || 0) + it.qty) * 1000) / 1000);
+            neededPool.set(menuItem.directStockId, Math.round(((neededPool.get(menuItem.directStockId) || 0) + it.qty) * 1000) / 1000);
             continue;
           }
           const recipe = (menuItem && Array.isArray(menuItem.recipe)) ? menuItem.recipe : [];
           for (const ing of recipe) {
             const consumeQty = Math.round(ing.qty * it.qty * 1000) / 1000;
-            needed.set(ing.stockId, Math.round(((needed.get(ing.stockId) || 0) + consumeQty) * 1000) / 1000);
+            neededPool.set(ing.stockId, Math.round(((neededPool.get(ing.stockId) || 0) + consumeQty) * 1000) / 1000);
           }
         }
-        return needed;
+        return { neededCombo, neededPool };
       }
 
       // Eski buyurtma allaqachon ombordan yechilgan edi — shuning uchun faqat
       // ESKI va YANGI ehtiyoj o'rtasidagi FARQNI (delta) ombordan yechamiz yoki qaytaramiz.
-      const oldNeeded = stockNeedsForItems(order.items || []);
-      const newNeeded = stockNeedsForItems(newOrderItems);
-      const stockIds = new Set([...oldNeeded.keys(), ...newNeeded.keys()]);
-      const netDeltas = new Map();
-      for (const id of stockIds) {
-        const delta = Math.round(((newNeeded.get(id) || 0) - (oldNeeded.get(id) || 0)) * 1000) / 1000;
-        if (delta !== 0) netDeltas.set(id, delta);
+      const oldNeeds = stockNeedsForItems(order.items || []);
+      const newNeeds = stockNeedsForItems(newOrderItems);
+
+      function computeDeltas(oldMap, newMap) {
+        const ids = new Set([...oldMap.keys(), ...newMap.keys()]);
+        const deltas = new Map();
+        for (const id of ids) {
+          const delta = Math.round(((newMap.get(id) || 0) - (oldMap.get(id) || 0)) * 1000) / 1000;
+          if (delta !== 0) deltas.set(id, delta);
+        }
+        return deltas;
       }
 
-      for (const [stockId, delta] of netDeltas) {
+      const comboDeltas = computeDeltas(oldNeeds.neededCombo, newNeeds.neededCombo);
+      const poolDeltas = computeDeltas(oldNeeds.neededPool, newNeeds.neededPool);
+
+      for (const [stockId, delta] of comboDeltas) {
         if (delta <= 0) continue;
         const stockItem = findStockItem(ctx.owner, stockId);
         if (!stockItem) continue;
@@ -7431,8 +7456,16 @@ const server = http.createServer((req, res) => {
           return sendJSON(res, 200, { ok: false, reason: `Omborda "${stockItem.name}" yetarli emas (kerak: ${delta} ${stockItem.unit}, mavjud: ${stockItem.qty} ${stockItem.unit}).` });
         }
       }
+      for (const [stockId, delta] of poolDeltas) {
+        if (delta <= 0) continue;
+        const stockItem = findStockItem(stockPool, stockId);
+        if (!stockItem) continue;
+        if (stockItem.qty < delta) {
+          return sendJSON(res, 200, { ok: false, reason: `Omborda "${stockItem.name}" yetarli emas (kerak: ${delta} ${stockItem.unit}, mavjud: ${stockItem.qty} ${stockItem.unit}).` });
+        }
+      }
 
-      for (const [stockId, delta] of netDeltas) {
+      for (const [stockId, delta] of comboDeltas) {
         const stockItem = findStockItem(ctx.owner, stockId);
         if (!stockItem) continue;
         stockItem.qty = Math.max(0, Math.round((stockItem.qty - delta) * 1000) / 1000);
@@ -7443,6 +7476,18 @@ const server = http.createServer((req, res) => {
           userId
         });
         checkLowStockAlert(ctx.owner, stockItem, userId);
+      }
+      for (const [stockId, delta] of poolDeltas) {
+        const stockItem = findStockItem(stockPool, stockId);
+        if (!stockItem) continue;
+        stockItem.qty = Math.max(0, Math.round((stockItem.qty - delta) * 1000) / 1000);
+        addStockMovement(stockPool, {
+          stockId: stockItem.id, stockName: stockItem.name, type: delta > 0 ? 'chiqim' : 'kirim',
+          qty: Math.abs(delta), unit: stockItem.unit,
+          note: `Buyurtma tahrirlandi: #${order.orderNumber || order.id}`,
+          userId
+        });
+        checkLowStockAlert(ctx.owner, stockItem, userId, branchId);
       }
 
       const oldItemsSummary = (order.items || []).map(it => `${it.name} x${it.qty}`).join(', ') || '—';
