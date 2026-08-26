@@ -4336,7 +4336,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
   let cashierState = {
     menu: [], cart: {}, orderType: 'olib_ketish', paymentType: 'naqd', tab: 'yaratish', lastOrderRequestId: null, comment: '',
     // Mavjud buyurtmani tahrirlash rejimi uchun: null bo'lsa - yangi buyurtma yaratish rejimi.
-    editingOrderId: null, editingOrderNumber: null, editingComboItems: null, editingReturn: null
+    editingOrderId: null, editingOrderNumber: null, editingComboItems: null, editingReturn: null,
+    // Egasi "Kassir paneli"ni o'zi sinab ko'rganda qaysi filial nomidan
+    // buyurtma yaratayotganini tanlashi uchun (oddiy kassir uchun bu har doim
+    // null qoladi va e'tiborga olinmaydi — server ctx.branchId'dan foydalanadi).
+    role: null, branches: [], branchId: null
   };
 
   function cashierCartTotal() {
@@ -4402,6 +4406,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         ${isEditing ? `<button class="btn ikkinchi" id="cashierCancelEditBtn" style="margin-bottom:12px;">✕ Tahrirlashni bekor qilish</button>` : (onBack ? `<button class="btn ikkinchi" id="cashierBackBtn" style="margin-bottom:12px;">← Orqaga</button>` : '')}
         ${isEditing ? '' : cashierTabRowHtml()}
         ${isEditing ? '' : shiftWidgetHtml()}
+        <div id="cashierBranchBar"></div>
         <div class="bosh">Taomni bosib savatga qo'shing.</div>
         <div id="cashierMenu" style="margin-top:14px;"><div class="bosh">Yuklanmoqda...</div></div>
         <div class="cart-bar">
@@ -4740,16 +4745,46 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
+  // Egasi "Kassir paneli"ni o'zi sinab ko'rganda (Mini App'dagi profil
+  // ekranidan) qaysi filial nomidan buyurtma yaratayotganini tanlashi kerak —
+  // aks holda buyurtma har doim MARKAZIY (filialsiz) hisoblanib, filialga
+  // biriktirilgan guruhga hech qachon yetib bormaydi. Oddiy kassir uchun bu
+  // panel ko'rsatilmaydi — server ularning o'z ctx.branchId'sidan foydalanadi.
+  function cashierBranchBarHtml() {
+    if (cashierState.role !== 'egasi' || !(cashierState.branches || []).length || cashierState.editingOrderId) return '';
+    return `
+      <div class="bosh" style="margin-top:10px;">Qaysi filial nomidan buyurtma yaratyapsiz?</div>
+      <select id="cashierBranchSelect" style="margin-bottom:10px;">
+        <option value="">— Markaziy (filialsiz) —</option>
+        ${(cashierState.branches || []).map(b => `<option value="${escapeHtml(b.id)}" ${cashierState.branchId === b.id ? 'selected' : ''}>${escapeHtml(b.name)}</option>`).join('')}
+      </select>
+    `;
+  }
+
   async function loadCashierMenu(restaurantName) {
     const el = document.getElementById('cashierMenu');
-    const res = await apiPost('/api/menu-list', { initData });
+    const res = await apiPost('/api/menu-list', { initData, branchId: cashierState.branchId });
     if (res.networkError) { renderNetworkErrorInline(el, res.reason, () => loadCashierMenu(restaurantName)); return; }
     cashierState.menu = res.ok ? res.menu : [];
     cashierState.categories = res.ok ? (res.categories || []) : [];
+    cashierState.role = res.ok ? res.role : cashierState.role;
+    cashierState.branches = res.ok ? (res.branches || []) : cashierState.branches;
     el.innerHTML = cashierMenuHtml();
     attachQtyHandlers(restaurantName);
     attachSectionedMenuTabHandlers('cashierCatRow');
     attachSectionedMenuScrollSpy('cashierCatRow', 'cashierMenuList');
+    const branchBarEl = document.getElementById('cashierBranchBar');
+    if (branchBarEl) {
+      branchBarEl.innerHTML = cashierBranchBarHtml();
+      const selectEl = document.getElementById('cashierBranchSelect');
+      if (selectEl) {
+        selectEl.addEventListener('change', (e) => {
+          cashierState.branchId = e.target.value || null;
+          cashierState.cart = {};
+          loadCashierMenu(restaurantName);
+        });
+      }
+    }
   }
 
   function attachQtyHandlers(restaurantName) {
@@ -4854,7 +4889,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
         items,
         orderType: cashierState.orderType,
         paymentType: cashierState.paymentType,
-        comment: cashierState.comment
+        comment: cashierState.comment,
+        branchId: cashierState.branchId
       });
 
       if (res.ok) {
@@ -4892,7 +4928,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
       orderType: cashierState.orderType,
       paymentType: cashierState.paymentType,
       comment: cashierState.comment,
-      requestId: cashierState.lastOrderRequestId
+      requestId: cashierState.lastOrderRequestId,
+      branchId: cashierState.branchId
     });
 
     if (res.ok) {
