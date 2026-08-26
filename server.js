@@ -2798,13 +2798,18 @@ async function handleTelegramUpdate(update) {
     // nusxalab olish mumkin — shu bilan jarayon soddalashtirildi.
     if ((msg.chat.type === 'group' || msg.chat.type === 'supergroup') && /^\/biriktir(@\S+)?(\s+\S+)?$/.test(text)) {
       const owners = pruneExpiredOwners();
-      const owner = findOwner(owners, from.id);
-      if (!isOwnerAccessValid(owner)) {
+      // Guruhni biriktirish — asosiy egasiga ham, unga "Egasi (hamkor)"
+      // sifatida to'liq huquq berilgan hamkorlarga ham ruxsat etiladi
+      // (ular alohida owner yozuvi emas, shuning uchun resolveOwnerContext
+      // orqali aniqlanadi — findOwner faqat asosiy egasini topadi).
+      const ctx = resolveOwnerContext(owners, from.id);
+      if (!ctx || ctx.role !== 'egasi') {
         const blocked = getBlockedOwnerAccess(owners, from.id);
         if (blocked) await sendSubscriptionBlockedScreen(chatId, blocked);
         else await sendMessage(chatId, 'Faqat tasdiqlangan oshxona egasi guruhni biriktira oladi.');
         return;
       }
+      const owner = ctx.owner;
       if (!ownerCanUseFeature(owner, 'delivery-group')) {
         await sendMessage(chatId, featureBlockedResult('delivery-group').reason);
         return;
@@ -2831,7 +2836,8 @@ async function handleTelegramUpdate(update) {
 
     if ((msg.chat.type === 'group' || msg.chat.type === 'supergroup') && /^\/bekor_biriktir(@\S+)?$/.test(text)) {
       const owners = loadOwners();
-      const owner = findOwner(owners, from.id);
+      const ctx = resolveOwnerContext(owners, from.id);
+      const owner = ctx ? ctx.owner : null;
       if (owner) {
         const pools = [owner, ...(owner.branches || [])];
         const target = pools.find(p => String(p.deliveryGroupId) === String(chatId));
@@ -2848,13 +2854,14 @@ async function handleTelegramUpdate(update) {
 
     if ((msg.chat.type === 'group' || msg.chat.type === 'supergroup') && /^\/oshpaz_biriktir(@\S+)?(\s+\S+)?$/.test(text)) {
       const owners = pruneExpiredOwners();
-      const owner = findOwner(owners, from.id);
-      if (!isOwnerAccessValid(owner)) {
+      const ctx = resolveOwnerContext(owners, from.id);
+      if (!ctx || ctx.role !== 'egasi') {
         const blocked = getBlockedOwnerAccess(owners, from.id);
         if (blocked) await sendSubscriptionBlockedScreen(chatId, blocked);
         else await sendMessage(chatId, 'Faqat tasdiqlangan oshxona egasi guruhni biriktira oladi.');
         return;
       }
+      const owner = ctx.owner;
       if (!ownerCanUseFeature(owner, 'kitchen-group')) {
         await sendMessage(chatId, featureBlockedResult('kitchen-group').reason);
         return;
@@ -2881,7 +2888,8 @@ async function handleTelegramUpdate(update) {
 
     if ((msg.chat.type === 'group' || msg.chat.type === 'supergroup') && /^\/oshpaz_bekor_biriktir(@\S+)?$/.test(text)) {
       const owners = loadOwners();
-      const owner = findOwner(owners, from.id);
+      const ctx = resolveOwnerContext(owners, from.id);
+      const owner = ctx ? ctx.owner : null;
       if (owner) {
         const pools = [owner, ...(owner.branches || [])];
         const target = pools.find(p => String(p.kitchenGroupId) === String(chatId));
