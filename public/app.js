@@ -8304,6 +8304,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
   let customerState = {
     ownerId: null,
     restaurant: null,
+    // 3-bosqich: mijoz tanlagan filial (null — markaziy/asosiy filial).
+    branchId: null,
+    branches: [],
     menu: [],
     categories: [],
     promotions: [],
@@ -8334,6 +8337,26 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
   function customerNotifSeenKey() {
     return `kitchenOsCustNotifSeen_${customerState.ownerId}`;
+  }
+
+  // 3-bosqich: mijoz oldin tanlagan filialni eslab qolamiz (qurilma bo'yicha),
+  // shunda har safar qayta so'ralmaydi. '__central__' — markaziy/asosiy filial.
+  function customerBranchStorageKey() {
+    return `kitchenOsCustBranch_${customerState.ownerId}`;
+  }
+  function getStoredCustomerBranch() {
+    try { return localStorage.getItem(customerBranchStorageKey()); } catch (e) { return null; }
+  }
+  function setStoredCustomerBranch(branchId) {
+    try { localStorage.setItem(customerBranchStorageKey(), branchId || '__central__'); } catch (e) {}
+  }
+  function customerCurrentBranchLabel() {
+    if (!customerState.branchId) {
+      const r = customerState.restaurant || {};
+      return r.centralBranchName || 'Asosiy filial';
+    }
+    const b = (customerState.branches || []).find(x => String(x.id) === String(customerState.branchId));
+    return b ? b.name : 'Filial';
   }
   function getCustomerNotifSeenTime() {
     try { return localStorage.getItem(customerNotifSeenKey()) || null; } catch (e) { return null; }
@@ -8395,6 +8418,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
             </button>
           </div>
           ${r.address ? `<div class="profile-row" style="margin-top:0;">${escapeHtml(r.address)}</div>` : ''}
+          ${(customerState.branches && customerState.branches.length > 0) ? `
+            <button type="button" id="custBranchSwitchBtn" title="Filialni almashtirish" aria-label="Filialni almashtirish" style="margin-top:6px; display:inline-flex; align-items:center; gap:4px; background:none; border:1px solid var(--border-color); border-radius:var(--radius-pill); padding:3px 10px; font-size:var(--fs-xs); font-weight:600; color:var(--text-secondary); cursor:pointer;">
+              ${icon('pin', 'icon-xs')}<span>${escapeHtml(customerCurrentBranchLabel())}</span>
+            </button>
+          ` : ''}
           ${customerState.bonusEnabled ? `<div class="badge paid" style="margin-top:6px;">${icon('star', 'icon-xs')} Bonus: ${customerState.bonusPoints} ball</div>` : ''}
         </div>
         <button type="button" class="cust-notif-bell-btn" id="custAddrBookBtn" title="Manzillarim" aria-label="Manzillarim" style="margin-right:6px;">
@@ -9120,6 +9148,15 @@ const tg = window.Telegram && window.Telegram.WebApp;
         renderCustomerEntry();
       });
     }
+    const branchSwitchBtn = document.getElementById('custBranchSwitchBtn');
+    if (branchSwitchBtn) {
+      branchSwitchBtn.addEventListener('click', () => {
+        if (customerCartQty() && !confirm('Filialni almashtirsangiz, savatchangizdagi mahsulotlar yo\'qoladi. Davom etasizmi?')) return;
+        stopCustomerHistoryPolling();
+        customerState.cart = {};
+        renderCustomerBranchPicker(customerState.ownerId);
+      });
+    }
     const addrBookBtn = document.getElementById('custAddrBookBtn');
     if (addrBookBtn) {
       addrBookBtn.addEventListener('click', () => {
@@ -9556,6 +9593,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const res = await apiPost('/api/customer-order', {
       initData,
       ownerId: customerState.ownerId,
+      branchId: customerState.branchId || null,
       items,
       orderType: customerState.orderType,
       paymentType: customerState.paymentType,
@@ -9915,6 +9953,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     setAppHeader(verifyRes.restaurant.logoUrl, verifyRes.restaurant.name);
     customerState.ownerId = ownerId;
     customerState.restaurant = verifyRes.restaurant;
+    customerState.branches = verifyRes.restaurant.branches || [];
     customerState.favorites = verifyRes.customer.favorites || [];
     customerState.addresses = verifyRes.customer.addresses || [];
     customerState.bonusPoints = verifyRes.customer.bonusPoints || 0;
@@ -9922,13 +9961,34 @@ const tg = window.Telegram && window.Telegram.WebApp;
     customerState.cardOnlyRestricted = !!verifyRes.customer.cardOnlyRestricted;
     customerState.personRegistered = !!verifyRes.personRegistered;
 
+    // 3-bosqich: agar oshxonaning bir nechta filiali bo'lsa, mijoz avval
+    // qaysi filialdan buyurtma berishini tanlaydi — shundan keyingina o'sha
+    // filialning mustaqil menyusi yuklanadi. Oldin tanlangan filiali
+    // (shu qurilmada saqlangan) hali ham mavjud bo'lsa, qayta so'ralmaydi.
+    if (customerState.branches.length > 0) {
+      const stored = getStoredCustomerBranch();
+      const storedValid = stored === '__central__' || customerState.branches.some(b => String(b.id) === String(stored));
+      if (storedValid) {
+        customerState.branchId = stored === '__central__' ? null : stored;
+      } else {
+        renderCustomerBranchPicker(ownerId);
+        return;
+      }
+    } else {
+      customerState.branchId = null;
+    }
+
+    await continueCustomerAppLoad(ownerId);
+  }
+
+  async function continueCustomerAppLoad(ownerId) {
     const kitchenStatus = await apiPost('/api/kitchen-status', { initData, ownerId });
     if (kitchenStatus.ok && !kitchenStatus.open) {
       renderKitchenClosedScreen(ownerId, kitchenStatus);
       return;
     }
 
-    const menuRes = await apiPost('/api/customer-menu-list', { initData, ownerId });
+    const menuRes = await apiPost('/api/customer-menu-list', { initData, ownerId, branchId: customerState.branchId });
     customerState.menu = menuRes.ok ? menuRes.menu : [];
     customerState.categories = menuRes.ok ? (menuRes.categories || []) : [];
     customerState.promotions = menuRes.ok ? menuRes.promotions : [];
@@ -9938,6 +9998,52 @@ const tg = window.Telegram && window.Telegram.WebApp;
     renderCustomerMenuTab();
 
     refreshCustomerNotifBadge();
+  }
+
+  // 3-bosqich: filial tanlash ekrani. Markaziy (asosiy) filial ham ro'yxatda
+  // birinchi variant sifatida ko'rsatiladi.
+  function customerBranchPickerHtml(branches, centralLabel) {
+    const centralItem = `
+      <div class="owner-item" data-pick-branch-id="" style="cursor:pointer;">
+        <div>
+          <div class="owner-id">${escapeHtml(centralLabel)}</div>
+        </div>
+        <div style="font-size:20px;">›</div>
+      </div>
+    `;
+    const branchItems = (branches || []).map(b => `
+      <div class="owner-item" data-pick-branch-id="${escapeHtml(b.id)}" style="cursor:pointer;">
+        <div>
+          <div class="owner-id">${escapeHtml(b.name)}</div>
+          ${b.address ? `<div class="owner-username">${escapeHtml(b.address)}</div>` : ''}
+        </div>
+        <div style="font-size:20px;">›</div>
+      </div>
+    `).join('');
+    return centralItem + branchItems;
+  }
+
+  function renderCustomerBranchPicker(ownerId) {
+    clearAppHeader();
+    const r = customerState.restaurant || {};
+    setAppHeader(r.logoUrl, r.name);
+    const centralLabel = r.centralBranchName || `${r.name || 'Oshxona'} (asosiy)`;
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Filialni tanlang</div>
+        <div class="bosh">Buyurtma berish uchun qaysi filialdan xarid qilishni tanlang.</div>
+        <div class="owner-list" style="margin-top:14px;">${customerBranchPickerHtml(customerState.branches, centralLabel)}</div>
+      </div>
+    `);
+    document.querySelectorAll('[data-pick-branch-id]').forEach(el => {
+      el.addEventListener('click', () => selectCustomerBranch(ownerId, el.getAttribute('data-pick-branch-id') || null));
+    });
+  }
+
+  function selectCustomerBranch(ownerId, branchId) {
+    customerState.branchId = branchId || null;
+    setStoredCustomerBranch(customerState.branchId);
+    continueCustomerAppLoad(ownerId);
   }
 
   let kitchenCountdownTimer = null;
