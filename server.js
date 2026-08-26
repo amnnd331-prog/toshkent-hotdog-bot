@@ -6040,7 +6040,11 @@ const server = http.createServer((req, res) => {
           workHours: (owner.profile && owner.profile.workHours) || null,
           logoUrl: (owner.profile && owner.profile.logoUrl) || null,
           brandColor: (owner.profile && owner.profile.brandColor) || null,
-          paymentCard: owner.customerPaymentCard || { cardNumber: '', cardHolder: '' }
+          paymentCard: owner.customerPaymentCard || { cardNumber: '', cardHolder: '' },
+          // 3-bosqich: mijoz qaysi filialdan buyurtma berishini tanlashi uchun —
+          // filiallar ro'yxati (faqat mijozga kerakli maydonlar bilan).
+          centralBranchName: owner.centralBranchName || null,
+          branches: (owner.branches || []).map(b => ({ id: b.id, name: b.name, address: b.address || null }))
         },
         customer: { favorites: customer.favorites, addresses: customer.addresses || [], bonusPoints: customer.bonusPoints, cardOnlyRestricted: customerIsCardOnlyRestricted(owner, userId) },
         personRegistered: isRegisteredUser(userId),
@@ -6110,7 +6114,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/customer-menu-list') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const { initData, ownerId } = payload;
+      const { initData, ownerId, branchId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const owners = pruneExpiredOwners();
@@ -6118,8 +6122,15 @@ const server = http.createServer((req, res) => {
       if (!owner || !isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
       if (!ownerCanUseFeature(owner, 'customer-menu')) return sendJSON(res, 200, featureBlockedResult('customer-menu'));
 
-      const menu = (owner.menu || []).filter(m => m.available !== false)
-        .map(m => Object.assign({}, m, { outOfStock: menuItemOutOfStock(owner, m) }));
+      // 3-bosqich: mijoz tanlagan filial mustaqil menyusini (va o'sha
+      // filialning skladiga bog'liq "tugadi" holatini) ko'rsatadi. branchId
+      // yuborilmasa (yoki filiallar umuman yo'q bo'lsa) — markaziy menyu.
+      const menuPool = resolveMenuPool(owner, branchId);
+      if (branchId && !menuPool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi.' });
+      const stockPool = resolveStockPool(owner, branchId) || owner;
+
+      const menu = (menuPool.menu || []).filter(m => m.available !== false)
+        .map(m => Object.assign({}, m, { outOfStock: menuItemOutOfStock(stockPool, m) }));
 
       const combos = (owner.combos || []).filter(c => c.available !== false).map(c => Object.assign({}, c, {
         price: c.priceMode === 'auto' ? comboAutoPrice(owner, c.itemIds) : c.price,
@@ -6131,7 +6142,7 @@ const server = http.createServer((req, res) => {
       const recommendations = ownerCanUseFeature(owner, 'ai-waiter')
         ? buildAiWaiterRecommendations(owner, String(check.user && check.user.id), menu)
         : { favorites: [], similar: [] };
-      return sendJSON(res, 200, { ok: true, menu, combos, promotions, banners, categories: sortedOwnerCategories(owner), recommendations });
+      return sendJSON(res, 200, { ok: true, menu, combos, promotions, banners, categories: sortedOwnerCategories(menuPool), recommendations, branchId: branchId || null });
     });
     return;
   }
@@ -6771,7 +6782,7 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && req.url === '/api/customer-order') {
     readBody(req, async (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: 'noto\'g\'ri so\'rov' });
-      const { initData, ownerId, items, orderType, paymentType, promoId, usePoints, location, addressNote, extraPhone, comment, requestId } = payload;
+      const { initData, ownerId, items, orderType, paymentType, promoId, usePoints, location, addressNote, extraPhone, comment, requestId, branchId } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
 
@@ -6780,6 +6791,13 @@ const server = http.createServer((req, res) => {
       const owner = findOwner(owners, ownerId);
       if (!owner || !isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
       if (!ownerCanUseFeature(owner, 'customer-menu')) return sendJSON(res, 200, featureBlockedResult('customer-menu'));
+
+      // 3-bosqich: mijoz tanlagan filialning mustaqil menyusi/skladi asosida
+      // buyurtma tekshiriladi va shakllantiriladi (branchId bo'lmasa — markaziy).
+      const menuPool = resolveMenuPool(owner, branchId);
+      if (branchId && !menuPool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi.' });
+      const stockPool = resolveStockPool(owner, branchId) || owner;
+      const orderBranch = branchId ? findBranch(owner, branchId) : null;
 
       if (!isRegisteredUser(userId)) {
         return sendJSON(res, 200, {
@@ -6832,7 +6850,7 @@ const server = http.createServer((req, res) => {
       const extraPhoneFinal = orderType === 'dostavka' ? String(extraPhone || '').trim().slice(0, 30) : null;
       const commentFinal = String(comment || '').trim().slice(0, 300) || null;
 
-      const menu = (owner.menu || []).filter(m => m.available !== false);
+      const menu = (menuPool.menu || []).filter(m => m.available !== false);
       const combosAvailable = (owner.combos || []).filter(c => c.available !== false);
       const orderItems = [];
       for (const it of items) {
@@ -6865,7 +6883,7 @@ const server = http.createServer((req, res) => {
 
       if (!owner.stock) owner.stock = [];
 
-      const stockCheck = checkStockAvailability(owner, orderItems, menu);
+      const stockCheck = checkStockAvailabilityPooled(owner, orderItems, menu, stockPool);
       if (!stockCheck.ok) {
         return sendJSON(res, 200, { ok: false, reason: stockCheck.reason });
       }
@@ -6892,33 +6910,33 @@ const server = http.createServer((req, res) => {
         const menuItem = menu.find(m => m.id === it.id);
 
         if (menuItem && menuItem.directStockId) {
-          const stockItem = findStockItem(owner, menuItem.directStockId);
+          const stockItem = findStockItem(stockPool, menuItem.directStockId);
           if (stockItem) {
             const consumeQty = it.qty;
             stockItem.qty = Math.max(0, Math.round((stockItem.qty - consumeQty) * 1000) / 1000);
-            addStockMovement(owner, {
+            addStockMovement(stockPool, {
               stockId: stockItem.id, stockName: stockItem.name, type: 'chiqim',
               qty: consumeQty, unit: stockItem.unit,
               note: `To'g'ridan sotildi: ${menuItem.name} x${it.qty}`,
               userId
             });
-            checkLowStockAlert(owner, stockItem, userId);
+            checkLowStockAlert(owner, stockItem, userId, branchId || null);
           }
           continue;
         }
         const recipe = (menuItem && Array.isArray(menuItem.recipe)) ? menuItem.recipe : [];
         for (const ing of recipe) {
-          const stockItem = findStockItem(owner, ing.stockId);
+          const stockItem = findStockItem(stockPool, ing.stockId);
           if (!stockItem) continue;
           const consumeQty = Math.round(ing.qty * it.qty * 1000) / 1000;
           stockItem.qty = Math.max(0, Math.round((stockItem.qty - consumeQty) * 1000) / 1000);
-          addStockMovement(owner, {
+          addStockMovement(stockPool, {
             stockId: stockItem.id, stockName: stockItem.name, type: 'chiqim',
             qty: consumeQty, unit: stockItem.unit,
             note: `Mijoz buyurtmasi: ${menuItem.name} x${it.qty}`,
             userId
           });
-          checkLowStockAlert(owner, stockItem, userId);
+          checkLowStockAlert(owner, stockItem, userId, branchId || null);
         }
       }
 
@@ -6961,7 +6979,7 @@ const server = http.createServer((req, res) => {
         paymentConfirmMethod: paymentType === 'karta' ? 'skrinshot' : null,
         paymentProofFileId: null,
 
-        branchId: null,
+        branchId: orderBranch ? orderBranch.id : null,
         customerId: userId,
         customerName: customerDisplayName(userId, check.user),
         customerPhone: (findProfile(userId) || {}).phone || null,
@@ -6987,8 +7005,9 @@ const server = http.createServer((req, res) => {
       } else {
         const itemsText = orderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
         const commentLine = order.comment ? `\n💬 Izoh: ${escapeHtmlServer(order.comment)}` : '';
+        const branchLine = orderBranch ? `\n🏬 Filial: ${escapeHtmlServer(orderBranch.name)}` : '';
         const notifyText = `🆕 <b>Yangi mijoz buyurtmasi</b> (${ORDER_TYPES[orderType]})\n` +
-          `${orderCustomerContactLabel(order)}\n${itemsText}\n\nJami: ${fmtNum(total)} so'm\nTo'lov: ${PAYMENT_TYPES[paymentType]}${commentLine}`;
+          `${orderCustomerContactLabel(order)}\n${itemsText}\n\nJami: ${fmtNum(total)} so'm\nTo'lov: ${PAYMENT_TYPES[paymentType]}${commentLine}${branchLine}`;
         const notifyTargets = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'oshpaz') || staffHasRole(s, 'kassir')).map(s => s.id))];
         await notifyStaffList(owner, notifyTargets, notifyText, `Buyurtma #${order.id} (mijoz)`, 'newOrder');
         notifyKitchenGroup(owner, order, orderCustomerContactLabel(order));
@@ -7032,6 +7051,61 @@ const server = http.createServer((req, res) => {
     }
     for (const [stockId, requiredQty] of needed) {
       const stockItem = findStockItem(owner, stockId);
+      if (!stockItem) continue;
+      if (stockItem.qty < requiredQty) {
+        return {
+          ok: false,
+          reason: `Omborda "${stockItem.name}" yetarli emas (kerak: ${requiredQty} ${stockItem.unit}, mavjud: ${stockItem.qty} ${stockItem.unit}).`,
+          stockName: stockItem.name
+        };
+      }
+    }
+    return { ok: true };
+  }
+
+  // 3-bosqich: mijoz filial tanlab buyurtma berganda, taomning tarkibiy
+  // qismlari (directStockId/recipe) o'sha FILIALNING skladidan hisoblanishi
+  // kerak (chunki filial menyusi mustaqil bo'lgani kabi, uning skladi ham
+  // mustaqil — /api/stock-* endpointlari buni allaqachon shunday boshqaradi).
+  // Combo'lar esa hali ham markaziy ("owner") darajasida qoladi, chunki
+  // combo tizimi filiallarga bog'lanmagan.
+  function checkStockAvailabilityPooled(owner, orderItems, menu, stockPool) {
+    const neededCombo = new Map();
+    const neededPool = new Map();
+    for (const it of orderItems) {
+      if (it.isCombo) {
+        const combo = findCombo(owner, it.id);
+        if (!combo) continue;
+        for (const need of comboStockNeeds(owner, combo, it.qty)) {
+          neededCombo.set(need.stockId, Math.round(((neededCombo.get(need.stockId) || 0) + need.qty) * 1000) / 1000);
+        }
+        continue;
+      }
+      const menuItem = menu.find(m => m.id === it.id);
+      if (menuItem && menuItem.directStockId) {
+        const consumeQty = it.qty;
+        neededPool.set(menuItem.directStockId, Math.round(((neededPool.get(menuItem.directStockId) || 0) + consumeQty) * 1000) / 1000);
+        continue;
+      }
+      const recipe = (menuItem && Array.isArray(menuItem.recipe)) ? menuItem.recipe : [];
+      for (const ing of recipe) {
+        const consumeQty = Math.round(ing.qty * it.qty * 1000) / 1000;
+        neededPool.set(ing.stockId, Math.round(((neededPool.get(ing.stockId) || 0) + consumeQty) * 1000) / 1000);
+      }
+    }
+    for (const [stockId, requiredQty] of neededCombo) {
+      const stockItem = findStockItem(owner, stockId);
+      if (!stockItem) continue;
+      if (stockItem.qty < requiredQty) {
+        return {
+          ok: false,
+          reason: `Omborda "${stockItem.name}" yetarli emas (kerak: ${requiredQty} ${stockItem.unit}, mavjud: ${stockItem.qty} ${stockItem.unit}).`,
+          stockName: stockItem.name
+        };
+      }
+    }
+    for (const [stockId, requiredQty] of neededPool) {
+      const stockItem = findStockItem(stockPool, stockId);
       if (!stockItem) continue;
       if (stockItem.qty < requiredQty) {
         return {
