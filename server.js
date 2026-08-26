@@ -3953,7 +3953,22 @@ function readBody(req, cb) {
   req.on('end', () => {
     if (tooLarge) return;
     try { cb(null, JSON.parse(body || '{}')); }
-    catch (e) { cb(e); }
+    catch (e) {
+      // Diagnostika: JSON.parse nima uchun muvaffaqiyatsiz bo'lganini
+      // server konsolida ko'rish uchun (masalan Replit/PM2 log'larida).
+      console.error(
+        `readBody JSON parse xatosi [${req.method} ${req.url}]:`,
+        e.message,
+        '| body uzunligi:', body.length,
+        '| body boshi:', body.slice(0, 300),
+        '| body oxiri:', body.slice(-100)
+      );
+      cb(e);
+    }
+  });
+  req.on('error', (e) => {
+    console.error(`readBody req oqim xatosi [${req.method} ${req.url}]:`, e.message);
+    if (!tooLarge) { tooLarge = true; cb(e); }
   });
 }
 
