@@ -4680,7 +4680,37 @@ setInterval(() => {
   if (changed) saveOwners(owners);
 }, 15 * 60 * 1000);
 
+// MUHIM: bu ikkita handler bo'lmasa, kod ichida istalgan joyda kutilmagan
+// (uncaught) xato chiqsa — butun Node.js process qulab tushar edi, Railway
+// uni qayta ishga tushirguncha (bir necha soniya) HAMMA foydalanuvchi uchun
+// server o'lik bo'lib turar, va aynan shu daqiqada mini-app'ni ochgan odam
+// oq ekran ko'rar edi. Endi bunday xatolar faqat log'ga yoziladi, server esa
+// ishlashda davom etadi.
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL, lekin ushlab qolindi] uncaughtException:', err && err.stack || err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[FATAL, lekin ushlab qolindi] unhandledRejection:', reason && reason.stack || reason);
+});
+
 const server = http.createServer((req, res) => {
+  try {
+    return handleRequest(req, res);
+  } catch (err) {
+    console.error('[so\'rovni qayta ishlashda xatolik]', req.method, req.url, err && err.stack || err);
+    try {
+      if (!res.headersSent) {
+        sendJSON(res, 500, { ok: false, reason: 'Serverda vaqtinchalik xatolik. Qayta urinib ko\'ring.' });
+      } else {
+        res.end();
+      }
+    } catch (e2) {
+      try { res.end(); } catch (_) {}
+    }
+  }
+});
+
+function handleRequest(req, res) {
 
   if (req.method === 'POST' && req.url === '/api/verify') {
     readBody(req, (err, payload) => {
@@ -11648,10 +11678,24 @@ const server = http.createServer((req, res) => {
       : ext === '.svg' ? 'image/svg+xml'
       : ext === '.png' ? 'image/png'
       : 'text/plain';
-    res.writeHead(200, { 'Content-Type': type + '; charset=utf-8' });
+
+    // index.html har doim "yangi" bo'lishi kerak (Mini App ochilganda eng
+    // so'nggi versiyani ko'rsatsin), shuning uchun uni umuman cache
+    // qilmaymiz. app.js/style.css esa "?v=N" bilan versiyalanadi (public/
+    // index.html'da), shu sababli xavfsiz — ularni uzoq muddat cache qilish
+    // mumkin: versiya raqami o'zgarganda URL ham o'zgaradi, WebView avtomatik
+    // yangisini oladi. Bu har ochilishda serverdan qayta yuklab olishni
+    // kamaytiradi va serverga tushayotgan yukni pasaytiradi.
+    const cacheControl = ext === '.html'
+      ? 'no-cache, no-store, must-revalidate'
+      : (ext === '.js' || ext === '.css')
+        ? 'public, max-age=31536000, immutable'
+        : 'public, max-age=3600';
+
+    res.writeHead(200, { 'Content-Type': type + '; charset=utf-8', 'Cache-Control': cacheControl });
     res.end(data);
   });
-});
+}
 
 const DEFAULT_TARIFF_FEATURE_IDS = FEATURE_CATALOG.map(f => f.id);
 
