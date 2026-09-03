@@ -1639,6 +1639,30 @@ function locationMapsLink(location) {
   return `https://maps.google.com/?q=${location.lat},${location.lng}`;
 }
 
+// --- Dostavka xizmat zonasi (geofencing) ---
+// Filial markazidan belgilangan radiusdan tashqaridagi joylashuvlarga
+// (masalan Samarqand, Xorazm va h.k.) dostavka buyurtmasi berilishining
+// oldini olish uchun. Markaz koordinatasi — Zafar shaharchasi, Bekobod
+// tumani, Toshkent viloyati.
+const DELIVERY_ZONE_CENTER = { lat: 40.37639, lng: 69.25139 };
+const DELIVERY_ZONE_RADIUS_KM = 10;
+
+function distanceKm(lat1, lng1, lat2, lng2) {
+  const R = 6371; // Yer radiusi (km)
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+function isWithinDeliveryZone(location) {
+  if (!location || typeof location.lat !== 'number' || typeof location.lng !== 'number') return false;
+  return distanceKm(location.lat, location.lng, DELIVERY_ZONE_CENTER.lat, DELIVERY_ZONE_CENTER.lng) <= DELIVERY_ZONE_RADIUS_KM;
+}
+
 function displayName(user) {
   if (!user) return 'Noma\'lum';
   const name = [user.first_name, user.last_name].filter(Boolean).join(' ');
@@ -6962,11 +6986,12 @@ function handleRequest(req, res) {
             Math.abs(location.lat) <= 90 && Math.abs(location.lng) <= 180) {
           deliveryLocation = { lat: location.lat, lng: location.lng };
         }
-        const addressNoteTrimmed = String(addressNote || '').trim();
-        if (!deliveryLocation && !addressNoteTrimmed) {
-          return sendJSON(res, 200, { ok: false, reason: 'Dostavka uchun joylashuvni aniqlang yoki manzilni yozib qoldiring.' });
+        if (!deliveryLocation) {
+          return sendJSON(res, 200, { ok: false, reason: 'Dostavka uchun joylashuvingizni (location) yuborishingiz shart. Manzil izohi yetarli emas.' });
         }
-
+        if (!isWithinDeliveryZone(deliveryLocation)) {
+          return sendJSON(res, 200, { ok: false, reason: `Kechirasiz, bu manzil xizmat zonasidan tashqarida (dostavka radiusi ${DELIVERY_ZONE_RADIUS_KM} km). Iltimos, xizmat zonamiz ichidagi manzilni tanlang.` });
+        }
         const extraPhoneTrimmed = String(extraPhone || '').trim();
         if (!isPlausiblePhone(extraPhoneTrimmed)) {
           return sendJSON(res, 200, { ok: false, reason: 'Telefon raqamini O\'zbekiston formatida kiriting (masalan: +998901234567).' });
