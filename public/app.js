@@ -9663,8 +9663,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
       msgEl.className = 'xabar err';
       return;
     }
-    if (customerState.orderType === 'dostavka' && !customerState.location && !customerState.addressNote.trim()) {
-      msgEl.textContent = 'Dostavka uchun joylashuvni aniqlang yoki manzilni yozib qoldiring.';
+    if (customerState.orderType === 'dostavka' && !customerState.location) {
+      msgEl.textContent = 'Dostavka uchun joylashuvingizni (location) aniqlashingiz shart.';
       msgEl.className = 'xabar err';
       return;
     }
