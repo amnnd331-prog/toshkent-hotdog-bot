@@ -1768,7 +1768,14 @@ function kitchenGroupBaseText(order, creatorLabel) {
   const itemsText = orderItemsTextWithPrices(order);
   const typeLabel = ORDER_TYPES[order.orderType] || order.orderType;
   const commentLine = order.comment ? `\n💬 Izoh: ${escapeHtmlServer(order.comment)}` : '';
-  return `👨‍🍳 <b>Yangi buyurtma</b> (${typeLabel})${creatorLabel ? '\n' + creatorLabel : ''}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm${commentLine}`;
+  const mapsLink = locationMapsLink(order.location);
+  const addressLines = [
+    mapsLink ? `📍 Joylashuv: ${mapsLink}` : null,
+    order.addressNote ? `📝 Manzil izohi: ${escapeHtmlServer(order.addressNote)}` : null,
+    order.extraPhone ? `📞 Qo'shimcha tel: ${escapeHtmlServer(order.extraPhone)}` : null,
+  ].filter(Boolean).join('\n');
+  return `👨‍🍳 <b>Yangi buyurtma</b> (${typeLabel})${creatorLabel ? '\n' + creatorLabel : ''}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm${commentLine}` +
+    (addressLines ? `\n\n${addressLines}` : '');
 }
 
 function kitchenGroupFullText(order) {
@@ -1935,14 +1942,7 @@ function notifyDeliveryGroupOrderReady(owner, order) {
   if (!ownerCanUseFeature(owner, 'delivery-group')) return;
   if (order.orderType !== 'dostavka') return;
   const itemsText = orderItemsTextWithPrices(order);
-  const mapsLink = locationMapsLink(order.location);
-  const addressLines = [
-    mapsLink ? `📍 Joylashuv: ${mapsLink}` : null,
-    order.addressNote ? `📝 Manzil izohi: ${escapeHtmlServer(order.addressNote)}` : null,
-    order.extraPhone ? `📞 Qo'shimcha tel: ${escapeHtmlServer(order.extraPhone)}` : null,
-  ].filter(Boolean).join('\n');
-  const text = `🚚 <b>Buyurtma tayyor — yetkazishga oling</b>\n${orderCustomerContactLabel(order)}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm\nTo'lov: ${PAYMENT_TYPES[order.paymentType] || order.paymentType}` +
-    (addressLines ? `\n\n${addressLines}` : '');
+  const text = `🚚 <b>Buyurtma tayyor — yetkazishga oling</b>\n${orderCustomerContactLabel(order)}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm\nTo'lov: ${PAYMENT_TYPES[order.paymentType] || order.paymentType}`;
   sendMessage(groups.deliveryGroupId, text, {
     inline_keyboard: [[
       { text: '✅ Yetkazildi', callback_data: `dgdelivered:${owner.id}:${order.id}` }
