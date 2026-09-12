@@ -6018,9 +6018,20 @@ function handleRequest(req, res) {
   }
 
   function activeOwnerBanners(owner) {
-    return (owner.banners || [])
+    const regular = (owner.banners || [])
       .filter(b => b.active !== false && isBannerWithinWindow(b))
       .map(b => ({ id: b.id, imageUrl: b.imageUrl, title: b.title, link: b.link }));
+
+    // Juma banneri — bu oddiy bannerlar ro'yxatidan butunlay alohida
+    // saqlanadi (owner.fridayBanner). Faqat bugun (Toshkent vaqti bo'yicha)
+    // juma bo'lsa va o'chirib qo'yilmagan bo'lsa, mijozlar ekraniga
+    // qo'shilib chiqadi — boshqa bannerlarni boshqarishga hech qanday
+    // ta'sir qilmaydi.
+    const fb = owner.fridayBanner;
+    if (fb && fb.imageUrl && fb.active !== false && isTashkentFridayNow()) {
+      regular.unshift({ id: 'friday-banner', imageUrl: fb.imageUrl, title: fb.title, link: fb.link });
+    }
+    return regular;
   }
 
   if (req.method === 'POST' && req.url === '/api/banner-list') {
@@ -6203,6 +6214,99 @@ function handleRequest(req, res) {
       if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
 
       owner.banners = (owner.banners || []).filter(b => b.id !== id);
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true });
+    });
+    return;
+  }
+
+  // === Juma banneri (Friday banner) ===
+  // Bu bo'lim yuqoridagi oddiy "Reklama bannerlari" (owner.banners) bilan
+  // umuman bog'liq emas — alohida maydonda (owner.fridayBanner, bitta
+  // obyekt) saqlanadi. Shu sababli bu yerdagi qo'shish/o'chirish/yoqish
+  // amallari boshqa bannerlarga hech qanday tarzda aralashmaydi. Faqat
+  // haftaning juma kuni avtomatik ko'rinadi (qarang: activeOwnerBanners).
+
+  if (req.method === 'POST' && req.url === '/api/friday-banner-get') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi ko\'ra oladi'));
+      const owner = ownerCtx.owner;
+      return sendJSON(res, 200, { ok: true, banner: owner.fridayBanner || null });
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/api/friday-banner-save') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
+      const { initData, imageUrl, title, link } = payload;
+      const check = verifyAuth(initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi qo\'sha oladi'));
+      const owner = ownerCtx.owner;
+      if (!ownerCanUseFeature(owner, 'banner-manage')) return sendJSON(res, 200, featureBlockedResult('banner-manage'));
+
+      const imageTrim = String(imageUrl || '').trim();
+      if (!imageTrim) return sendJSON(res, 200, { ok: false, reason: 'Banner uchun rasm tanlang.' });
+      if (!isValidImageValue(imageTrim)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Rasm noto\'g\'ri formatda yoki hajmi katta (rasmni kichikroq tanlang).' });
+      }
+      const linkTrim = String(link || '').trim();
+      if (linkTrim && !/^https?:\/\//i.test(linkTrim)) {
+        return sendJSON(res, 200, { ok: false, reason: 'Havola http:// yoki https:// bilan boshlanishi kerak.' });
+      }
+      const prevActive = owner.fridayBanner ? owner.fridayBanner.active !== false : true;
+      owner.fridayBanner = {
+        imageUrl: imageTrim,
+        title: String(title || '').trim() || null,
+        link: linkTrim || null,
+        active: prevActive,
+        updatedAt: new Date().toISOString()
+      };
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true, banner: owner.fridayBanner });
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/api/friday-banner-toggle') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
+      const owner = ownerCtx.owner;
+      if (!owner.fridayBanner) return sendJSON(res, 200, { ok: false, reason: 'Juma banneri topilmagan.' });
+      owner.fridayBanner.active = owner.fridayBanner.active === false ? true : false;
+      saveOwners(owners);
+      return sendJSON(res, 200, { ok: true, banner: owner.fridayBanner });
+    });
+    return;
+  }
+
+  if (req.method === 'POST' && req.url === '/api/friday-banner-remove') {
+    readBody(req, (err, payload) => {
+      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
+      const check = verifyAuth(payload.initData);
+      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+      const userId = String(check.user && check.user.id);
+      const owners = loadOwners();
+      const ownerCtx = resolveOwnerContext(owners, userId);
+      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
+      const owner = ownerCtx.owner;
+      owner.fridayBanner = null;
       saveOwners(owners);
       return sendJSON(res, 200, { ok: true });
     });
