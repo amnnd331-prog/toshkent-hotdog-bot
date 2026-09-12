@@ -6007,6 +6007,13 @@ function handleRequest(req, res) {
     const now = Date.now();
     if (banner.startAt && new Date(banner.startAt).getTime() > now) return false;
     if (banner.endAt && new Date(banner.endAt).getTime() < now) return false;
+    // Banner faqat haftaning muayyan kunida (masalan har juma) ko'rinishi
+    // uchun bog'langan bo'lsa — bugun (Toshkent vaqti) o'sha kun bo'lmasa,
+    // ko'rsatilmaydi. Owner buni bir marta sozlaydi, keyin har hafta
+    // avtomatik o'zi chiqib-yashirinib turadi.
+    if (banner.weeklyDay !== null && banner.weeklyDay !== undefined) {
+      if (kitchenTashkentDate().getUTCDay() !== banner.weeklyDay) return false;
+    }
     return true;
   }
 
@@ -6034,7 +6041,7 @@ function handleRequest(req, res) {
   if (req.method === 'POST' && req.url === '/api/banner-add') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, imageUrl, title, link, startAt, endAt } = payload;
+      const { initData, imageUrl, title, link, startAt, endAt, weeklyDay } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
@@ -6068,6 +6075,12 @@ function handleRequest(req, res) {
       if (startAtVal && endAtVal && new Date(endAtVal).getTime() <= new Date(startAtVal).getTime()) {
         return sendJSON(res, 200, { ok: false, reason: 'Tugash sanasi boshlanish sanasidan keyin bo\'lishi kerak.' });
       }
+      let weeklyDayVal = null;
+      if (weeklyDay !== undefined && weeklyDay !== null && weeklyDay !== '') {
+        const n = parseInt(weeklyDay, 10);
+        if (!Number.isInteger(n) || n < 0 || n > 6) return sendJSON(res, 200, { ok: false, reason: 'Hafta kuni noto\'g\'ri.' });
+        weeklyDayVal = n;
+      }
 
       if (!owner.banners) owner.banners = [];
       const banner = {
@@ -6078,6 +6091,7 @@ function handleRequest(req, res) {
         active: true,
         startAt: startAtVal,
         endAt: endAtVal,
+        weeklyDay: weeklyDayVal,
         createdAt: new Date().toISOString()
       };
       owner.banners.unshift(banner);
@@ -6090,7 +6104,7 @@ function handleRequest(req, res) {
   if (req.method === 'POST' && req.url === '/api/banner-update') {
     readBody(req, (err, payload) => {
       if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, id, imageUrl, title, link, startAt, endAt } = payload;
+      const { initData, id, imageUrl, title, link, startAt, endAt, weeklyDay } = payload;
       const check = verifyAuth(initData);
       if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
       const userId = String(check.user && check.user.id);
@@ -6137,6 +6151,15 @@ function handleRequest(req, res) {
       }
       if (banner.startAt && banner.endAt && new Date(banner.endAt).getTime() <= new Date(banner.startAt).getTime()) {
         return sendJSON(res, 200, { ok: false, reason: 'Tugash sanasi boshlanish sanasidan keyin bo\'lishi kerak.' });
+      }
+      if (weeklyDay !== undefined) {
+        if (weeklyDay === null || weeklyDay === '') {
+          banner.weeklyDay = null;
+        } else {
+          const n = parseInt(weeklyDay, 10);
+          if (!Number.isInteger(n) || n < 0 || n > 6) return sendJSON(res, 200, { ok: false, reason: 'Hafta kuni noto\'g\'ri.' });
+          banner.weeklyDay = n;
+        }
       }
 
       saveOwners(owners);
