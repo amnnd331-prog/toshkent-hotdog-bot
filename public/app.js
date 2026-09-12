@@ -2201,6 +2201,17 @@ const tg = window.Telegram && window.Telegram.WebApp;
             <input type="date" id="bannerStartInput">
             <label class="field-label">Tugash sanasi (ixtiyoriy)</label>
             <input type="date" id="bannerEndInput">
+            <label class="field-label">Faqat haftaning shu kunida ko'rinsin (ixtiyoriy)</label>
+            <select id="bannerWeeklyDayInput">
+              <option value="">Har kuni</option>
+              <option value="1">Har dushanba</option>
+              <option value="2">Har seshanba</option>
+              <option value="3">Har chorshanba</option>
+              <option value="4">Har payshanba</option>
+              <option value="5">Har juma</option>
+              <option value="6">Har shanba</option>
+              <option value="0">Har yakshanba</option>
+            </select>
             <button class="btn" id="addBannerBtn" style="margin-top:8px;">Banner qo'shish</button>
             <div class="xabar" id="bannerMsg"></div>
           </div>
@@ -2486,6 +2497,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const link = document.getElementById('bannerLinkInput').value.trim();
       const startAt = document.getElementById('bannerStartInput').value;
       const endAt = document.getElementById('bannerEndInput').value;
+      const weeklyDayRaw = document.getElementById('bannerWeeklyDayInput').value;
+      const weeklyDay = weeklyDayRaw === '' ? null : parseInt(weeklyDayRaw, 10);
       const msgEl = document.getElementById('bannerMsg');
       if (!pendingBannerImg) {
         msgEl.textContent = 'Banner uchun rasm tanlang.';
@@ -2494,7 +2507,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       }
       msgEl.textContent = 'Qo\'shilmoqda...';
       msgEl.className = 'xabar';
-      const res = await apiPost('/api/banner-add', { initData, imageUrl: pendingBannerImg, title, link, startAt, endAt });
+      const res = await apiPost('/api/banner-add', { initData, imageUrl: pendingBannerImg, title, link, startAt, endAt, weeklyDay });
       if (res.ok) {
         msgEl.textContent = 'Banner qo\'shildi.';
         msgEl.className = 'xabar ok';
@@ -2503,6 +2516,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         document.getElementById('bannerLinkInput').value = '';
         document.getElementById('bannerStartInput').value = '';
         document.getElementById('bannerEndInput').value = '';
+        document.getElementById('bannerWeeklyDayInput').value = '';
         const preview = document.getElementById('bannerImgPreview');
         if (preview) preview.outerHTML = `<div id="bannerImgPreview" class="logo-picker-preview logo-picker-preview-empty">${icon('image', 'icon-md')}</div>`;
         const removeBtn = document.getElementById('bannerImgRemoveBtn');
@@ -3929,6 +3943,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
     listEl.innerHTML = promoListHtml(res.ok ? res.promotions : []);
   }
 
+  const BANNER_WEEKDAY_LABELS = { 0: 'Har yakshanba', 1: 'Har dushanba', 2: 'Har seshanba', 3: 'Har chorshanba', 4: 'Har payshanba', 5: 'Har juma', 6: 'Har shanba' };
+
   function bannerListHtml(banners) {
     if (!banners || !banners.length) return `<div class="bosh">Hali banner qo'shilmagan.</div>`;
     return banners.map(b => `
@@ -3938,6 +3954,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <div class="owner-id">${escapeHtml(b.title || "(sarlavhasiz)")}</div>
           ${b.link ? `<div class="owner-username">${escapeHtml(b.link)}</div>` : ''}
           ${(b.startAt || b.endAt) ? `<div class="owner-username">${b.startAt ? new Date(b.startAt).toLocaleDateString('uz-UZ') : '...'} — ${b.endAt ? new Date(b.endAt).toLocaleDateString('uz-UZ') : '...'}</div>` : ''}
+          ${(b.weeklyDay !== null && b.weeklyDay !== undefined) ? `<div class="owner-username">🔁 ${BANNER_WEEKDAY_LABELS[b.weeklyDay] || ''}</div>` : ''}
         </div>
         <div class="owner-actions">
           <span class="badge ${b.active ? 'paid' : 'unpaid'}">${b.active ? 'Faol' : 'Nofaol'}</span>
