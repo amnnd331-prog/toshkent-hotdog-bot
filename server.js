@@ -1809,7 +1809,7 @@ function notifyDeliveryGroup(owner, order, creatorLabel) {
   sendMessage(groups.deliveryGroupId, text, {
     inline_keyboard: [[
       { text: '✅ Qabul qilish', callback_data: `dgaccept:${owner.id}:${order.id}` },
-      { text: '🏁 Tayyor', callback_data: `dgready:${owner.id}:${order.id}` }
+      { text: '✅ Tayyor', callback_data: `dgready:${owner.id}:${order.id}` }
     ]]
   }, groups.deliveryGroupThreadId).then(result => {
     if (result && result.ok && result.result && result.result.message_id) {
@@ -1834,12 +1834,16 @@ function kitchenGroupBaseText(order, creatorLabel) {
   const typeLabel = ORDER_TYPES[order.orderType] || order.orderType;
   const commentLine = order.comment ? `\n💬 Izoh: ${escapeHtmlServer(order.comment)}` : '';
   const mapsLink = locationMapsLink(order.location);
+  // Alohida dostavka guruhi endi ishlatilmaydi — shuning uchun dostavka
+  // buyurtmalari uchun kerak bo'lgan barcha ma'lumotlar (mijoz, manzil,
+  // to'lov turi) ham shu bitta oshxona guruh xabariga qo'shiladi.
   const addressLines = [
     mapsLink ? `📍 Joylashuv: ${mapsLink}` : null,
     order.addressNote ? `📝 Manzil izohi: ${escapeHtmlServer(order.addressNote)}` : null,
     order.extraPhone ? `📞 Qo'shimcha tel: ${escapeHtmlServer(order.extraPhone)}` : null,
   ].filter(Boolean).join('\n');
-  return `👨‍🍳 <b>Yangi buyurtma</b> (${typeLabel})${creatorLabel ? '\n' + creatorLabel : ''}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm${commentLine}` +
+  const headerEmoji = order.orderType === 'dostavka' ? '🚚' : '👨‍🍳';
+  return `${headerEmoji} <b>Yangi buyurtma</b> (${typeLabel})${creatorLabel ? '\n' + creatorLabel : ''}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm\nTo'lov: ${PAYMENT_TYPES[order.paymentType] || order.paymentType}${commentLine}` +
     (addressLines ? `\n\n${addressLines}` : '');
 }
 
@@ -1861,7 +1865,7 @@ function kitchenGroupFinalText(order) {
     const readyAt = order.readyAt || order.updatedAt;
     const ms = readyAt ? (new Date(readyAt).getTime() - new Date(order.createdAt).getTime()) : null;
     const durationText = ms !== null ? ` (${fmtMmSs(ms / 1000)} da)` : '';
-    return `🏁 Tayyor${durationText}\n\n${base}`;
+    return `✅ Tayyor${durationText}\n\n${base}`;
   }
   if (order.status === 'bekor_qilindi') {
     return `❌ Bekor qilindi\n\n${base}`;
@@ -1879,7 +1883,7 @@ function notifyKitchenGroup(owner, order, creatorLabel) {
     const text = kitchenGroupFullText(order);
     sendMessage(groups.kitchenGroupId, text, {
       inline_keyboard: [[
-        { text: '🏁 Tayyor', callback_data: `kgready:${owner.id}:${order.id}` }
+        { text: '✅ Tayyor', callback_data: `kgready:${owner.id}:${order.id}` }
       ]]
     }, groups.kitchenGroupThreadId).then(result => {
       if (result && result.ok && result.result && result.result.message_id) {
@@ -1973,7 +1977,7 @@ setInterval(() => {
         order.kitchenTimerColor = status.color;
         ownersChanged = true;
         const text = kitchenGroupFullText(order);
-        const keyboard = { inline_keyboard: [[{ text: '🏁 Tayyor', callback_data: `kgready:${owner.id}:${order.id}` }]] };
+        const keyboard = { inline_keyboard: [[{ text: '✅ Tayyor', callback_data: `kgready:${owner.id}:${order.id}` }]] };
         editMessageText(groups.kitchenGroupId, order.kitchenGroupMsgId, text, keyboard).then(result => {
           if (result && result.error_code === 429) {
             const retryAfterSec = Math.max((result.parameters && result.parameters.retry_after) || 30, 60);
@@ -2043,15 +2047,15 @@ function syncGroupMessagesForOrder(owner, order, opts) {
       // yoki "tayyorlanmoqda" bo'lishidan qat'i nazar, faqat "Tayyor"
       // tugmasi ko'rinadi (bosilganda ikkalasi ham bir yo'la bajariladi).
       if (order.status === 'yangi' || order.status === 'tayyorlanmoqda') {
-        kb = { inline_keyboard: [[{ text: '🏁 Tayyor', callback_data: `kgready:${owner.id}:${order.id}` }]] };
+        kb = { inline_keyboard: [[{ text: '✅ Tayyor', callback_data: `kgready:${owner.id}:${order.id}` }]] };
       }
     } else if (order.status === 'yangi') {
       kb = { inline_keyboard: [[
         { text: '✅ Qabul qilish', callback_data: `${t.prefix}accept:${owner.id}:${order.id}` },
-        { text: '🏁 Tayyor', callback_data: `${t.prefix}ready:${owner.id}:${order.id}` }
+        { text: '✅ Tayyor', callback_data: `${t.prefix}ready:${owner.id}:${order.id}` }
       ]] };
     } else if (order.status === 'tayyorlanmoqda') {
-      kb = { inline_keyboard: [[{ text: '🏁 Tayyor', callback_data: `${t.prefix}ready:${owner.id}:${order.id}` }]] };
+      kb = { inline_keyboard: [[{ text: '✅ Tayyor', callback_data: `${t.prefix}ready:${owner.id}:${order.id}` }]] };
     }
 
     // Oshxona guruhidagi buyurtma "tayyor" yoki "bekor qilindi" bo'lib
@@ -3738,7 +3742,7 @@ async function handleTelegramUpdate(update) {
         if (chatId && messageId) {
           await editMessageText(chatId, messageId,
             `${cq.message.text || ''}\n\n✅ Qabul qilindi — ${displayName(from)}`,
-            { inline_keyboard: [[{ text: '🏁 Tayyor', callback_data: `${isKitchen ? 'kgready' : 'dgready'}:${ownerId}:${orderId}` }]] });
+            { inline_keyboard: [[{ text: '✅ Tayyor', callback_data: `${isKitchen ? 'kgready' : 'dgready'}:${ownerId}:${orderId}` }]] });
         }
         syncGroupMessagesForOrder(owner, order);
         if (order.customerId) {
@@ -3781,14 +3785,14 @@ async function handleTelegramUpdate(update) {
 
         if (chatId && messageId) {
           await editMessageText(chatId, messageId,
-            `${cq.message.text || ''}\n\n🏁 Tayyor — ${displayName(from)}`, null);
+            `${cq.message.text || ''}\n\n✅ Tayyor — ${displayName(from)}`, null);
         }
         syncGroupMessagesForOrder(owner, order, { skipKitchenTextFinalize: isKitchen });
         notifyDeliveryGroupOrderReady(owner, order);
         if (order.customerId) {
           const readyMsg = order.orderType === 'dostavka'
-            ? '🏁 Buyurtmangiz tayyor, kuryer yo\'lda!'
-            : '🏁 Buyurtmangiz tayyor!';
+            ? '✅ Buyurtmangiz tayyor, kuryer yo\'lda!'
+            : '✅ Buyurtmangiz tayyor!';
           await sendMessage(order.customerId, readyMsg);
         }
 
@@ -3804,7 +3808,7 @@ async function handleTelegramUpdate(update) {
             sendMessage(targetId, readyText);
           }
         }
-        await answerCallbackQuery(cq.id, 'Tayyor deb belgilandi 🏁');
+        await answerCallbackQuery(cq.id, 'Tayyor deb belgilandi ✅');
         return;
       }
     }
@@ -3834,7 +3838,7 @@ async function handleTelegramUpdate(update) {
 
       if (chatId && messageId) {
         await editMessageText(chatId, messageId,
-          `${cq.message.text || ''}\n\n🏁 Tayyor — ${displayName(from)}`, null);
+          `${cq.message.text || ''}\n\n✅ Tayyor — ${displayName(from)}`, null);
       }
 
       {
@@ -3848,7 +3852,7 @@ async function handleTelegramUpdate(update) {
           sendMessage(targetId, readyText);
         }
       }
-      await answerCallbackQuery(cq.id, 'Tayyor deb belgilandi 🏁');
+      await answerCallbackQuery(cq.id, 'Tayyor deb belgilandi ✅');
       return;
     }
 
@@ -7749,7 +7753,7 @@ function handleRequest(req, res) {
           const addText = `➕ <b>Qo'shimcha buyurtma</b> (Buyurtma ${orderLabel})\n${addItemsText}`;
           sendMessage(addGroups.kitchenGroupId, addText, {
             inline_keyboard: [[
-              { text: '🏁 Tayyor', callback_data: `kgaddready:${ctx.owner.id}:${order.id}:${addition.id}` }
+              { text: '✅ Tayyor', callback_data: `kgaddready:${ctx.owner.id}:${order.id}:${addition.id}` }
             ]]
           }, addGroups.kitchenGroupThreadId).then(result => {
             if (result && result.ok && result.result && result.result.message_id) {
