@@ -2136,6 +2136,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     let pendingBrandColor = isValidHexColor(p.brandColor) ? p.brandColor : DEFAULT_BRAND_COLOR;
     let pendingLogo = p.logoUrl || '';
     let pendingBannerImg = '';
+    let pendingFridayBannerImg = '';
     setAppHeader(existing.logoUrl, existing.name, 'Egasi');
     const accSections = [
       {
@@ -2218,6 +2219,25 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <div class="kartochka">
             <h2>Bannerlar ro'yxati</h2>
             <div class="owner-list" id="bannerList"><div class="bosh">Yuklanmoqda...</div></div>
+          </div>
+        `
+      },
+      {
+        key: 'fridayBanner', icon: 'calendar', title: 'Juma banneri',
+        hint: "Faqat har juma kuni chiqadigan alohida banner",
+        body: `
+          <div class="kartochka">
+            <h2>Juma banneri</h2>
+            <div class="bosh">Bu banner yuqoridagi "Reklama bannerlari" bo'limiga umuman aralashmaydi — mustaqil ishlaydi. Bu yerga qo'ygan rasm mijozlar ekraniga <b>faqat har juma kuni</b> avtomatik chiqadi, boshqa kunlari o'zi yashirinadi.</div>
+            ${logoPickerHtml('fridayBannerImg', '')}
+            <input type="text" id="fridayBannerTitleInput" placeholder="Sarlavha (ixtiyoriy)" style="margin-top:10px;">
+            <input type="text" id="fridayBannerLinkInput" placeholder="Havola (ixtiyoriy, https://...)">
+            <button class="btn" id="saveFridayBannerBtn" style="margin-top:8px;">Juma bannerini saqlash</button>
+            <div class="xabar" id="fridayBannerMsg"></div>
+          </div>
+          <div class="kartochka">
+            <h2>Joriy holat</h2>
+            <div class="owner-list" id="fridayBannerStatus"><div class="bosh">Yuklanmoqda...</div></div>
           </div>
         `
       },
@@ -2374,6 +2394,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
     attachLogoPickerHandlers('pLogo', (val) => { pendingLogo = val; });
     attachLogoPickerHandlers('bannerImg', (val) => { pendingBannerImg = val; });
+    attachLogoPickerHandlers('fridayBannerImg', (val) => { pendingFridayBannerImg = val; });
 
     document.getElementById('cancelProfileBtn').addEventListener('click', () => {
       applyBrandColor(p.brandColor);
@@ -2543,6 +2564,50 @@ const tg = window.Telegram && window.Telegram.WebApp;
       }
     });
 
+    document.getElementById('saveFridayBannerBtn').addEventListener('click', async () => {
+      const title = document.getElementById('fridayBannerTitleInput').value.trim();
+      const link = document.getElementById('fridayBannerLinkInput').value.trim();
+      const msgEl = document.getElementById('fridayBannerMsg');
+      if (!pendingFridayBannerImg) {
+        msgEl.textContent = 'Juma banneri uchun rasm tanlang.';
+        msgEl.className = 'xabar err';
+        return;
+      }
+      msgEl.textContent = 'Saqlanmoqda...';
+      msgEl.className = 'xabar';
+      const res = await apiPost('/api/friday-banner-save', { initData, imageUrl: pendingFridayBannerImg, title, link });
+      if (res.ok) {
+        msgEl.textContent = 'Juma banneri saqlandi.';
+        msgEl.className = 'xabar ok';
+        pendingFridayBannerImg = '';
+        document.getElementById('fridayBannerTitleInput').value = '';
+        document.getElementById('fridayBannerLinkInput').value = '';
+        const preview = document.getElementById('fridayBannerImgPreview');
+        if (preview) preview.outerHTML = `<div id="fridayBannerImgPreview" class="logo-picker-preview logo-picker-preview-empty">${icon('image', 'icon-md')}</div>`;
+        const removeBtn = document.getElementById('fridayBannerImgRemoveBtn');
+        if (removeBtn) removeBtn.remove();
+        loadFridayBannerAndRender();
+      } else {
+        handleFeatureBlocked(res);
+        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
+        msgEl.className = 'xabar err';
+      }
+    });
+
+    document.getElementById('fridayBannerStatus').addEventListener('click', async (e) => {
+      const toggle = e.target.hasAttribute('data-toggle-friday-banner');
+      const remove = e.target.hasAttribute('data-remove-friday-banner');
+      if (toggle) {
+        e.target.disabled = true;
+        await apiPost('/api/friday-banner-toggle', { initData });
+        loadFridayBannerAndRender();
+      } else if (remove) {
+        e.target.disabled = true;
+        await apiPost('/api/friday-banner-remove', { initData });
+        loadFridayBannerAndRender();
+      }
+    });
+
     document.getElementById('saveBonusBtn').addEventListener('click', async () => {
       const enabled = document.getElementById('bonusEnabledInput').checked;
       const earnPercent = document.getElementById('bonusPercentInput').value.trim();
@@ -2597,6 +2662,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     loadCategoriesAndRender();
     loadPromoAndRender();
     loadBannerAndRender();
+    loadFridayBannerAndRender();
     loadBonusSettingsAndRender();
     loadDeliveryGroupStatus();
     loadKitchenGroupStatus();
@@ -3971,6 +4037,33 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const res = await apiPost('/api/banner-list', { initData });
     if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, loadBannerAndRender); return; }
     listEl.innerHTML = bannerListHtml(res.ok ? res.banners : []);
+  }
+
+  function fridayBannerStatusHtml(banner) {
+    if (!banner) return `<div class="bosh">Hali juma banneri qo'shilmagan.</div>`;
+    return `
+      <div class="owner-item" style="align-items:flex-start;">
+        <img src="${escapeHtml(banner.imageUrl)}" alt="" style="width:56px; height:56px; border-radius:10px; object-fit:cover; flex-shrink:0; margin-right:10px;" onerror="this.style.visibility='hidden'">
+        <div style="flex:1; min-width:0;">
+          <div class="owner-id">${escapeHtml(banner.title || "(sarlavhasiz)")}</div>
+          ${banner.link ? `<div class="owner-username">${escapeHtml(banner.link)}</div>` : ''}
+          <div class="owner-username">🔁 Har juma</div>
+        </div>
+        <div class="owner-actions">
+          <span class="badge ${banner.active !== false ? 'paid' : 'unpaid'}">${banner.active !== false ? 'Faol' : 'Nofaol'}</span>
+          <button data-toggle-friday-banner>${banner.active !== false ? "To'xtatish" : 'Yoqish'}</button>
+          <button data-remove-friday-banner>O'chirish</button>
+        </div>
+      </div>
+    `;
+  }
+
+  async function loadFridayBannerAndRender() {
+    const listEl = document.getElementById('fridayBannerStatus');
+    if (!listEl) return;
+    const res = await apiPost('/api/friday-banner-get', { initData });
+    if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, loadFridayBannerAndRender); return; }
+    listEl.innerHTML = fridayBannerStatusHtml(res.ok ? res.banner : null);
   }
 
   async function loadBonusSettingsAndRender() {
