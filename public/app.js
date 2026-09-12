@@ -3292,6 +3292,16 @@ const tg = window.Telegram && window.Telegram.WebApp;
       yordam: () => renderSupportInboxScreen(profile, goBack),
       aiTavsiyalar: () => renderAiScreen(profile, goBack),
       bildirishnomalar: () => renderNotificationsScreen(profile, goBack),
+      jumaBanner: () => {
+        renderProfileForm(profile);
+        setTimeout(() => {
+          const item = document.querySelector('.acc-item[data-acc-key="fridayBanner"]');
+          if (item) {
+            item.classList.add('open');
+            item.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
+        }, 0);
+      },
       profil: () => renderOwnerProfileScreen(profile, goBack),
       tolovKartasi: () => renderOwnerPaymentCardScreen(goBack),
       adminChat: () => openOwnerAdminSupportChat(),
@@ -3322,6 +3332,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     { key: 'yordam', icon: 'message-circle', label: "Yordam so'rovlari" },
     { key: 'aiTavsiyalar', icon: 'ai', label: 'AI Tavsiyalar' },
     { key: 'bildirishnomalar', icon: 'bell', label: 'Bildirishnomalar' },
+    { key: 'jumaBanner', icon: 'calendar', label: 'Juma banneri' },
     { key: 'profil', icon: 'user', label: 'Profil' },
     { key: 'tolovKartasi', icon: 'card', label: "To'lov kartasi" },
     { key: 'adminChat', icon: 'send', label: "Admin bilan bog'lanish" },
