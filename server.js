@@ -1552,6 +1552,44 @@ function applyPromoDiscount(owner, promoId, subtotal) {
   return { promo, discountAmount };
 }
 
+// Har juma kuni (Toshkent vaqti bo'yicha) avtomatik ishlaydigan "4+1"
+// aksiyasi: ichimliklardan tashqari BARCHA mahsulotlarga tegishli — bir xil
+// mahsulotdan (bir xil taom + bir xil narx varianti) har 5 tasi uchun 1 tasi
+// bepul bo'ladi (4 tasi pullanadi). Owner qo'lda tanlaydigan oddiy
+// foizli promo (promoId) bilan bir vaqtda ham ishlashi mumkin — ikkalasi
+// ham subtotal'dan ayriladi. Ichimlik ekanligi mahsulot kategoriyasi
+// nomida "ichim" so'zi borligiga qarab aniqlanadi (masalan "Ichimliklar").
+function isDrinkCategoryName(category) {
+  return !!category && /ichim/i.test(String(category));
+}
+
+function isTashkentFridayNow() {
+  return kitchenTashkentDate().getUTCDay() === 5;
+}
+
+function computeBuy4Get1FreePromo(orderItems) {
+  if (!isTashkentFridayNow()) return { discountAmount: 0, noteHtml: null };
+  const groups = new Map();
+  (orderItems || []).forEach(it => {
+    if (isDrinkCategoryName(it.category)) return;
+    if (!it.qty || !it.price) return;
+    const key = `${it.isCombo ? 'combo:' : 'item:'}${it.id}:${it.priceId || ''}`;
+    const g = groups.get(key);
+    if (g) { g.qty += it.qty; } else { groups.set(key, { qty: it.qty, price: it.price, name: it.name }); }
+  });
+  let discountAmount = 0;
+  const freeLines = [];
+  groups.forEach(g => {
+    const freeUnits = Math.floor(g.qty / 5);
+    if (freeUnits > 0) {
+      discountAmount += freeUnits * g.price;
+      freeLines.push(`${escapeHtmlServer(g.name)} x${freeUnits} bepul`);
+    }
+  });
+  if (!discountAmount) return { discountAmount: 0, noteHtml: null };
+  return { discountAmount, noteHtml: `🎁 <b>4+1 aksiya (juma)</b>: ${freeLines.join(', ')}` };
+}
+
 function logStaffAction(owner, entry) {
   if (!owner.staffActionLog) owner.staffActionLog = [];
   owner.staffActionLog.unshift(Object.assign({
@@ -1833,6 +1871,7 @@ function kitchenGroupBaseText(order, creatorLabel) {
   const itemsText = orderItemsTextWithPrices(order);
   const typeLabel = ORDER_TYPES[order.orderType] || order.orderType;
   const commentLine = order.comment ? `\n💬 Izoh: ${escapeHtmlServer(order.comment)}` : '';
+  const autoPromoLine = order.autoPromoNote ? `\n${order.autoPromoNote}` : '';
   const mapsLink = locationMapsLink(order.location);
   // Alohida dostavka guruhi endi ishlatilmaydi — shuning uchun dostavka
   // buyurtmalari uchun kerak bo'lgan barcha ma'lumotlar (mijoz, manzil,
@@ -1843,7 +1882,7 @@ function kitchenGroupBaseText(order, creatorLabel) {
     order.extraPhone ? `📞 Qo'shimcha tel: ${escapeHtmlServer(order.extraPhone)}` : null,
   ].filter(Boolean).join('\n');
   const headerEmoji = order.orderType === 'dostavka' ? '🚚' : '👨‍🍳';
-  return `${headerEmoji} <b>Yangi buyurtma</b> (${typeLabel})${creatorLabel ? '\n' + creatorLabel : ''}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm\nTo'lov: ${PAYMENT_TYPES[order.paymentType] || order.paymentType}${commentLine}` +
+  return `${headerEmoji} <b>Yangi buyurtma</b> (${typeLabel})${creatorLabel ? '\n' + creatorLabel : ''}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm\nTo'lov: ${PAYMENT_TYPES[order.paymentType] || order.paymentType}${commentLine}${autoPromoLine}` +
     (addressLines ? `\n\n${addressLines}` : '');
 }
 
@@ -7090,7 +7129,9 @@ function handleRequest(req, res) {
       }
       const subtotal = orderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
 
-      const { promo, discountAmount } = applyPromoDiscount(owner, promoId, subtotal);
+      const { promo, discountAmount: manualDiscountAmount } = applyPromoDiscount(owner, promoId, subtotal);
+      const buy4get1 = computeBuy4Get1FreePromo(orderItems);
+      const discountAmount = manualDiscountAmount + buy4get1.discountAmount;
       let total = Math.max(0, subtotal - discountAmount);
 
       const customer = findOrCreateCustomer(owner, userId, check.user);
@@ -7184,6 +7225,7 @@ function handleRequest(req, res) {
         promoId: promo ? promo.id : null,
         promoTitle: promo ? promo.title : null,
         discountAmount,
+        autoPromoNote: buy4get1.noteHtml,
         pointsUsed,
         pointsEarned,
         total,
@@ -7226,8 +7268,9 @@ function handleRequest(req, res) {
         const itemsText = orderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
         const commentLine = order.comment ? `\n💬 Izoh: ${escapeHtmlServer(order.comment)}` : '';
         const branchLine = orderBranch ? `\n🏬 Filial: ${escapeHtmlServer(orderBranch.name)}` : '';
+        const autoPromoLine = order.autoPromoNote ? `\n${order.autoPromoNote}` : '';
         const notifyText = `🆕 <b>Yangi mijoz buyurtmasi</b> (${ORDER_TYPES[orderType]})\n` +
-          `${orderCustomerContactLabel(order)}\n${itemsText}\n\nJami: ${fmtNum(total)} so'm\nTo'lov: ${PAYMENT_TYPES[paymentType]}${commentLine}${branchLine}`;
+          `${orderCustomerContactLabel(order)}\n${itemsText}\n\nJami: ${fmtNum(total)} so'm\nTo'lov: ${PAYMENT_TYPES[paymentType]}${commentLine}${branchLine}${autoPromoLine}`;
         const notifyTargets = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'oshpaz') || staffHasRole(s, 'kassir')).map(s => s.id))];
         await notifyStaffList(owner, notifyTargets, notifyText, `Buyurtma #${order.id} (mijoz)`, 'newOrder');
         notifyKitchenGroup(owner, order, orderCustomerContactLabel(order));
@@ -7434,7 +7477,9 @@ function handleRequest(req, res) {
         if (!priceOpt.ok) return sendJSON(res, 200, { ok: false, reason: priceOpt.reason });
         orderItems.push({ id: menuItem.id, name: priceOpt.label ? `${menuItem.name} (${priceOpt.label})` : menuItem.name, price: priceOpt.price, priceId: priceOpt.priceId, qty, directStockId: menuItem.directStockId || null, category: menuItem.category || null });
       }
-      const total = orderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
+      const subtotal = orderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
+      const buy4get1 = computeBuy4Get1FreePromo(orderItems);
+      const total = Math.max(0, subtotal - buy4get1.discountAmount);
 
       if (!ctx.owner.stock) ctx.owner.stock = [];
 
@@ -7501,6 +7546,9 @@ function handleRequest(req, res) {
         id: crypto.randomBytes(4).toString('hex'),
         orderNumber: getNextOrderNumber(ctx.owner),
         items: orderItems,
+        subtotal,
+        discountAmount: buy4get1.discountAmount,
+        autoPromoNote: buy4get1.noteHtml,
         total,
         orderType,
         paymentType,
@@ -7517,8 +7565,9 @@ function handleRequest(req, res) {
 
       const itemsText = orderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
       const commentLine = commentFinal ? `\n📝 Izoh: ${escapeHtmlServer(commentFinal)}` : '';
+      const autoPromoLine = order.autoPromoNote ? `\n${order.autoPromoNote}` : '';
       const notifyText = `🆕 <b>Yangi buyurtma</b> (${ORDER_TYPES[orderType]})\n` +
-        `${itemsText}\n\nJami: ${fmtNum(total)} so'm\nTo'lov: ${PAYMENT_TYPES[paymentType]}${commentLine}`;
+        `${itemsText}\n\nJami: ${fmtNum(total)} so'm\nTo'lov: ${PAYMENT_TYPES[paymentType]}${commentLine}${autoPromoLine}`;
       const notifyTargets = [ctx.owner.id, ...((ctx.owner.staff || []).filter(s => staffHasRole(s, 'oshpaz')).map(s => s.id))];
       await notifyStaffList(ctx.owner, notifyTargets, notifyText, `Buyurtma #${order.id} (kassir)`, 'newOrder');
       notifyKitchenGroup(ctx.owner, order, `Yaratdi: ${escapeHtmlServer(displayName(check.user))} (kassir)`);
@@ -7599,7 +7648,9 @@ function handleRequest(req, res) {
         if (!priceOpt.ok) return sendJSON(res, 200, { ok: false, reason: priceOpt.reason });
         newOrderItems.push({ id: menuItem.id, name: priceOpt.label ? `${menuItem.name} (${priceOpt.label})` : menuItem.name, price: priceOpt.price, priceId: priceOpt.priceId, qty, directStockId: menuItem.directStockId || null, category: menuItem.category || null });
       }
-      const newTotal = newOrderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
+      const newSubtotal = newOrderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
+      const newBuy4get1 = computeBuy4Get1FreePromo(newOrderItems);
+      const newTotal = Math.max(0, newSubtotal - newBuy4get1.discountAmount);
 
       // Buyurtma allaqachon "Tayyor" bo'lgan bo'lsa-yu, kassir shu tahrirlashda
       // yangi mahsulot qo'shsa (yoki miqdorini oshirsa) — o'sha ORTIQCHA qismni
@@ -7711,6 +7762,9 @@ function handleRequest(req, res) {
 
       const oldItemsSummary = (order.items || []).map(it => `${it.name} x${it.qty}`).join(', ') || '—';
       order.items = newOrderItems;
+      order.subtotal = newSubtotal;
+      order.discountAmount = newBuy4get1.discountAmount;
+      order.autoPromoNote = newBuy4get1.noteHtml;
       order.total = newTotal;
       order.orderType = finalOrderType;
       order.paymentType = finalPaymentType;
@@ -7725,7 +7779,8 @@ function handleRequest(req, res) {
 
       const itemsText = newOrderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
       const editCommentLine = order.comment ? `\n📝 Izoh: ${escapeHtmlServer(order.comment)}` : '';
-      const notifyText = `✏️ <b>Buyurtma tahrirlandi</b> (${ORDER_TYPES[finalOrderType]})\n${itemsText}\n\nJami: ${fmtNum(newTotal)} so'm\nTo'lov: ${PAYMENT_TYPES[finalPaymentType]}${editCommentLine}`;
+      const editAutoPromoLine = order.autoPromoNote ? `\n${order.autoPromoNote}` : '';
+      const notifyText = `✏️ <b>Buyurtma tahrirlandi</b> (${ORDER_TYPES[finalOrderType]})\n${itemsText}\n\nJami: ${fmtNum(newTotal)} so'm\nTo'lov: ${PAYMENT_TYPES[finalPaymentType]}${editCommentLine}${editAutoPromoLine}`;
       const notifyTargets = [ctx.owner.id, ...((ctx.owner.staff || []).filter(s => staffHasRole(s, 'oshpaz')).map(s => s.id))];
       await notifyStaffList(ctx.owner, notifyTargets, notifyText, `Buyurtma #${order.id} tahrirlandi`, 'newOrder');
       saveOwners(owners);
