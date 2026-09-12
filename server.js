@@ -559,6 +559,71 @@ setInterval(() => {
   if (remaining.length !== reminders.length) saveKitchenReminders(remaining);
 }, 30 * 1000);
 
+// Smena (ish smenasi) boshlash/tugatishni avtomatik ravishda oshxonaning
+// ish vaqtiga to'g'irlab turadi: ish vaqti boshlanganda (oshxona ochilganda)
+// egasi va tegishli xodimlarning (kassir/oshpaz/egasi-hamkor) smenasi
+// avtomatik boshlanadi, ish vaqti tugaganda (oshxona yopilganda) avtomatik
+// tugatiladi va shiftHistory'ga yoziladi. Xodim/egasi istalgan payt
+// qo'lda ham "Tugatish"/"Boshlash" tugmasini bosib, keyingi chegaragacha
+// buni o'zgartirishi mumkin — bu faqat ochilish/yopilish lahzasida ishlaydi.
+const kitchenOpenStateByOwner = new Map();
+
+function autoSyncShiftsForOwner(owner) {
+  const hours = getOwnerWorkHours(owner);
+  const open = isKitchenOpenNow(hours);
+  const hasPrev = kitchenOpenStateByOwner.has(owner.id);
+  const prevOpen = hasPrev ? kitchenOpenStateByOwner.get(owner.id) : open;
+  kitchenOpenStateByOwner.set(owner.id, open);
+  // Server yangi ishga tushganda holatni shunchaki eslab qoladi, lekin
+  // ommaviy smena boshlash/tugatishni ishga tushirmaydi (faqat haqiqiy
+  // ochilish/yopilish lahzasida ishlaydi).
+  if (!hasPrev || open === prevOpen) return false;
+
+  const now = new Date().toISOString();
+  const targets = [owner, ...((owner.staff || []).filter(s =>
+    staffHasRole(s, 'kassir') || staffHasRole(s, 'oshpaz') || staffHasRole(s, 'egasi')
+  ))];
+  let changed = false;
+
+  targets.forEach(target => {
+    const isOwnerTarget = target === owner;
+    const role = isOwnerTarget ? 'egasi' : (normalizeStaffRoles(target)[0] || 'xodim');
+    if (open) {
+      if (!target.shiftActive) {
+        target.shiftActive = true;
+        target.shiftStartedAt = now;
+        logStaffAction(owner, { userId: target.id, role, action: 'smena_boshladi', note: 'Ish vaqti boshlanishi bilan smena avtomatik boshlandi' });
+        changed = true;
+      }
+    } else if (target.shiftActive) {
+      if (!owner.shiftHistory) owner.shiftHistory = [];
+      owner.shiftHistory.unshift({
+        id: crypto.randomBytes(4).toString('hex'),
+        userId: target.id,
+        role,
+        startedAt: target.shiftStartedAt || now,
+        endedAt: now
+      });
+      if (owner.shiftHistory.length > 1000) owner.shiftHistory.length = 1000;
+      target.shiftActive = false;
+      target.shiftStartedAt = null;
+      logStaffAction(owner, { userId: target.id, role, action: 'smena_tugatdi', note: 'Ish vaqti tugashi bilan smena avtomatik tugatildi' });
+      changed = true;
+    }
+  });
+
+  return changed;
+}
+
+setInterval(() => {
+  const owners = loadOwners();
+  let anyChanged = false;
+  owners.forEach(owner => {
+    if (autoSyncShiftsForOwner(owner)) anyChanged = true;
+  });
+  if (anyChanged) saveOwners(owners);
+}, 60 * 1000);
+
 function loadAdminSupportMessages() { return loadJSONArray(ADMIN_SUPPORT_FILE); }
 function saveAdminSupportMessages(msgs) { saveJSONArray(ADMIN_SUPPORT_FILE, msgs); }
 
