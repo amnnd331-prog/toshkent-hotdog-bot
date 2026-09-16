@@ -1,5 +1,17 @@
 # Faqat admin uchun Telegram Mini App — sozlash yo'riqnomasi
 
+## Dasturchilar uchun: kod tuzilishi (v8)
+- **API endpointlar** `server.js` da `route(url, fn)` / `authed(url, fn)` orqali ro'yxatga olinadi.
+  `authed` Telegram `initData` imzosini markazda tekshiradi va handlerga `{ user, userId }` beradi —
+  har bir endpointda qayta tekshirish shart emas.
+- Javob yordamchilari: `sendOk(res, data)`, `sendFail(res, sabab)`, `denyAccess(...)`, `sendFeatureBlocked(res, id)`.
+- Handler ichidagi har qanday xato ushlanadi va 500 javob qaytadi — server qulamaydi.
+- Frontend'da `apiPost(url, body)` `initData` ni o'zi qo'shadi; forma xabarlari uchun `setMsg(el, matn, 'ok'|'err')`,
+  modal uchun `openOverlay(html)` ishlatiladi.
+- Dizayn tokenlari `public/style.css` boshida: `--brand-*` (egasi tanlagan rang), `--royal-*` (shampan-oltin aksent),
+  `--shadow-*` / `--bevel-hi` (3D chuqurlik). Brend rangi o'zgarsa gradientlar ham avtomatik moslashadi.
+- `app.js`/`style.css` uzoq muddat keshlanadi: ularni o'zgartirsangiz `public/index.html` dagi `?v=` raqamini oshiring.
+
 ## 1. BotFather orqali bot yaratish
 1. Telegramda **@BotFather** ni oching.
 2. `/newbot` yuboring, keyin bot nomi va username kiriting (username `bot` bilan tugashi kerak, masalan `MeningAdminBotim_bot`).
