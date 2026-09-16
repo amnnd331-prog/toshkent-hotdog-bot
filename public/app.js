@@ -26,8 +26,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
     } else {
       document.documentElement.removeAttribute('data-theme');
     }
+    // CSS'dagi 3D yorug'lik/soyalar joriy sxemaga moslashishi uchun
+    document.documentElement.setAttribute('data-scheme', currentActiveTheme());
   }
   applyStoredTheme();
+  if (tg && typeof tg.onEvent === 'function') tg.onEvent('themeChanged', applyStoredTheme);
   function toggleTheme() {
     const next = currentActiveTheme() === 'dark' ? 'light' : 'dark';
     try { localStorage.setItem(THEME_STORAGE_KEY, next); } catch (e) {}
@@ -82,7 +85,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
     '/api/stock-list', '/api/stock-add', '/api/stock-remove', '/api/stock-movements', '/api/stock-writeoff',
     '/api/branch-list'
   ];
+  // Har bir so'rovga joriy initData (yoki owner sessiya tokeni) avtomatik qo'shiladi.
   async function apiPost(url, body) {
+    body = Object.assign({ initData }, body);
     if (adminTargetOwnerId && ADMIN_TARGET_OWNER_ENDPOINTS.includes(url) && body && typeof body === 'object' && body.targetOwnerId === undefined) {
       body = Object.assign({}, body, { targetOwnerId: adminTargetOwnerId });
     }
@@ -153,17 +158,14 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   function showFeatureBlockedModal(message) {
-    const overlay = document.createElement('div');
-    overlay.className = 'overlay';
-    overlay.innerHTML = `
+    const overlay = openOverlay(`
       <div class="modal feature-blocked-modal" style="max-width:340px;">
         <div class="feature-blocked-icon-wrap">${icon('lock')}</div>
         <div class="feature-blocked-title">Bu funksiya yopilgan</div>
         <div class="feature-blocked-desc">${escapeHtml(message || "Bu funksiya joriy tarifingizga kiritilmagan.")}</div>
         <div class="btn-row"><button class="btn" id="featureBlockedOkBtn">Tushunarli</button></div>
       </div>
-    `;
-    document.body.appendChild(overlay);
+    `);
     document.getElementById('featureBlockedOkBtn').onclick = () => overlay.remove();
   }
 
@@ -199,6 +201,26 @@ const tg = window.Telegram && window.Telegram.WebApp;
   function clearAppHeader() {
     appHeaderEl.classList.add('hidden');
     appHeaderEl.innerHTML = '';
+  }
+
+  // Modal oynani (overlay) yaratib, sahifaga qo'shadi va elementni qaytaradi.
+  function openOverlay(html) {
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay';
+    overlay.innerHTML = html;
+    document.body.appendChild(overlay);
+    return overlay;
+  }
+
+  // Forma ostidagi holat xabari. kind: '' (jarayon) | 'ok' | 'err'.
+  // Natija bo'lsa Telegram tebranishi (haptic) ham beriladi.
+  function setMsg(el, text, kind) {
+    if (!el) return;
+    el.textContent = text;
+    el.className = kind ? 'xabar ' + kind : 'xabar';
+    if (kind && tg && tg.HapticFeedback) {
+      try { tg.HapticFeedback.notificationOccurred(kind === 'ok' ? 'success' : 'error'); } catch (e) {}
+    }
   }
 
   function escapeHtml(str) {
@@ -548,7 +570,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function refreshAdminChatsBadge() {
     const btn = document.querySelector('.admin-menu-grid [data-admin-menu-key="yordam"]');
     if (!btn) { if (adminChatsUnreadPollTimer) { clearInterval(adminChatsUnreadPollTimer); adminChatsUnreadPollTimer = null; } return; }
-    const res = await apiPost('/api/admin-support-inbox', { initData });
+    const res = await apiPost('/api/admin-support-inbox');
     const stillThere = document.querySelector('.admin-menu-grid [data-admin-menu-key="yordam"]');
     if (!stillThere) { if (adminChatsUnreadPollTimer) { clearInterval(adminChatsUnreadPollTimer); adminChatsUnreadPollTimer = null; } return; }
     if (!res.ok) return;
@@ -693,7 +715,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   async function reloadAdminOwnersScreen(goBack) {
-    const res = await apiPost('/api/owners', { initData });
+    const res = await apiPost('/api/owners');
     if (res.networkError) { renderNetworkErrorScreen(res.reason, () => reloadAdminOwnersScreen(goBack)); return; }
     renderAdminOwnersScreen(res.ok ? res.owners : [], goBack);
   }
@@ -701,7 +723,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function renderAdminOwnersScreen(owners, goBack) {
     setAppHeader(null, 'Pulsar', 'Admin');
 
-    const tariffRes = await apiPost('/api/tariff-list', { initData });
+    const tariffRes = await apiPost('/api/tariff-list');
     if (tariffRes.ok) tariffCacheForOwners = tariffRes.tariffs;
     const totalCount = owners.length;
 
@@ -756,7 +778,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const removeBtn = e.target.closest('[data-remove-id]');
       if (removeBtn) {
         removeBtn.disabled = true;
-        await apiPost('/api/remove-owner', { initData, id: removeBtn.getAttribute('data-remove-id') });
+        await apiPost('/api/remove-owner', { id: removeBtn.getAttribute('data-remove-id') });
         reloadAdminOwnersScreen(goBack);
         return;
       }
@@ -796,7 +818,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const toggleEl = e.target.closest('[data-toggle-paid]');
       if (toggleEl) {
         const current = toggleEl.getAttribute('data-paid') === '1';
-        await apiPost('/api/update-owner-billing', { initData, id: toggleEl.getAttribute('data-toggle-paid'), paid: !current });
+        await apiPost('/api/update-owner-billing', { id: toggleEl.getAttribute('data-toggle-paid'), paid: !current });
         reloadAdminOwnersScreen(goBack);
         return;
       }
@@ -872,7 +894,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           alert('Narx musbat son bo\'lishi kerak.');
           return;
         }
-        await apiPost('/api/update-owner-billing', { initData, id: saveId, price: val || 0 });
+        await apiPost('/api/update-owner-billing', { id: saveId, price: val || 0 });
         reloadAdminOwnersScreen(goBack);
         return;
       }
@@ -883,7 +905,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         const passwordInput = document.querySelector(`input[data-password-field="${saveCredId}"]`);
         const loginVal = loginInput ? loginInput.value.trim() : '';
         const passwordVal = passwordInput ? passwordInput.value : '';
-        const res = await apiPost('/api/set-owner-credentials', { initData, id: saveCredId, login: loginVal, password: passwordVal });
+        const res = await apiPost('/api/set-owner-credentials', { id: saveCredId, login: loginVal, password: passwordVal });
         if (!res.ok) {
           alert(res.reason || 'Xatolik yuz berdi.');
           return;
@@ -894,7 +916,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
       const removeCredId = e.target.getAttribute('data-remove-credentials');
       if (removeCredId) {
-        await apiPost('/api/remove-owner-credentials', { initData, id: removeCredId });
+        await apiPost('/api/remove-owner-credentials', { id: removeCredId });
         reloadAdminOwnersScreen(goBack);
         return;
       }
@@ -903,7 +925,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       if (saveTariffId) {
         const select = document.querySelector(`select[data-tariff-field="${saveTariffId}"]`);
         const val = select ? select.value : '';
-        const res = await apiPost('/api/owner-set-tariff', { initData, id: saveTariffId, tariffId: val || null });
+        const res = await apiPost('/api/owner-set-tariff', { id: saveTariffId, tariffId: val || null });
         if (!res.ok) {
           alert(res.reason || 'Xatolik yuz berdi.');
           return;
@@ -916,7 +938,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       if (saveExpiryId) {
         const actionSelect = document.querySelector(`select[data-expiry-action="${saveExpiryId}"]`);
         const action = actionSelect ? actionSelect.value : '';
-        const body = { initData, id: saveExpiryId, action };
+        const body = { id: saveExpiryId, action };
         if (action === 'extend') {
           const daysInput = document.querySelector(`input[data-expiry-days="${saveExpiryId}"]`);
           const days = daysInput ? daysInput.value.trim() : '';
@@ -965,7 +987,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadPendingPaymentsList(goBack) {
     const listEl = document.getElementById('pendingPayList');
     if (!listEl) return;
-    const res = await apiPost('/api/admin-pending-subscription-payments', { initData });
+    const res = await apiPost('/api/admin-pending-subscription-payments');
     if (!res.ok) {
       listEl.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
       return;
@@ -1004,7 +1026,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
   async function decideAdminPendingPayment(ownerId, action, goBack) {
     if (action === 'reject' && !confirm("Bu to'lov so'rovini rad etasizmi?")) return;
-    const res = await apiPost('/api/admin-subscription-decide', { initData, ownerId, action });
+    const res = await apiPost('/api/admin-subscription-decide', { ownerId, action });
     if (!res.ok) {
       alert(res.reason || 'Xatolik yuz berdi.');
       return;
@@ -1058,12 +1080,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
     document.getElementById('createInviteBtn').addEventListener('click', async () => {
       const msgEl = document.getElementById('inviteMsg');
       const wrap = document.getElementById('inviteBoxWrap');
-      msgEl.textContent = 'Yaratilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/create-invite', { initData });
+      setMsg(msgEl, 'Yaratilmoqda...');
+      const res = await apiPost('/api/create-invite');
       if (!res.ok) {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
         wrap.innerHTML = '';
         return;
       }
@@ -1076,11 +1096,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
       `;
       document.getElementById('copyInviteBtn').addEventListener('click', () => {
         navigator.clipboard.writeText(res.link).then(() => {
-          msgEl.textContent = 'Havola nusxalandi.';
-          msgEl.className = 'xabar ok';
+          setMsg(msgEl, 'Havola nusxalandi.', 'ok');
         }).catch(() => {
-          msgEl.textContent = 'Nusxalab bo\'lmadi, havolani qo\'lda ko\'chiring.';
-          msgEl.className = 'xabar err';
+          setMsg(msgEl, 'Nusxalab bo\'lmadi, havolani qo\'lda ko\'chiring.', 'err');
         });
       });
     });
@@ -1091,21 +1109,17 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const priceVal = document.getElementById('ownerPriceInput').value.trim();
       const paidVal = document.getElementById('ownerPaidInput').checked;
       const msgEl = document.getElementById('addMsg');
-      msgEl.textContent = '';
-      msgEl.className = 'xabar';
+      setMsg(msgEl, '');
       if (!val) {
-        msgEl.textContent = 'Iltimos, ID yoki username kiriting.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Iltimos, ID yoki username kiriting.', 'err');
         return;
       }
       if (daysVal && (!/^\d+$/.test(daysVal) || parseInt(daysVal, 10) <= 0)) {
-        msgEl.textContent = 'Kun soni musbat butun son bo\'lishi kerak, yoki bo\'sh qoldiring.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Kun soni musbat butun son bo\'lishi kerak, yoki bo\'sh qoldiring.', 'err');
         return;
       }
       if (priceVal && (!/^\d+$/.test(priceVal) || parseInt(priceVal, 10) < 0)) {
-        msgEl.textContent = 'Narx musbat son bo\'lishi kerak, yoki bo\'sh qoldiring.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Narx musbat son bo\'lishi kerak, yoki bo\'sh qoldiring.', 'err');
         return;
       }
       const muddat = daysVal ? `${daysVal} kunga` : 'doimiy';
@@ -1119,22 +1133,19 @@ const tg = window.Telegram && window.Telegram.WebApp;
       };
       document.getElementById('confirmOk').onclick = async () => {
         document.getElementById('confirmOverlay').classList.add('hidden');
-        msgEl.textContent = 'Qo\'shilmoqda...';
-        msgEl.className = 'xabar';
+        setMsg(msgEl, 'Qo\'shilmoqda...');
         const res = await apiPost('/api/add-owner', {
-          initData, input: val, days: daysVal || null,
+          input: val, days: daysVal || null,
           price: priceVal || null, paid: paidVal
         });
         if (res.ok) {
-          msgEl.textContent = 'Muvaffaqiyatli qo\'shildi.';
-          msgEl.className = 'xabar ok';
+          setMsg(msgEl, 'Muvaffaqiyatli qo\'shildi.', 'ok');
           document.getElementById('ownerInput').value = '';
           document.getElementById('ownerDaysInput').value = '';
           document.getElementById('ownerPriceInput').value = '';
           document.getElementById('ownerPaidInput').checked = false;
         } else {
-          msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-          msgEl.className = 'xabar err';
+          setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
         }
       };
     });
@@ -1166,8 +1177,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       fileInput.addEventListener('change', async () => {
         const file = fileInput.files && fileInput.files[0];
         if (!file) return;
-        errEl.textContent = '';
-        errEl.className = 'xabar';
+        setMsg(errEl, '');
         try {
           const dataUrl = await readImageFileAsCompressedDataUrl(file, 400, 0.75);
           setValue(dataUrl || '');
@@ -1178,8 +1188,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
             preview.outerHTML = `<img id="${idPrefix}Preview" class="logo-picker-preview" src="${dataUrl}">`;
           }
         } catch (e) {
-          errEl.textContent = e.message || "Rasmni yuklab bo'lmadi.";
-          errEl.className = 'xabar err';
+          setMsg(errEl, e.message || "Rasmni yuklab bo'lmadi.", 'err');
         }
         fileInput.value = '';
       });
@@ -1252,11 +1261,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   async function loadAndShowSystemStatus() {
-    const overlay = document.createElement('div');
-    overlay.className = 'overlay';
-    overlay.innerHTML = `<div class="modal" style="max-width:380px;"><div class="bosh">Yuklanmoqda...</div></div>`;
-    document.body.appendChild(overlay);
-    const res = await apiPost('/api/system-status', { initData });
+    const overlay = openOverlay(`<div class="modal" style="max-width:380px;"><div class="bosh">Yuklanmoqda...</div></div>`);
+    const res = await apiPost('/api/system-status');
     if (!res.ok) {
       overlay.innerHTML = `
         <div class="modal" style="max-width:380px;">
@@ -1314,15 +1320,14 @@ const tg = window.Telegram && window.Telegram.WebApp;
     document.getElementById('paySettingsBackBtn').addEventListener('click', () => onBack());
 
     const msgEl = document.getElementById('paySettingsMsg');
-    const res = await apiPost('/api/admin-payment-requisites-get', { initData });
+    const res = await apiPost('/api/admin-payment-requisites-get');
     if (res.ok) {
       document.getElementById('payCardNumberInput').value = res.requisites.cardNumber || '';
       document.getElementById('payCardHolderInput').value = res.requisites.cardHolder || '';
       document.getElementById('payClickNumberInput').value = res.requisites.clickNumber || '';
       document.getElementById('payPaymeNumberInput').value = res.requisites.paymeNumber || '';
     } else {
-      msgEl.textContent = res.reason || 'Yuklab bo\'lmadi.';
-      msgEl.className = 'xabar err';
+      setMsg(msgEl, res.reason || 'Yuklab bo\'lmadi.', 'err');
     }
 
     document.getElementById('paySettingsSaveBtn').addEventListener('click', async () => {
@@ -1330,17 +1335,14 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const cardHolder = document.getElementById('payCardHolderInput').value.trim();
       const clickNumber = document.getElementById('payClickNumberInput').value.trim();
       const paymeNumber = document.getElementById('payPaymeNumberInput').value.trim();
-      msgEl.textContent = 'Saqlanmoqda...';
-      msgEl.className = 'xabar';
+      setMsg(msgEl, 'Saqlanmoqda...');
       const saveRes = await apiPost('/api/admin-payment-requisites-set', {
-        initData, cardNumber, cardHolder, clickNumber, paymeNumber
+        cardNumber, cardHolder, clickNumber, paymeNumber
       });
       if (saveRes.ok) {
-        msgEl.textContent = 'Saqlandi.';
-        msgEl.className = 'xabar ok';
+        setMsg(msgEl, 'Saqlandi.', 'ok');
       } else {
-        msgEl.textContent = saveRes.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, saveRes.reason || 'Xatolik yuz berdi.', 'err');
       }
     });
   }
@@ -1363,7 +1365,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadBroadcastHistoryAndRender() {
     const listEl = document.getElementById('broadcastHistoryList');
     if (!listEl) return;
-    const res = await apiPost('/api/broadcast-history', { initData });
+    const res = await apiPost('/api/broadcast-history');
     if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, loadBroadcastHistoryAndRender); return; }
     if (!res.ok || !res.broadcasts.length) {
       listEl.innerHTML = `<div class="bosh">Hali e'lon yuborilmagan.</div>`;
@@ -1420,8 +1422,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         preview.src = dataUrl;
         preview.style.display = 'block';
       } catch (err) {
-        msgEl.textContent = err.message || 'Rasmni yuklab bo\'lmadi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, err.message || 'Rasmni yuklab bo\'lmadi.', 'err');
         e.target.value = '';
       }
     });
@@ -1441,8 +1442,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const buttonUrl = document.getElementById('broadcastBtnUrlInput').value.trim();
       const msgEl = document.getElementById('broadcastMsg');
       if (!text) {
-        msgEl.textContent = 'Xabar matnini kiriting.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Xabar matnini kiriting.', 'err');
         return;
       }
       const confirmWho = targetType === 'all' ? 'platformadagi BARCHA foydalanuvchilarga (mijoz, oshxona egasi va xizmatchilar)' : `${BROADCAST_TARGET_LABELS[targetType]} toifasidagi BARCHA foydalanuvchilarga`;
@@ -1450,14 +1450,12 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
       const btn = document.getElementById('broadcastSendBtn');
       btn.disabled = true;
-      msgEl.textContent = 'Yuborilmoqda... (bu bir necha soniya vaqt olishi mumkin)';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/broadcast-send', { initData, targetType, text, imageUrl, buttonText, buttonUrl });
+      setMsg(msgEl, 'Yuborilmoqda... (bu bir necha soniya vaqt olishi mumkin)');
+      const res = await apiPost('/api/broadcast-send', { targetType, text, imageUrl, buttonText, buttonUrl });
       btn.disabled = false;
       if (res.ok) {
         const r = res.result;
-        msgEl.textContent = `Yuborildi: ✅ ${r.deliveredCount} ta yetdi${r.failedCount ? `, ❌ ${r.failedCount} ta yetmadi` : ''} (jami ${r.totalTargets}).`;
-        msgEl.className = 'xabar ok';
+        setMsg(msgEl, `Yuborildi: ✅ ${r.deliveredCount} ta yetdi${r.failedCount ? `, ❌ ${r.failedCount} ta yetmadi` : ''} (jami ${r.totalTargets}).`, 'ok');
         document.getElementById('broadcastTextInput').value = '';
         document.getElementById('broadcastImageInput').value = '';
         document.getElementById('broadcastImageFileInput').value = '';
@@ -1466,8 +1464,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         document.getElementById('broadcastBtnUrlInput').value = '';
         loadBroadcastHistoryAndRender();
       } else {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
       }
     });
 
@@ -1516,7 +1513,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadTrashListAndRender(onBack) {
     const listEl = document.getElementById('trashList');
     if (!listEl) return;
-    const res = await apiPost('/api/trash-list', { initData });
+    const res = await apiPost('/api/trash-list');
     if (!res.ok) { listEl.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`; return; }
     if (!res.trash.length) { listEl.innerHTML = `<div class="bosh">Savatcha bo'sh.</div>`; return; }
     listEl.innerHTML = res.trash.map(trashRowHtml).join('');
@@ -1525,7 +1522,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       btn.addEventListener('click', async () => {
         if (!confirm("Bu do'kon egasini tiklaysizmi? Barcha ma'lumotlari qaytariladi.")) return;
         btn.disabled = true;
-        const r = await apiPost('/api/trash-restore', { initData, trashId: btn.getAttribute('data-trash-restore') });
+        const r = await apiPost('/api/trash-restore', { trashId: btn.getAttribute('data-trash-restore') });
         if (!r.ok) { alert(r.reason || 'Xatolik yuz berdi.'); btn.disabled = false; return; }
         await loadTrashListAndRender(onBack);
         await loadTrashLogAndRender();
@@ -1535,7 +1532,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       btn.addEventListener('click', async () => {
         if (!confirm("DIQQAT: bu do'kon egasi BUTUNLAY, qaytarib bo'lmaydigan tarzda o'chiriladi. Davom etasizmi?")) return;
         btn.disabled = true;
-        const r = await apiPost('/api/trash-purge-now', { initData, trashId: btn.getAttribute('data-trash-purge') });
+        const r = await apiPost('/api/trash-purge-now', { trashId: btn.getAttribute('data-trash-purge') });
         if (!r.ok) { alert(r.reason || 'Xatolik yuz berdi.'); btn.disabled = false; return; }
         await loadTrashListAndRender(onBack);
         await loadTrashLogAndRender();
@@ -1546,7 +1543,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadTrashLogAndRender() {
     const listEl = document.getElementById('trashLogList');
     if (!listEl) return;
-    const res = await apiPost('/api/trash-log', { initData });
+    const res = await apiPost('/api/trash-log');
     if (!res.ok) { listEl.innerHTML = `<div class="bosh">Yuklab bo'lmadi.</div>`; return; }
     if (!res.log.length) { listEl.innerHTML = `<div class="bosh">Hali loglar yo'q.</div>`; return; }
     const actionLabels = {
@@ -1617,18 +1614,15 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const btn = document.getElementById('backupExportBtn');
       const msgEl = document.getElementById('backupExportMsg');
       btn.disabled = true;
-      msgEl.className = 'xabar';
-      msgEl.textContent = '';
-      const res = await apiPost('/api/backup-export', { initData });
+      setMsg(msgEl, '');
+      const res = await apiPost('/api/backup-export');
       btn.disabled = false;
       if (!res.ok) {
-        msgEl.className = 'xabar err';
-        msgEl.textContent = res.reason || 'Zaxira tayyorlanmadi. Qayta urinib ko\'ring.';
+        setMsg(msgEl, res.reason || 'Zaxira tayyorlanmadi. Qayta urinib ko\'ring.', 'err');
         return;
       }
       downloadFile(res.filename, res.mime, res.content, false);
-      msgEl.className = 'xabar ok';
-      msgEl.textContent = `✅ Zaxira yuklab olindi (${Object.values(res.counts || {}).reduce((a, b) => a + b, 0)} ta yozuv).`;
+      setMsg(msgEl, `✅ Zaxira yuklab olindi (${Object.values(res.counts || {}).reduce((a, b) => a + b, 0)} ta yozuv).`, 'ok');
     });
 
     let selectedBackupContent = null;
@@ -1637,8 +1631,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const file = e.target.files && e.target.files[0];
       const previewArea = document.getElementById('backupPreviewArea');
       const msgEl = document.getElementById('backupImportMsg');
-      msgEl.className = 'xabar';
-      msgEl.textContent = '';
+      setMsg(msgEl, '');
       previewArea.innerHTML = '';
       selectedBackupContent = null;
       selectedConfirmToken = null;
@@ -1646,11 +1639,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
       previewArea.innerHTML = `<div class="bosh">Fayl tekshirilmoqda...</div>`;
       const content = await file.text();
-      const res = await apiPost('/api/backup-import-preview', { initData, content });
+      const res = await apiPost('/api/backup-import-preview', { content });
       if (!res.ok) {
         previewArea.innerHTML = '';
-        msgEl.className = 'xabar err';
-        msgEl.textContent = res.reason || 'Fayl tekshirib bo\'lmadi.';
+        setMsg(msgEl, res.reason || 'Fayl tekshirib bo\'lmadi.', 'err');
         return;
       }
 
@@ -1671,32 +1663,27 @@ const tg = window.Telegram && window.Telegram.WebApp;
       document.getElementById('backupRestoreBtn').addEventListener('click', async () => {
         const confirmText = document.getElementById('backupConfirmTextInput').value.trim();
         if (confirmText.toUpperCase() !== 'TASDIQLAYMAN') {
-          msgEl.className = 'xabar err';
-          msgEl.textContent = 'Iltimos, "TASDIQLAYMAN" so\'zini aniq kiriting.';
+          setMsg(msgEl, 'Iltimos, "TASDIQLAYMAN" so\'zini aniq kiriting.', 'err');
           return;
         }
         if (!confirm('SO\'NGGI OGOHLANTIRISH: joriy baza tanlangan zaxira bilan almashtiriladi. Davom etasizmi?')) return;
 
         const btn = document.getElementById('backupRestoreBtn');
         btn.disabled = true;
-        msgEl.className = 'xabar';
-        msgEl.textContent = 'Tiklanmoqda...';
+        setMsg(msgEl, 'Tiklanmoqda...');
         const r = await apiPost('/api/backup-import-confirm', {
-          initData,
           confirmToken: selectedConfirmToken,
           confirmText,
           content: selectedBackupContent
         });
         btn.disabled = false;
         if (!r.ok) {
-          msgEl.className = 'xabar err';
-          msgEl.textContent = r.reason || 'Tiklashda xatolik yuz berdi.';
+          setMsg(msgEl, r.reason || 'Tiklashda xatolik yuz berdi.', 'err');
           return;
         }
         previewArea.innerHTML = '';
         document.getElementById('backupFileInput').value = '';
-        msgEl.className = 'xabar ok';
-        msgEl.textContent = `✅ Baza tiklandi (${(r.applied || []).length} ta bo'lim almashtirildi). Sahifani qayta oching.`;
+        setMsg(msgEl, `✅ Baza tiklandi (${(r.applied || []).length} ta bo'lim almashtirildi). Sahifani qayta oching.`, 'ok');
       });
     });
   }
@@ -1738,25 +1725,21 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const priceStr = priceInput.value.trim();
       const maxBranchesStr = maxBranchesInput.value.trim();
       if (!name) {
-        msgEl.textContent = 'Iltimos, tarif nomini kiriting.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Iltimos, tarif nomini kiriting.', 'err');
         return;
       }
       if (priceStr && (!/^\d+$/.test(priceStr))) {
-        msgEl.textContent = 'Narx musbat butun son bo\'lishi kerak, yoki bo\'sh qoldiring.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Narx musbat butun son bo\'lishi kerak, yoki bo\'sh qoldiring.', 'err');
         return;
       }
       if (maxBranchesStr && (!/^\d+$/.test(maxBranchesStr) || parseInt(maxBranchesStr, 10) <= 0)) {
-        msgEl.textContent = 'Filiallar soni musbat butun son bo\'lishi kerak, yoki bo\'sh qoldiring (cheklanmagan).';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Filiallar soni musbat butun son bo\'lishi kerak, yoki bo\'sh qoldiring (cheklanmagan).', 'err');
         return;
       }
       msgEl.textContent = '';
-      const res = await apiPost('/api/tariff-add', { initData, name, price: priceStr || 0, maxBranches: maxBranchesStr || null });
+      const res = await apiPost('/api/tariff-add', { name, price: priceStr || 0, maxBranches: maxBranchesStr || null });
       if (!res.ok) {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
         return;
       }
       input.value = '';
@@ -1772,7 +1755,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadFeatureCatalog() {
     const el = document.getElementById('featureCatalogList');
     if (!el) return;
-    const res = await apiPost('/api/feature-list', { initData });
+    const res = await apiPost('/api/feature-list');
     if (!res.ok) {
       el.innerHTML = `<div class="bosh">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
       return;
@@ -1789,7 +1772,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadTariffList() {
     const el = document.getElementById('tariffList');
     if (!el) return;
-    const res = await apiPost('/api/tariff-list', { initData });
+    const res = await apiPost('/api/tariff-list');
     if (!res.ok) {
       el.innerHTML = `<div class="bosh">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
       return;
@@ -1818,13 +1801,13 @@ const tg = window.Telegram && window.Telegram.WebApp;
         const id = btn.getAttribute('data-tariff-remove');
         const current = res.tariffs.find(t => t.id === id);
         if (!confirm(`"${current ? current.name : ''}" tarifini o'chirasizmi?`)) return;
-        const r = await apiPost('/api/tariff-remove', { initData, id });
+        const r = await apiPost('/api/tariff-remove', { id });
         if (!r.ok) {
 
           if (r.blockedCount) {
             const forceConfirm = confirm(`${r.reason}\n\nBaribir o'chirilsinmi? (${r.blockedCount} ta do'kon egasi tarifsiz qoladi)`);
             if (!forceConfirm) return;
-            const r2 = await apiPost('/api/tariff-remove', { initData, id, force: true });
+            const r2 = await apiPost('/api/tariff-remove', { id, force: true });
             if (!r2.ok) { alert(r2.reason || 'Xatolik yuz berdi.'); return; }
             loadTariffList();
             return;
@@ -1838,9 +1821,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   function showTariffEditModal(tariff) {
-    const overlay = document.createElement('div');
-    overlay.className = 'overlay';
-    overlay.innerHTML = `
+    const overlay = openOverlay(`
       <div class="modal" style="max-width:340px;">
         <h3>Tarifni tahrirlash</h3>
         <label class="field-label">Tarif nomi</label>
@@ -1858,8 +1839,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <button class="btn" id="tariffEditSaveBtn">Saqlash</button>
         </div>
       </div>
-    `;
-    document.body.appendChild(overlay);
+    `);
     document.getElementById('tariffEditCancelBtn').onclick = () => overlay.remove();
     document.getElementById('tariffEditPermsBtn').onclick = async () => {
       overlay.remove();
@@ -1872,32 +1852,27 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const maxBranchesVal = document.getElementById('tariffEditMaxBranchesInput').value.trim();
       const msgEl = document.getElementById('tariffEditMsg');
       if (!nameVal) {
-        msgEl.textContent = 'Iltimos, tarif nomini kiriting.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Iltimos, tarif nomini kiriting.', 'err');
         return;
       }
       if (priceVal && !/^\d+$/.test(priceVal)) {
-        msgEl.textContent = 'Narx musbat butun son bo\'lishi kerak.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Narx musbat butun son bo\'lishi kerak.', 'err');
         return;
       }
       if (reminderVal && (!/^\d+$/.test(reminderVal) || parseInt(reminderVal, 10) <= 0)) {
-        msgEl.textContent = 'Eslatma kunlari musbat butun son bo\'lishi kerak.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Eslatma kunlari musbat butun son bo\'lishi kerak.', 'err');
         return;
       }
       if (maxBranchesVal && (!/^\d+$/.test(maxBranchesVal) || parseInt(maxBranchesVal, 10) <= 0)) {
-        msgEl.textContent = 'Filiallar soni musbat butun son bo\'lishi kerak, yoki bo\'sh qoldiring (cheklanmagan).';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Filiallar soni musbat butun son bo\'lishi kerak, yoki bo\'sh qoldiring (cheklanmagan).', 'err');
         return;
       }
       const res = await apiPost('/api/tariff-rename', {
-        initData, id: tariff.id, name: nameVal, price: priceVal || 0, reminderDays: reminderVal || 1,
+        id: tariff.id, name: nameVal, price: priceVal || 0, reminderDays: reminderVal || 1,
         maxBranches: maxBranchesVal || null
       });
       if (!res.ok) {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
         return;
       }
       overlay.remove();
@@ -1908,15 +1883,13 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function showTariffFeaturesModal(tariff) {
     let groups = featureCatalogCache;
     if (!groups) {
-      const res = await apiPost('/api/feature-list', { initData });
+      const res = await apiPost('/api/feature-list');
       if (!res.ok) { alert(res.reason || 'Xatolik yuz berdi.'); return; }
       groups = res.groups;
       featureCatalogCache = groups;
     }
     const current = tariff.features || {};
-    const overlay = document.createElement('div');
-    overlay.className = 'overlay';
-    overlay.innerHTML = `
+    const overlay = openOverlay(`
       <div class="modal" style="max-width:420px; max-height:80vh; overflow-y:auto;">
         <h3>"${escapeHtml(tariff.name)}" — funksiyalar</h3>
         <div class="owner-username" style="margin-bottom:10px;">Ushbu tarifga qaysi funksiyalar kirishini belgilang.</div>
@@ -1937,8 +1910,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <button class="btn" id="tariffFeaturesSaveBtn">Saqlash</button>
         </div>
       </div>
-    `;
-    document.body.appendChild(overlay);
+    `);
     document.getElementById('tariffFeaturesCancelBtn').onclick = () => overlay.remove();
     document.getElementById('tariffFeaturesSaveBtn').onclick = async () => {
       const msgEl = document.getElementById('tariffFeaturesMsg');
@@ -1946,10 +1918,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
       overlay.querySelectorAll('[data-feature-id]').forEach(cb => {
         features[cb.getAttribute('data-feature-id')] = cb.checked;
       });
-      const res = await apiPost('/api/tariff-set-features', { initData, id: tariff.id, features });
+      const res = await apiPost('/api/tariff-set-features', { id: tariff.id, features });
       if (!res.ok) {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
         return;
       }
       overlay.remove();
@@ -2016,7 +1987,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       if (!/^\d+$/.test(price)) { msgEl.textContent = 'Narx musbat butun son bo\'lishi kerak.'; msgEl.className = 'xabar err'; return; }
       msgEl.textContent = '';
       const res = await apiPost('/api/subscription-plan-add', {
-        initData, label, days, price, discountNote: noteInput.value.trim(), tariffId: tariffInput.value || null
+        label, days, price, discountNote: noteInput.value.trim(), tariffId: tariffInput.value || null
       });
       if (!res.ok) { msgEl.textContent = res.reason || 'Xatolik yuz berdi.'; msgEl.className = 'xabar err'; return; }
       labelInput.value = ''; daysInput.value = ''; priceInput.value = ''; noteInput.value = ''; tariffInput.value = '';
@@ -2029,7 +2000,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const el = document.getElementById('subPlanList');
     const tariffSelect = document.getElementById('subPlanTariffInput');
     if (!el) return;
-    const res = await apiPost('/api/subscription-plan-list', { initData });
+    const res = await apiPost('/api/subscription-plan-list');
     if (!res.ok) { el.innerHTML = `<div class="bosh">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`; return; }
 
     if (tariffSelect) {
@@ -2051,7 +2022,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         const id = btn.getAttribute('data-plan-remove');
         const current = res.plans.find(p => p.id === id);
         if (!confirm(`"${current ? current.label : ''}" rejasini o'chirasizmi?`)) return;
-        const r = await apiPost('/api/subscription-plan-remove', { initData, id });
+        const r = await apiPost('/api/subscription-plan-remove', { id });
         if (!r.ok) { alert(r.reason || 'Xatolik yuz berdi.'); return; }
         loadSubscriptionPlanList();
       });
@@ -2059,9 +2030,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   function showSubscriptionPlanEditModal(plan, tariffs) {
-    const overlay = document.createElement('div');
-    overlay.className = 'overlay';
-    overlay.innerHTML = `
+    const overlay = openOverlay(`
       <div class="modal" style="max-width:340px;">
         <h3>Rejani tahrirlash</h3>
         <label class="field-label">Reja nomi</label>
@@ -2083,8 +2052,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <button class="btn" id="subPlanEditSaveBtn">Saqlash</button>
         </div>
       </div>
-    `;
-    document.body.appendChild(overlay);
+    `);
     document.getElementById('subPlanEditCancelBtn').onclick = () => overlay.remove();
     document.getElementById('subPlanEditSaveBtn').onclick = async () => {
       const msgEl = document.getElementById('subPlanEditMsg');
@@ -2097,7 +2065,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       if (!/^\d+$/.test(days) || parseInt(days, 10) <= 0) { msgEl.textContent = 'Muddat musbat butun son (kun) bo\'lishi kerak.'; msgEl.className = 'xabar err'; return; }
       if (!/^\d+$/.test(price)) { msgEl.textContent = 'Narx musbat butun son bo\'lishi kerak.'; msgEl.className = 'xabar err'; return; }
       const res = await apiPost('/api/subscription-plan-update', {
-        initData, id: plan.id, label, days, price, discountNote: note, tariffId
+        id: plan.id, label, days, price, discountNote: note, tariffId
       });
       if (!res.ok) { msgEl.textContent = res.reason || 'Xatolik yuz berdi.'; msgEl.className = 'xabar err'; return; }
       overlay.remove();
@@ -2404,7 +2372,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     document.getElementById('saveProfileBtn').addEventListener('click', async () => {
       const msgEl = document.getElementById('profileMsg');
       const body = {
-        initData,
         name: document.getElementById('pName').value.trim(),
         address: document.getElementById('pAddress').value.trim(),
         phone: document.getElementById('pPhone').value.trim(),
@@ -2412,12 +2379,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
         logoUrl: pendingLogo,
         brandColor: pendingBrandColor
       };
-      msgEl.textContent = 'Saqlanmoqda...';
-      msgEl.className = 'xabar';
+      setMsg(msgEl, 'Saqlanmoqda...');
       const res = await apiPost('/api/save-profile', body);
       if (!res.ok) {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
         applyBrandColor(p.brandColor);
         return;
       }
@@ -2427,10 +2392,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
     document.getElementById('saveWorkHoursBtn').addEventListener('click', async () => {
       const msgEl = document.getElementById('workHoursMsg');
       const workHours = document.getElementById('pWorkHours').value.trim();
-      msgEl.textContent = 'Saqlanmoqda...';
-      msgEl.className = 'xabar';
+      setMsg(msgEl, 'Saqlanmoqda...');
       const res = await apiPost('/api/save-profile', {
-        initData,
         name: p.name || '',
         address: p.address || '',
         phone: p.phone || '',
@@ -2439,12 +2402,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
         brandColor: p.brandColor || ''
       });
       if (!res.ok) {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
         return;
       }
-      msgEl.textContent = 'Saqlandi.';
-      msgEl.className = 'xabar ok';
+      setMsg(msgEl, 'Saqlandi.', 'ok');
       p.workHours = res.profile.workHours || '';
     });
 
@@ -2452,21 +2413,17 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const name = document.getElementById('categoryNameInput').value.trim();
       const msgEl = document.getElementById('categoryMsg');
       if (!name) {
-        msgEl.textContent = 'Bo\'lim nomini kiriting.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Bo\'lim nomini kiriting.', 'err');
         return;
       }
-      msgEl.textContent = 'Qo\'shilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/category-add', { initData, name });
+      setMsg(msgEl, 'Qo\'shilmoqda...');
+      const res = await apiPost('/api/category-add', { name });
       if (res.ok) {
-        msgEl.textContent = 'Qo\'shildi.';
-        msgEl.className = 'xabar ok';
+        setMsg(msgEl, 'Qo\'shildi.', 'ok');
         document.getElementById('categoryNameInput').value = '';
         loadCategoriesAndRender();
       } else {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
       }
     });
 
@@ -2477,16 +2434,13 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const minTotal = document.getElementById('promoMinInput').value.trim();
       const msgEl = document.getElementById('promoMsg');
       if (!title || !discountPercent || !/^\d+$/.test(discountPercent)) {
-        msgEl.textContent = 'Aksiya nomi va chegirma foizini kiriting.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Aksiya nomi va chegirma foizini kiriting.', 'err');
         return;
       }
-      msgEl.textContent = 'Qo\'shilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/promo-add', { initData, title, description, discountPercent, minTotal });
+      setMsg(msgEl, 'Qo\'shilmoqda...');
+      const res = await apiPost('/api/promo-add', { title, description, discountPercent, minTotal });
       if (res.ok) {
-        msgEl.textContent = 'Aksiya qo\'shildi.';
-        msgEl.className = 'xabar ok';
+        setMsg(msgEl, 'Aksiya qo\'shildi.', 'ok');
         document.getElementById('promoTitleInput').value = '';
         document.getElementById('promoDescInput').value = '';
         document.getElementById('promoPercentInput').value = '';
@@ -2494,8 +2448,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         loadPromoAndRender();
       } else {
         handleFeatureBlocked(res);
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
       }
     });
 
@@ -2504,11 +2457,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const removeId = e.target.getAttribute('data-remove-promo-id');
       if (toggleId) {
         e.target.disabled = true;
-        await apiPost('/api/promo-toggle', { initData, id: toggleId });
+        await apiPost('/api/promo-toggle', { id: toggleId });
         loadPromoAndRender();
       } else if (removeId) {
         e.target.disabled = true;
-        await apiPost('/api/promo-remove', { initData, id: removeId });
+        await apiPost('/api/promo-remove', { id: removeId });
         loadPromoAndRender();
       }
     });
@@ -2522,16 +2475,13 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const weeklyDay = weeklyDayRaw === '' ? null : parseInt(weeklyDayRaw, 10);
       const msgEl = document.getElementById('bannerMsg');
       if (!pendingBannerImg) {
-        msgEl.textContent = 'Banner uchun rasm tanlang.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Banner uchun rasm tanlang.', 'err');
         return;
       }
-      msgEl.textContent = 'Qo\'shilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/banner-add', { initData, imageUrl: pendingBannerImg, title, link, startAt, endAt, weeklyDay });
+      setMsg(msgEl, 'Qo\'shilmoqda...');
+      const res = await apiPost('/api/banner-add', { imageUrl: pendingBannerImg, title, link, startAt, endAt, weeklyDay });
       if (res.ok) {
-        msgEl.textContent = 'Banner qo\'shildi.';
-        msgEl.className = 'xabar ok';
+        setMsg(msgEl, 'Banner qo\'shildi.', 'ok');
         pendingBannerImg = '';
         document.getElementById('bannerTitleInput').value = '';
         document.getElementById('bannerLinkInput').value = '';
@@ -2545,8 +2495,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         loadBannerAndRender();
       } else {
         handleFeatureBlocked(res);
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
       }
     });
 
@@ -2555,11 +2504,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const removeId = e.target.getAttribute('data-remove-banner-id');
       if (toggleId) {
         e.target.disabled = true;
-        await apiPost('/api/banner-toggle', { initData, id: toggleId });
+        await apiPost('/api/banner-toggle', { id: toggleId });
         loadBannerAndRender();
       } else if (removeId) {
         e.target.disabled = true;
-        await apiPost('/api/banner-remove', { initData, id: removeId });
+        await apiPost('/api/banner-remove', { id: removeId });
         loadBannerAndRender();
       }
     });
@@ -2569,16 +2518,13 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const link = document.getElementById('fridayBannerLinkInput').value.trim();
       const msgEl = document.getElementById('fridayBannerMsg');
       if (!pendingFridayBannerImg) {
-        msgEl.textContent = 'Juma banneri uchun rasm tanlang.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Juma banneri uchun rasm tanlang.', 'err');
         return;
       }
-      msgEl.textContent = 'Saqlanmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/friday-banner-save', { initData, imageUrl: pendingFridayBannerImg, title, link });
+      setMsg(msgEl, 'Saqlanmoqda...');
+      const res = await apiPost('/api/friday-banner-save', { imageUrl: pendingFridayBannerImg, title, link });
       if (res.ok) {
-        msgEl.textContent = 'Juma banneri saqlandi.';
-        msgEl.className = 'xabar ok';
+        setMsg(msgEl, 'Juma banneri saqlandi.', 'ok');
         pendingFridayBannerImg = '';
         document.getElementById('fridayBannerTitleInput').value = '';
         document.getElementById('fridayBannerLinkInput').value = '';
@@ -2589,8 +2535,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         loadFridayBannerAndRender();
       } else {
         handleFeatureBlocked(res);
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
       }
     });
 
@@ -2599,11 +2544,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const remove = e.target.hasAttribute('data-remove-friday-banner');
       if (toggle) {
         e.target.disabled = true;
-        await apiPost('/api/friday-banner-toggle', { initData });
+        await apiPost('/api/friday-banner-toggle');
         loadFridayBannerAndRender();
       } else if (remove) {
         e.target.disabled = true;
-        await apiPost('/api/friday-banner-remove', { initData });
+        await apiPost('/api/friday-banner-remove');
         loadFridayBannerAndRender();
       }
     });
@@ -2613,49 +2558,39 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const earnPercent = document.getElementById('bonusPercentInput').value.trim();
       const msgEl = document.getElementById('bonusMsg');
       if (enabled && (!earnPercent || !/^\d+$/.test(earnPercent))) {
-        msgEl.textContent = 'Bonus foizini kiriting.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Bonus foizini kiriting.', 'err');
         return;
       }
-      msgEl.textContent = 'Saqlanmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/bonus-settings-save', { initData, enabled, earnPercent: earnPercent || 0 });
+      setMsg(msgEl, 'Saqlanmoqda...');
+      const res = await apiPost('/api/bonus-settings-save', { enabled, earnPercent: earnPercent || 0 });
       if (res.ok) {
-        msgEl.textContent = 'Saqlandi.';
-        msgEl.className = 'xabar ok';
+        setMsg(msgEl, 'Saqlandi.', 'ok');
       } else {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
       }
     });
 
     document.getElementById('removeDeliveryGroupBtn').addEventListener('click', async () => {
       const msgEl = document.getElementById('deliveryGroupMsg');
-      msgEl.textContent = 'Bekor qilinmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/delivery-group-remove', { initData });
+      setMsg(msgEl, 'Bekor qilinmoqda...');
+      const res = await apiPost('/api/delivery-group-remove');
       if (res.ok) {
-        msgEl.textContent = 'Guruh bog\'lanishdan chiqarildi.';
-        msgEl.className = 'xabar ok';
+        setMsg(msgEl, 'Guruh bog\'lanishdan chiqarildi.', 'ok');
         loadDeliveryGroupStatus();
       } else {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
       }
     });
 
     document.getElementById('removeKitchenGroupBtn').addEventListener('click', async () => {
       const msgEl = document.getElementById('kitchenGroupMsg');
-      msgEl.textContent = 'Bekor qilinmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/kitchen-group-remove', { initData });
+      setMsg(msgEl, 'Bekor qilinmoqda...');
+      const res = await apiPost('/api/kitchen-group-remove');
       if (res.ok) {
-        msgEl.textContent = 'Guruh bog\'lanishdan chiqarildi.';
-        msgEl.className = 'xabar ok';
+        setMsg(msgEl, 'Guruh bog\'lanishdan chiqarildi.', 'ok');
         loadKitchenGroupStatus();
       } else {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
       }
     });
 
@@ -2672,7 +2607,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadOwnerTariffInfo() {
     const el = document.getElementById('profileTariffInfo');
     if (!el) return;
-    const res = await apiPost('/api/my-profile', { initData });
+    const res = await apiPost('/api/my-profile');
     if (!res.ok) {
       el.textContent = 'Yuklab bo\'lmadi.';
       return;
@@ -2793,8 +2728,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         const address = document.getElementById('obAddress').value.trim();
         const phone = document.getElementById('obPhone').value.trim();
         if (!name || !address || !phone) {
-          msgEl.textContent = "Yulduzcha (*) bilan belgilangan maydonlarni to'ldiring.";
-          msgEl.className = 'xabar err';
+          setMsg(msgEl, "Yulduzcha (*) bilan belgilangan maydonlarni to'ldiring.", 'err');
           return;
         }
         s.data.name = name; s.data.address = address; s.data.phone = phone;
@@ -2811,12 +2745,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
       const btn = document.getElementById('onboardNextBtn');
       btn.disabled = true;
-      msgEl.textContent = 'Saqlanmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/save-profile', { initData, ...s.data });
+      setMsg(msgEl, 'Saqlanmoqda...');
+      const res = await apiPost('/api/save-profile', { ...s.data });
       if (!res.ok) {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
         btn.disabled = false;
         return;
       }
@@ -2956,7 +2888,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
   async function loadBranchAndRender() {
     const listEl = document.getElementById('branchList');
-    const res = await apiPost('/api/branch-list', { initData });
+    const res = await apiPost('/api/branch-list');
     if (res.networkError) { if (listEl) renderNetworkErrorInline(listEl, res.reason, loadBranchAndRender); return; }
     branchState.branches = res.ok ? res.branches : [];
     branchState.centralBranchName = res.ok ? (res.centralBranchName || null) : null;
@@ -3172,7 +3104,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadKoKpiGrid(profile) {
     const el = document.getElementById('koKpiGrid');
     if (!el) return;
-    const res = await apiPost('/api/dashboard-summary', { initData, branchId: activeBranchIdForApi() });
+    const res = await apiPost('/api/dashboard-summary', { branchId: activeBranchIdForApi() });
     const el2 = document.getElementById('koKpiGrid');
     if (!el2) return;
     if (res.networkError) {
@@ -3232,7 +3164,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadKoStatusBanner(profile) {
     const el = document.getElementById('koStatusBanner');
     if (!el) return;
-    const res = await apiPost('/api/order-status-counts', { initData, branchId: activeBranchIdForApi() });
+    const res = await apiPost('/api/order-status-counts', { branchId: activeBranchIdForApi() });
     const el2 = document.getElementById('koStatusBanner');
     if (!el2) return;
     if (res.networkError) { renderNetworkErrorInline(el2, res.reason, () => loadKoStatusBanner(profile)); return; }
@@ -3445,7 +3377,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadKoAlertsList(profile) {
     const el = document.getElementById('koAlertsList');
     if (!el) return;
-    const res = await apiPost('/api/dashboard-alerts', { initData, branchId: activeBranchIdForApi() });
+    const res = await apiPost('/api/dashboard-alerts', { branchId: activeBranchIdForApi() });
     const el2 = document.getElementById('koAlertsList');
     if (!el2) return;
     if (res.networkError) { renderNetworkErrorInline(el2, res.reason, () => loadKoAlertsList(profile)); return; }
@@ -3480,7 +3412,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadNotificationsList(profile) {
     const el = document.getElementById('notifList');
     if (!el) return;
-    const res = await apiPost('/api/dashboard-alerts', { initData, branchId: activeBranchIdForApi() });
+    const res = await apiPost('/api/dashboard-alerts', { branchId: activeBranchIdForApi() });
     const el2 = document.getElementById('notifList');
     if (!el2) return;
     if (res.networkError) { renderNetworkErrorInline(el2, res.reason, () => loadNotificationsList(profile)); return; }
@@ -3548,27 +3480,23 @@ const tg = window.Telegram && window.Telegram.WebApp;
     document.getElementById('ownerCardBackBtn').addEventListener('click', () => onBack && onBack());
 
     const msgEl = document.getElementById('ownerCardMsg');
-    const res = await apiPost('/api/owner-payment-card-get', { initData });
+    const res = await apiPost('/api/owner-payment-card-get');
     if (res.ok) {
       document.getElementById('ownerCardNumberInput').value = res.card.cardNumber || '';
       document.getElementById('ownerCardHolderInput').value = res.card.cardHolder || '';
     } else {
-      msgEl.textContent = res.reason || 'Yuklab bo\'lmadi.';
-      msgEl.className = 'xabar err';
+      setMsg(msgEl, res.reason || 'Yuklab bo\'lmadi.', 'err');
     }
 
     document.getElementById('ownerCardSaveBtn').addEventListener('click', async () => {
       const cardNumber = document.getElementById('ownerCardNumberInput').value.trim();
       const cardHolder = document.getElementById('ownerCardHolderInput').value.trim();
-      msgEl.textContent = 'Saqlanmoqda...';
-      msgEl.className = 'xabar';
-      const saveRes = await apiPost('/api/owner-payment-card-set', { initData, cardNumber, cardHolder });
+      setMsg(msgEl, 'Saqlanmoqda...');
+      const saveRes = await apiPost('/api/owner-payment-card-set', { cardNumber, cardHolder });
       if (saveRes.ok) {
-        msgEl.textContent = 'Saqlandi.';
-        msgEl.className = 'xabar ok';
+        setMsg(msgEl, 'Saqlandi.', 'ok');
       } else {
-        msgEl.textContent = saveRes.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, saveRes.reason || 'Xatolik yuz berdi.', 'err');
       }
     });
   }
@@ -3576,7 +3504,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadNotificationPrefs() {
     const card = document.getElementById('notifPrefsCard');
     if (!card) return;
-    const res = await apiPost('/api/notification-prefs-get', { initData });
+    const res = await apiPost('/api/notification-prefs-get');
     const card2 = document.getElementById('notifPrefsCard');
     if (!card2) return;
     if (res.networkError) { renderNetworkErrorInline(card2, res.reason, loadNotificationPrefs); return; }
@@ -3591,7 +3519,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       cb.addEventListener('change', async () => {
         cb.disabled = true;
         const key = cb.getAttribute('data-notif-key');
-        const saveRes = await apiPost('/api/notification-prefs-save', { initData, prefs: { [key]: cb.checked } });
+        const saveRes = await apiPost('/api/notification-prefs-save', { prefs: { [key]: cb.checked } });
         cb.disabled = false;
         if (!saveRes.ok) { cb.checked = !cb.checked; alert(saveRes.reason || 'Saqlanmadi, qayta urinib ko\'ring.'); }
       });
@@ -3627,7 +3555,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadOwnerSubscriptionHistory() {
     const listEl = document.getElementById('subHistoryList');
     if (!listEl) return;
-    const res = await apiPost('/api/subscription-history', { initData });
+    const res = await apiPost('/api/subscription-history');
     if (!res.ok) { listEl.innerHTML = `<div class="bosh">Yuklab bo'lmadi.</div>`; return; }
     if (!res.history || !res.history.length) {
       listEl.innerHTML = `<div class="bosh">Hali to'lov tarixi yo'q.</div>`;
@@ -3679,7 +3607,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const requisitesCard = document.getElementById('subRequisitesCard');
     const plansCard = document.getElementById('subPlansCard');
     if (!statusCard) return;
-    const res = await apiPost('/api/subscription-status', { initData });
+    const res = await apiPost('/api/subscription-status');
     if (!res.ok) {
       statusCard.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
       return;
@@ -3749,7 +3677,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       if (!btn) return;
       const planId = btn.getAttribute('data-plan-id');
       btn.disabled = true;
-      const selRes = await apiPost('/api/subscription-select-plan', { initData, planId });
+      const selRes = await apiPost('/api/subscription-select-plan', { planId });
       if (!selRes.ok) {
         alert(selRes.reason || 'Xatolik yuz berdi.');
         btn.disabled = false;
@@ -3817,24 +3745,20 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const phone = document.getElementById('branchPhoneInput').value.trim();
       const msgEl = document.getElementById('branchMsg');
       if (!name || !address) {
-        msgEl.textContent = 'Filial nomi va manzilini kiriting.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Filial nomi va manzilini kiriting.', 'err');
         return;
       }
-      msgEl.textContent = 'Qo\'shilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/branch-add', { initData, name, address, phone });
+      setMsg(msgEl, 'Qo\'shilmoqda...');
+      const res = await apiPost('/api/branch-add', { name, address, phone });
       if (res.ok) {
-        msgEl.textContent = 'Filial qo\'shildi.';
-        msgEl.className = 'xabar ok';
+        setMsg(msgEl, 'Filial qo\'shildi.', 'ok');
         document.getElementById('branchNameInput').value = '';
         document.getElementById('branchAddressInput').value = '';
         document.getElementById('branchPhoneInput').value = '';
         loadBranchAndRender();
       } else {
         handleFeatureBlocked(res);
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
       }
     });
 
@@ -3842,7 +3766,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const id = e.target.getAttribute('data-remove-branch-id');
       if (id) {
         e.target.disabled = true;
-        await apiPost('/api/branch-remove', { initData, id });
+        await apiPost('/api/branch-remove', { id });
         loadBranchAndRender();
         return;
       }
@@ -3858,29 +3782,24 @@ const tg = window.Telegram && window.Telegram.WebApp;
     document.getElementById('saveCentralBranchNameBtn').addEventListener('click', async () => {
       const name = document.getElementById('centralBranchNameInput').value.trim();
       const msgEl = document.getElementById('centralBranchNameMsg');
-      msgEl.textContent = 'Saqlanmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/central-branch-rename', { initData, name });
+      setMsg(msgEl, 'Saqlanmoqda...');
+      const res = await apiPost('/api/central-branch-rename', { name });
       if (res.ok) {
-        msgEl.textContent = 'Saqlandi.';
-        msgEl.className = 'xabar ok';
+        setMsg(msgEl, 'Saqlandi.', 'ok');
         branchState.centralBranchName = res.centralBranchName || null;
         loadBranchAndRender();
       } else {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
       }
     });
 
     document.getElementById('getCustomerLinkBtn').addEventListener('click', async () => {
       const msgEl = document.getElementById('customerLinkMsg');
       const wrap = document.getElementById('customerLinkWrap');
-      msgEl.textContent = 'Yaratilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/customer-link', { initData });
+      setMsg(msgEl, 'Yaratilmoqda...');
+      const res = await apiPost('/api/customer-link');
       if (!res.ok) {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
         wrap.innerHTML = '';
         return;
       }
@@ -3894,11 +3813,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
       `;
       document.getElementById('copyCustomerLinkBtn').addEventListener('click', () => {
         navigator.clipboard.writeText(res.link).then(() => {
-          msgEl.textContent = 'Havola nusxalandi.';
-          msgEl.className = 'xabar ok';
+          setMsg(msgEl, 'Havola nusxalandi.', 'ok');
         }).catch(() => {
-          msgEl.textContent = 'Nusxalab bo\'lmadi, havolani qo\'lda ko\'chiring.';
-          msgEl.className = 'xabar err';
+          setMsg(msgEl, 'Nusxalab bo\'lmadi, havolani qo\'lda ko\'chiring.', 'err');
         });
       });
     });
@@ -3910,7 +3827,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const statusEl = document.getElementById('deliveryGroupStatus');
     const removeBtn = document.getElementById('removeDeliveryGroupBtn');
     if (!statusEl) return;
-    const res = await apiPost('/api/delivery-group-status', { initData });
+    const res = await apiPost('/api/delivery-group-status');
     if (res.ok && res.bound) {
       statusEl.innerHTML = `${icon('check', 'icon-xs icon-success')} Biriktirilgan: <b>${escapeHtml(res.groupTitle || 'guruh')}</b>${res.threadBound ? ' <span style="opacity:0.7;">📌 (mavzuga bog\'langan)</span>' : ''}`;
       if (removeBtn) removeBtn.classList.remove('hidden');
@@ -3924,7 +3841,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const statusEl = document.getElementById('kitchenGroupStatus');
     const removeBtn = document.getElementById('removeKitchenGroupBtn');
     if (!statusEl) return;
-    const res = await apiPost('/api/kitchen-group-status', { initData });
+    const res = await apiPost('/api/kitchen-group-status');
     if (res.ok && res.bound) {
       statusEl.innerHTML = `${icon('check', 'icon-xs icon-success')} Biriktirilgan: <b>${escapeHtml(res.groupTitle || 'guruh')}</b>${res.threadBound ? ' <span style="opacity:0.7;">📌 (mavzuga bog\'langan)</span>' : ''}`;
       if (removeBtn) removeBtn.classList.remove('hidden');
@@ -3958,7 +3875,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const tmp = ids[idx];
     ids[idx] = ids[swapWith];
     ids[swapWith] = tmp;
-    await apiPost('/api/category-reorder', { initData, orderedIds: ids });
+    await apiPost('/api/category-reorder', { orderedIds: ids });
     loadCategoriesAndRender();
   }
 
@@ -3966,7 +3883,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const listEl = document.getElementById('categoryList');
     const selectEl = document.getElementById('menuCategoryInput');
     if (!listEl && !selectEl) return;
-    const res = await apiPost('/api/category-list', { initData, branchId: branchId || null });
+    const res = await apiPost('/api/category-list', { branchId: branchId || null });
     ownerCategoriesCache = (res.ok && Array.isArray(res.categories)) ? res.categories : [];
 
     if (listEl) {
@@ -3974,7 +3891,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       listEl.querySelectorAll('[data-remove-cat-id]').forEach(btn => {
         btn.addEventListener('click', async () => {
           btn.disabled = true;
-          await apiPost('/api/category-remove', { initData, id: btn.getAttribute('data-remove-cat-id') });
+          await apiPost('/api/category-remove', { id: btn.getAttribute('data-remove-cat-id') });
           loadCategoriesAndRender();
         });
       });
@@ -4015,7 +3932,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadPromoAndRender() {
     const listEl = document.getElementById('promoList');
     if (!listEl) return;
-    const res = await apiPost('/api/promo-list', { initData });
+    const res = await apiPost('/api/promo-list');
     if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, loadPromoAndRender); return; }
     listEl.innerHTML = promoListHtml(res.ok ? res.promotions : []);
   }
@@ -4045,7 +3962,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadBannerAndRender() {
     const listEl = document.getElementById('bannerList');
     if (!listEl) return;
-    const res = await apiPost('/api/banner-list', { initData });
+    const res = await apiPost('/api/banner-list');
     if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, loadBannerAndRender); return; }
     listEl.innerHTML = bannerListHtml(res.ok ? res.banners : []);
   }
@@ -4072,7 +3989,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadFridayBannerAndRender() {
     const listEl = document.getElementById('fridayBannerStatus');
     if (!listEl) return;
-    const res = await apiPost('/api/friday-banner-get', { initData });
+    const res = await apiPost('/api/friday-banner-get');
     if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, loadFridayBannerAndRender); return; }
     listEl.innerHTML = fridayBannerStatusHtml(res.ok ? res.banner : null);
   }
@@ -4080,7 +3997,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadBonusSettingsAndRender() {
     const enabledEl = document.getElementById('bonusEnabledInput');
     if (!enabledEl) return;
-    const res = await apiPost('/api/bonus-settings-get', { initData });
+    const res = await apiPost('/api/bonus-settings-get');
     const settings = res.ok ? res.settings : { enabled: false, earnPercent: 5 };
     enabledEl.checked = !!settings.enabled;
     document.getElementById('bonusPercentInput').value = settings.earnPercent || '';
@@ -4089,7 +4006,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadStaffAndRender() {
     const listEl = document.getElementById('staffList');
     if (!listEl) return;
-    const res = await apiPost('/api/staff-list', { initData });
+    const res = await apiPost('/api/staff-list');
     if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, loadStaffAndRender); return; }
     listEl.innerHTML = staffListHtml(res.ok ? res.staff : []);
   }
@@ -4205,8 +4122,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         preview.src = dataUrl;
         preview.style.display = 'block';
       } catch (err) {
-        msgEl.textContent = err.message || 'Rasmni yuklab bo\'lmadi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, err.message || 'Rasmni yuklab bo\'lmadi.', 'err');
         e.target.value = '';
       }
     });
@@ -4231,31 +4147,25 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const msgEl = document.getElementById('menuMsg');
       const priceOptions = collectPriceOptions('menuPriceOptionsAdd');
       if (priceOptions === null) {
-        msgEl.textContent = 'Narx variantlarini to\'g\'ri kiriting (nomi va narxi).';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Narx variantlarini to\'g\'ri kiriting (nomi va narxi).', 'err');
         return;
       }
       if (priceOptions.length === 1) {
-        msgEl.textContent = 'Kamida 2 ta narx variantini kiriting yoki bittasini o\'chirib, yakka narxdan foydalaning.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Kamida 2 ta narx variantini kiriting yoki bittasini o\'chirib, yakka narxdan foydalaning.', 'err');
         return;
       }
       if (!priceOptions.length && (!name || !price || !/^\d+$/.test(price) || parseInt(price, 10) <= 0)) {
-        msgEl.textContent = 'Taom nomi va to\'g\'ri narx kiriting.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Taom nomi va to\'g\'ri narx kiriting.', 'err');
         return;
       }
       if (!name) {
-        msgEl.textContent = 'Taom nomini kiriting.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Taom nomini kiriting.', 'err');
         return;
       }
-      msgEl.textContent = 'Qo\'shilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/menu-add', { initData, name, price, prices: priceOptions, category, description, imageUrl, directStockId, branchId: currentStockBranchId });
+      setMsg(msgEl, 'Qo\'shilmoqda...');
+      const res = await apiPost('/api/menu-add', { name, price, prices: priceOptions, category, description, imageUrl, directStockId, branchId: currentStockBranchId });
       if (res.ok) {
-        msgEl.textContent = 'Qo\'shildi.';
-        msgEl.className = 'xabar ok';
+        setMsg(msgEl, 'Qo\'shildi.', 'ok');
         document.getElementById('menuNameInput').value = '';
         document.getElementById('menuPriceInput').value = '';
         document.getElementById('menuPriceOptionsAdd').innerHTML = '';
@@ -4268,8 +4178,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         document.getElementById('menuDirectStockWrap').classList.add('hidden');
         loadMenuAndRender();
       } else {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
       }
     });
 
@@ -4280,14 +4189,14 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadMenuAndRender() {
     const listEl = document.getElementById('menuList');
     if (!listEl) return;
-    const res = await apiPost('/api/menu-list', { initData, branchId: currentStockBranchId });
+    const res = await apiPost('/api/menu-list', { branchId: currentStockBranchId });
     if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, loadMenuAndRender); return; }
     const menu = res.ok ? res.menu : [];
     listEl.innerHTML = ownerMenuListHtml(menu);
     listEl.querySelectorAll('[data-remove-menu-id]').forEach(btn => {
       btn.addEventListener('click', async () => {
         btn.disabled = true;
-        await apiPost('/api/menu-remove', { initData, id: btn.getAttribute('data-remove-menu-id'), branchId: currentStockBranchId });
+        await apiPost('/api/menu-remove', { id: btn.getAttribute('data-remove-menu-id'), branchId: currentStockBranchId });
         loadMenuAndRender();
       });
     });
@@ -4310,7 +4219,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         const id = btn.getAttribute('data-toggle-avail-id');
         const menuItem = menu.find(m => m.id === id);
         btn.disabled = true;
-        await apiPost('/api/menu-update', { initData, id, available: menuItem ? menuItem.available === false : true, branchId: currentStockBranchId });
+        await apiPost('/api/menu-update', { id, available: menuItem ? menuItem.available === false : true, branchId: currentStockBranchId });
         loadMenuAndRender();
       });
     });
@@ -4459,7 +4368,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadMyStats() {
     const bodyEl = document.getElementById('msBody');
     if (!bodyEl) return;
-    const res = await apiPost('/api/my-stats', { initData, period: myStatsState.period });
+    const res = await apiPost('/api/my-stats', { period: myStatsState.period });
     if (res.networkError) { renderNetworkErrorInline(bodyEl, res.reason, () => loadMyStats()); return; }
     if (!res.ok) {
       bodyEl.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
@@ -4673,10 +4582,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   function openCashierCheckoutModal(restaurantName, onBack) {
-    const overlay = document.createElement('div');
-    overlay.className = 'overlay';
-    overlay.innerHTML = `<div class="modal" style="max-width:380px; max-height:85vh; overflow:auto;"></div>`;
-    document.body.appendChild(overlay);
+    const overlay = openOverlay(`<div class="modal" style="max-width:380px; max-height:85vh; overflow:auto;"></div>`);
     overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
     renderCashierCheckoutModalBody(overlay, restaurantName, onBack);
   }
@@ -4919,7 +4825,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
   async function loadCashierMenu(restaurantName) {
     const el = document.getElementById('cashierMenu');
-    const res = await apiPost('/api/menu-list', { initData, branchId: cashierState.branchId });
+    const res = await apiPost('/api/menu-list', { branchId: cashierState.branchId });
     if (res.networkError) { renderNetworkErrorInline(el, res.reason, () => loadCashierMenu(restaurantName)); return; }
     cashierState.menu = res.ok ? res.menu : [];
     cashierState.categories = res.ok ? (res.categories || []) : [];
@@ -5030,17 +4936,14 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const items = cartItems.concat(comboItems);
 
     if (!items.length) {
-      msgEl.textContent = 'Savat bo\'sh. Kamida bitta taom tanlang.';
-      msgEl.className = 'xabar err';
+      setMsg(msgEl, 'Savat bo\'sh. Kamida bitta taom tanlang.', 'err');
       return;
     }
     if (sendBtn) sendBtn.disabled = true;
 
     if (cashierState.editingOrderId) {
-      msgEl.textContent = 'Yangilanmoqda...';
-      msgEl.className = 'xabar';
+      setMsg(msgEl, 'Yangilanmoqda...');
       const res = await apiPost('/api/edit-order', {
-        initData,
         orderId: cashierState.editingOrderId,
         items,
         orderType: cashierState.orderType,
@@ -5066,8 +4969,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         }
       } else {
         if (sendBtn) sendBtn.disabled = false;
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
       }
       return;
     }
@@ -5076,10 +4978,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
       cashierState.lastOrderRequestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     }
 
-    msgEl.textContent = 'Yuborilmoqda...';
-    msgEl.className = 'xabar';
+    setMsg(msgEl, 'Yuborilmoqda...');
     const res = await apiPost('/api/create-order', {
-      initData,
       items: cartItems,
       orderType: cashierState.orderType,
       paymentType: cashierState.paymentType,
@@ -5105,8 +5005,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       document.querySelector('.panel').prepend(topMsg);
     } else {
       if (sendBtn) sendBtn.disabled = false;
-      msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-      msgEl.className = 'xabar err';
+      setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
     }
   }
 
@@ -5231,7 +5130,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (!btn) return;
     btn.addEventListener('click', async () => {
       btn.disabled = true;
-      const res = await apiPost('/api/shift-toggle', { initData });
+      const res = await apiPost('/api/shift-toggle');
       if (res.ok) {
         shiftState.active = res.active;
         shiftState.startedAt = res.startedAt;
@@ -5247,7 +5146,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   async function loadShiftWidget() {
-    const res = await apiPost('/api/shift-status', { initData });
+    const res = await apiPost('/api/shift-status');
     if (!res.ok) return;
     shiftState.active = res.active;
     shiftState.startedAt = res.startedAt;
@@ -5379,7 +5278,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         btn.disabled = true;
         const orderId = btn.getAttribute('data-order-id');
         const status = btn.getAttribute('data-set-status');
-        const res = await apiPost('/api/update-order-status', { initData, orderId, status });
+        const res = await apiPost('/api/update-order-status', { orderId, status });
         if (!res.ok) {
           alert(res.reason || 'Xatolik yuz berdi.');
         }
@@ -5391,7 +5290,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       btn.addEventListener('click', async () => {
         btn.disabled = true;
         const orderId = btn.getAttribute('data-mark-received-id');
-        const res = await apiPost('/api/staff-mark-received', { initData, orderId });
+        const res = await apiPost('/api/staff-mark-received', { orderId });
         if (!res.ok) {
           alert(res.reason || 'Xatolik yuz berdi.');
         }
@@ -5404,7 +5303,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         if (!confirm('Bu buyurtmaning "Yetkazildi" belgisini bekor qilmoqchimisiz?')) return;
         btn.disabled = true;
         const orderId = btn.getAttribute('data-undo-deliver-id');
-        const res = await apiPost('/api/undo-deliver-order', { initData, orderId });
+        const res = await apiPost('/api/undo-deliver-order', { orderId });
         if (!res.ok) {
           alert(res.reason || 'Xatolik yuz berdi.');
         }
@@ -5440,7 +5339,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function refreshOrdersBoard(role, restaurantName, onReturn) {
     const board = document.getElementById('ordersBoard');
     if (!board) { stopOrdersPolling(); return; }
-    const res = await apiPost('/api/orders-list', { initData, branchId: role === 'egasi' ? activeBranchIdForApi() : undefined });
+    const res = await apiPost('/api/orders-list', { branchId: role === 'egasi' ? activeBranchIdForApi() : undefined });
     if (!res.ok) {
 
       if (res.networkError && lastOrdersSnapshot === null) {
@@ -5505,9 +5404,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   function openKitchenMenuManageMenu(restaurantName, onBack) {
-    const overlay = document.createElement('div');
-    overlay.className = 'overlay';
-    overlay.innerHTML = `
+    const overlay = openOverlay(`
       <div class="modal" style="max-width:380px;">
         <h3>Menyu boshqaruvi</h3>
         <div class="ko-menu-grid" style="margin-top:10px;">
@@ -5530,8 +5427,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         </div>
         <button class="btn ikkinchi" id="kmmCancelBtn" style="margin-top:14px;">Bekor qilish</button>
       </div>
-    `;
-    document.body.appendChild(overlay);
+    `);
     const close = () => overlay.remove();
     overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
     document.getElementById('kmmCancelBtn').addEventListener('click', close);
@@ -5556,15 +5452,12 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   function openMenuAddOverlay() {
-    const overlay = document.createElement('div');
-    overlay.className = 'overlay';
-    overlay.innerHTML = `
+    const overlay = openOverlay(`
       <div class="modal" style="max-width:480px; max-height:85vh; overflow-y:auto;">
         <button type="button" class="btn ikkinchi" id="menuAddOverlayCloseBtn" style="margin-bottom:12px;">← Yopish</button>
         ${menuAddSectionHtml()}
       </div>
-    `;
-    document.body.appendChild(overlay);
+    `);
     const close = () => overlay.remove();
     document.getElementById('menuAddOverlayCloseBtn').addEventListener('click', close);
     overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
@@ -5641,7 +5534,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadComboMenuPickerAndRender() {
     const picker = document.getElementById('comboItemPicker');
     if (!picker) return;
-    const res = await apiPost('/api/menu-list', { initData });
+    const res = await apiPost('/api/menu-list');
     comboScreenMenuCache = res.ok ? res.menu : [];
     picker.innerHTML = comboItemPickerRowsHtml(comboScreenMenuCache, 'combo', {});
     wireComboItemPicker(picker, 'combo');
@@ -5650,12 +5543,12 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadComboListAndRender() {
     const listEl = document.getElementById('comboList');
     if (!listEl) return;
-    const res = await apiPost('/api/combo-list', { initData });
+    const res = await apiPost('/api/combo-list');
     if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, loadComboListAndRender); return; }
     const combos = res.ok ? res.combos : [];
     let menu = comboScreenMenuCache;
     if (!menu.length) {
-      const menuRes = await apiPost('/api/menu-list', { initData });
+      const menuRes = await apiPost('/api/menu-list');
       menu = menuRes.ok ? menuRes.menu : [];
     }
     listEl.innerHTML = comboListHtml(combos, menu);
@@ -5663,7 +5556,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       btn.addEventListener('click', async () => {
         if (!confirm("Combo o'chirilsinmi?")) return;
         btn.disabled = true;
-        await apiPost('/api/combo-remove', { initData, id: btn.getAttribute('data-remove-combo-id') });
+        await apiPost('/api/combo-remove', { id: btn.getAttribute('data-remove-combo-id') });
         loadComboListAndRender();
       });
     });
@@ -5672,7 +5565,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         const id = btn.getAttribute('data-toggle-combo-id');
         const combo = combos.find(c => c.id === id);
         btn.disabled = true;
-        await apiPost('/api/combo-update', { initData, id, available: combo ? combo.available === false : true });
+        await apiPost('/api/combo-update', { id, available: combo ? combo.available === false : true });
         loadComboListAndRender();
       });
     });
@@ -5689,9 +5582,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const selectedMap = {};
     (combo.itemIds || []).forEach(e => { selectedMap[e.menuItemId] = e.qty; });
     let pendingImage = combo.imageUrl || '';
-    const overlay = document.createElement('div');
-    overlay.className = 'overlay';
-    overlay.innerHTML = `
+    const overlay = openOverlay(`
       <div class="modal" style="max-width:420px; max-height:85vh; overflow:auto;">
         <h3>Comboni tahrirlash</h3>
         <input type="text" id="editComboNameInput" placeholder="Combo nomi" value="${escapeHtml(combo.name || '')}">
@@ -5718,8 +5609,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <button class="btn" id="editComboSaveBtn">Saqlash</button>
         </div>
       </div>
-    `;
-    document.body.appendChild(overlay);
+    `);
     const picker = document.getElementById('editComboItemPicker');
     wireComboItemPicker(picker, 'editCombo');
 
@@ -5741,8 +5631,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         preview.src = pendingImage;
         preview.style.display = pendingImage ? 'block' : 'none';
       } catch (err) {
-        msgEl.textContent = err.message || 'Rasmni yuklab bo\'lmadi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, err.message || 'Rasmni yuklab bo\'lmadi.', 'err');
         e.target.value = '';
       }
     });
@@ -5757,31 +5646,26 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const msgEl = document.getElementById('editComboMsg');
 
       if (!name) {
-        msgEl.textContent = 'Combo nomini kiriting.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Combo nomini kiriting.', 'err');
         return;
       }
       if (itemIds.length < 2) {
-        msgEl.textContent = 'Combo tarkibida kamida 2 ta taom tanlang.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Combo tarkibida kamida 2 ta taom tanlang.', 'err');
         return;
       }
       if (priceMode === 'manual' && (!price || !Number.isFinite(Number(price)) || Number(price) <= 0)) {
-        msgEl.textContent = 'Combo narxini to\'g\'ri kiriting.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Combo narxini to\'g\'ri kiriting.', 'err');
         return;
       }
-      msgEl.textContent = 'Saqlanmoqda...';
-      msgEl.className = 'xabar';
+      setMsg(msgEl, 'Saqlanmoqda...');
       const res = await apiPost('/api/combo-update', {
-        initData, id: combo.id, name, itemIds, priceMode, price, category, imageUrl: pendingImage, available
+        id: combo.id, name, itemIds, priceMode, price, category, imageUrl: pendingImage, available
       });
       if (res.ok) {
         overlay.remove();
         loadComboListAndRender();
       } else {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
       }
     };
   }
@@ -5836,8 +5720,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         preview.src = dataUrl;
         preview.style.display = 'block';
       } catch (err) {
-        msgEl.textContent = err.message || 'Rasmni yuklab bo\'lmadi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, err.message || 'Rasmni yuklab bo\'lmadi.', 'err');
         e.target.value = '';
       }
     });
@@ -5853,26 +5736,21 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const imageUrl = document.getElementById('comboImageInput').value.trim();
 
       if (!name) {
-        msgEl.textContent = 'Combo nomini kiriting.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Combo nomini kiriting.', 'err');
         return;
       }
       if (itemIds.length < 2) {
-        msgEl.textContent = 'Combo tarkibida kamida 2 ta taom tanlang.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Combo tarkibida kamida 2 ta taom tanlang.', 'err');
         return;
       }
       if (priceMode === 'manual' && (!price || !Number.isFinite(Number(price)) || Number(price) <= 0)) {
-        msgEl.textContent = 'Combo narxini to\'g\'ri kiriting.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Combo narxini to\'g\'ri kiriting.', 'err');
         return;
       }
-      msgEl.textContent = 'Qo\'shilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/combo-add', { initData, name, itemIds, priceMode, price, category, imageUrl });
+      setMsg(msgEl, 'Qo\'shilmoqda...');
+      const res = await apiPost('/api/combo-add', { name, itemIds, priceMode, price, category, imageUrl });
       if (res.ok) {
-        msgEl.textContent = 'Combo qo\'shildi.';
-        msgEl.className = 'xabar ok';
+        setMsg(msgEl, 'Combo qo\'shildi.', 'ok');
         document.getElementById('comboNameInput').value = '';
         document.getElementById('comboPriceInput').value = '';
         document.getElementById('comboCategoryInput').value = '';
@@ -5885,8 +5763,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         loadComboListAndRender();
       } else {
         handleFeatureBlocked(res);
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
       }
     });
 
@@ -5895,23 +5772,20 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   async function openRecipePickerOverlay() {
-    const overlay = document.createElement('div');
-    overlay.className = 'overlay';
-    overlay.innerHTML = `
+    const overlay = openOverlay(`
       <div class="modal" style="max-width:420px; max-height:80vh; overflow-y:auto;">
         <h3>Retsept qo'shish</h3>
         <div class="bosh">Retsept qo'shmoqchi bo'lgan taomni tanlang.</div>
         <div id="recipePickerList" style="margin-top:10px;"><div class="bosh">Yuklanmoqda...</div></div>
         <button type="button" class="btn ikkinchi" id="recipePickerCloseBtn" style="margin-top:12px;">Yopish</button>
       </div>
-    `;
-    document.body.appendChild(overlay);
+    `);
     const close = () => overlay.remove();
     document.getElementById('recipePickerCloseBtn').addEventListener('click', close);
     overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
 
     const listEl = document.getElementById('recipePickerList');
-    const res = await apiPost('/api/menu-list', { initData });
+    const res = await apiPost('/api/menu-list');
     if (!listEl.isConnected) return;
     if (!res.ok) {
       listEl.innerHTML = `<div class="bosh">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
@@ -6006,7 +5880,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       btn.addEventListener('click', async () => {
         btn.disabled = true;
         const orderId = btn.getAttribute('data-deliver-order-id');
-        const res = await apiPost('/api/deliver-order', { initData, orderId });
+        const res = await apiPost('/api/deliver-order', { orderId });
         if (!res.ok) alert(res.reason || 'Xatolik yuz berdi.');
         lastOrdersSnapshot = null;
         await refreshDeliveryBoard();
@@ -6034,7 +5908,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         const order = lastDeliveryOrdersById.get(orderId);
         const returnedItems = order ? await promptReturnedStockItems(order) : [];
         btn.disabled = true;
-        const res = await apiPost('/api/reject-delivery-order', { initData, orderId, reason, returnedItems });
+        const res = await apiPost('/api/reject-delivery-order', { orderId, reason, returnedItems });
         if (!res.ok) { alert(res.reason || 'Xatolik yuz berdi.'); btn.disabled = false; return; }
         lastOrdersSnapshot = null;
         await refreshDeliveryBoard();
@@ -6103,7 +5977,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function refreshDeliveryBoard() {
     const board = document.getElementById('ordersBoard');
     if (!board) { stopOrdersPolling(); return; }
-    const res = await apiPost('/api/orders-list', { initData });
+    const res = await apiPost('/api/orders-list');
     if (!res.ok) {
       if (res.networkError && lastOrdersSnapshot === null) {
         renderNetworkErrorInline(board, res.reason, () => refreshDeliveryBoard());
@@ -6208,7 +6082,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
     const summaryEl = document.getElementById('reviewsSummary');
     const listEl = document.getElementById('reviewsList');
-    const body = targetOwnerId ? { initData, targetOwnerId } : { initData };
+    const body = targetOwnerId ? { targetOwnerId } : {};
     const res = await apiPost('/api/owner-reviews', body);
     if (!res.ok) {
       if (res.networkError) { renderNetworkErrorInline(summaryEl, res.reason, () => renderReviewsScreen(targetOwnerId, title, onBack)); return; }
@@ -6250,7 +6124,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     document.getElementById('restrictedBackBtn').addEventListener('click', onBack);
 
     const listEl = document.getElementById('restrictedList');
-    const res = await apiPost('/api/restricted-customers', { initData });
+    const res = await apiPost('/api/restricted-customers');
     if (!res.ok) {
       if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, () => renderRestrictedCustomersScreen(onBack)); return; }
       listEl.innerHTML = `<div class="bosh">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
@@ -6266,7 +6140,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         btn.disabled = true;
         const customerId = btn.getAttribute('data-toggle-restriction-id');
         const action = btn.getAttribute('data-toggle-restriction-action');
-        const res2 = await apiPost('/api/toggle-customer-restriction', { initData, customerId, action });
+        const res2 = await apiPost('/api/toggle-customer-restriction', { customerId, action });
         if (!res2.ok) { alert(res2.reason || 'Xatolik yuz berdi.'); btn.disabled = false; return; }
         renderRestrictedCustomersScreen(onBack);
       });
@@ -6284,9 +6158,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   function openUnitConverter(targetUnit, onApply) {
     const pair = unitConversionPair(targetUnit);
     if (!pair) return;
-    const overlay = document.createElement('div');
-    overlay.className = 'overlay';
-    overlay.innerHTML = `
+    const overlay = openOverlay(`
       <div class="modal" style="max-width:340px;">
         <h3>${pair.bigLabel} ⇄ ${pair.smallLabel}</h3>
         <p class="bosh" style="margin-bottom:10px;">Birini kiriting — ikkinchisi avtomatik hisoblanadi.</p>
@@ -6298,8 +6170,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <button class="btn" id="convApplyBtn">${STOCK_UNIT_LABELS[targetUnit] || targetUnit} sifatida ishlatish</button>
         </div>
       </div>
-    `;
-    document.body.appendChild(overlay);
+    `);
     const bigInput = overlay.querySelector('#convBigInput');
     const smallInput = overlay.querySelector('#convSmallInput');
     bigInput.addEventListener('input', () => {
@@ -6321,8 +6192,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       if (targetUnit === pair.big && Number.isFinite(bigVal) && bigVal > 0) result = bigVal;
       else if (targetUnit === pair.small && Number.isFinite(smallVal) && smallVal > 0) result = smallVal;
       if (result === null) {
-        msgEl.textContent = "To'g'ri qiymat kiriting.";
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, "To'g'ri qiymat kiriting.", 'err');
         return;
       }
       onApply(result);
@@ -6439,7 +6309,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         loadMenuAndRender();
       });
 
-      apiPost('/api/branch-list', { initData }).then(res => {
+      apiPost('/api/branch-list').then(res => {
         branchState.branches = res.ok ? res.branches : [];
         const sel = document.getElementById('stockBranchSelect');
         if (sel) {
@@ -6457,22 +6327,18 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const price = document.getElementById('stockPriceInput').value.trim();
       const minQty = document.getElementById('stockMinInput').value.trim();
       if (!name || !qty || !Number.isFinite(Number(qty)) || Number(qty) <= 0) {
-        msgEl.textContent = 'Nomi va to\'g\'ri miqdorni kiriting.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Nomi va to\'g\'ri miqdorni kiriting.', 'err');
         return;
       }
 
       if (!price || !Number.isFinite(Number(price)) || Number(price) <= 0) {
-        msgEl.textContent = 'Narxni kiriting — u avtomatik xarajat yozish uchun kerak.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Narxni kiriting — u avtomatik xarajat yozish uchun kerak.', 'err');
         return;
       }
-      msgEl.textContent = 'Qo\'shilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/stock-add', { initData, name, qty, unit, price, minQty, branchId: currentStockBranchId });
+      setMsg(msgEl, 'Qo\'shilmoqda...');
+      const res = await apiPost('/api/stock-add', { name, qty, unit, price, minQty, branchId: currentStockBranchId });
       if (res.ok) {
-        msgEl.textContent = 'Qo\'shildi. Xarajat Moliyaga avtomatik yozildi.';
-        msgEl.className = 'xabar ok';
+        setMsg(msgEl, 'Qo\'shildi. Xarajat Moliyaga avtomatik yozildi.', 'ok');
         document.getElementById('stockNameInput').value = '';
         document.getElementById('stockQtyInput').value = '';
         document.getElementById('stockPriceInput').value = '';
@@ -6481,8 +6347,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         loadMovementsAndRender();
       } else {
         handleFeatureBlocked(res);
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
       }
     });
 
@@ -6507,7 +6372,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadStockAndRender() {
     const el = document.getElementById('stockList');
     if (!el) return;
-    const res = await apiPost('/api/stock-list', { initData, branchId: currentStockBranchId });
+    const res = await apiPost('/api/stock-list', { branchId: currentStockBranchId });
     if (res.networkError) { renderNetworkErrorInline(el, res.reason, loadStockAndRender); return; }
     stockState.stock = res.ok ? res.stock : [];
     const canTransfer = currentStockRole === 'egasi' && !currentStockBranchId && branchState.branches.length > 0;
@@ -6515,7 +6380,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     el.querySelectorAll('[data-remove-stock-id]').forEach(btn => {
       btn.addEventListener('click', async () => {
         btn.disabled = true;
-        await apiPost('/api/stock-remove', { initData, id: btn.getAttribute('data-remove-stock-id'), branchId: currentStockBranchId });
+        await apiPost('/api/stock-remove', { id: btn.getAttribute('data-remove-stock-id'), branchId: currentStockBranchId });
         loadStockAndRender();
       });
     });
@@ -6536,9 +6401,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   function openTransferForm(item) {
-    const overlay = document.createElement('div');
-    overlay.className = 'overlay';
-    overlay.innerHTML = `
+    const overlay = openOverlay(`
       <div class="modal" style="max-width:380px;">
         <h3>Filialga o'tkazish</h3>
         <p>${escapeHtml(item.name)} — omborda: ${item.qty} ${escapeHtml(item.unit)}</p>
@@ -6550,8 +6413,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <button class="btn" id="transferSubmitBtn">O'tkazish</button>
         </div>
       </div>
-    `;
-    document.body.appendChild(overlay);
+    `);
 
     document.getElementById('transferCancelBtn').onclick = () => overlay.remove();
     document.getElementById('transferSubmitBtn').onclick = async () => {
@@ -6559,25 +6421,21 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const qty = document.getElementById('transferQtyInput').value.trim();
       const msgEl = document.getElementById('transferMsg');
       if (!branchId) {
-        msgEl.textContent = 'Filialni tanlang.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Filialni tanlang.', 'err');
         return;
       }
       if (!qty || !Number.isFinite(Number(qty)) || Number(qty) <= 0) {
-        msgEl.textContent = 'To\'g\'ri miqdor kiriting.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'To\'g\'ri miqdor kiriting.', 'err');
         return;
       }
-      msgEl.textContent = 'O\'tkazilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/stock-transfer', { initData, stockId: item.id, branchId, qty });
+      setMsg(msgEl, 'O\'tkazilmoqda...');
+      const res = await apiPost('/api/stock-transfer', { stockId: item.id, branchId, qty });
       if (res.ok) {
         overlay.remove();
         loadStockAndRender();
         loadMovementsAndRender();
       } else {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
       }
     };
   }
@@ -6595,9 +6453,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
   function openWriteoffForm(item) {
     let selectedReason = null;
-    const overlay = document.createElement('div');
-    overlay.className = 'overlay';
-    overlay.innerHTML = `
+    const overlay = openOverlay(`
       <div class="modal" style="max-width:380px;">
         <h3>🗑 Spisaniya qilish</h3>
         <p>${escapeHtml(item.name)} — omborda: ${item.qty} ${escapeHtml(item.unit)}</p>
@@ -6615,8 +6471,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <button class="btn" id="writeoffSubmitBtn">Spisaniya qilish</button>
         </div>
       </div>
-    `;
-    document.body.appendChild(overlay);
+    `);
 
     document.getElementById('writeoffReasonRow').addEventListener('click', (e) => {
       const opt = e.target.closest('[data-writeoff-reason]');
@@ -6633,24 +6488,20 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const note = document.getElementById('writeoffNoteInput').value.trim();
       const msgEl = document.getElementById('writeoffMsg');
       if (!qty || !Number.isFinite(Number(qty)) || Number(qty) <= 0) {
-        msgEl.textContent = 'To\'g\'ri miqdor kiriting.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'To\'g\'ri miqdor kiriting.', 'err');
         return;
       }
       if (!selectedReason) {
-        msgEl.textContent = 'Spisaniya sababini tanlang.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Spisaniya sababini tanlang.', 'err');
         return;
       }
       if (selectedReason === 'boshqa' && !note) {
-        msgEl.textContent = '"Boshqa sabab" tanlansa, izoh yozish shart.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, '"Boshqa sabab" tanlansa, izoh yozish shart.', 'err');
         return;
       }
-      msgEl.textContent = 'Yuborilmoqda...';
-      msgEl.className = 'xabar';
+      setMsg(msgEl, 'Yuborilmoqda...');
       const res = await apiPost('/api/stock-writeoff', {
-        initData, id: item.id, qty, reason: selectedReason, note, branchId: currentStockBranchId
+        id: item.id, qty, reason: selectedReason, note, branchId: currentStockBranchId
       });
       if (res.ok) {
         overlay.remove();
@@ -6658,8 +6509,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         loadMovementsAndRender();
       } else {
         handleFeatureBlocked(res);
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
       }
     };
   }
@@ -6667,7 +6517,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadMovementsAndRender() {
     const el = document.getElementById('stockMovements');
     if (!el) return;
-    const res = await apiPost('/api/stock-movements', { initData, branchId: currentStockBranchId });
+    const res = await apiPost('/api/stock-movements', { branchId: currentStockBranchId });
     if (res.networkError) { renderNetworkErrorInline(el, res.reason, loadMovementsAndRender); return; }
     el.innerHTML = movementsListHtml(res.ok ? res.movements : []);
   }
@@ -6710,19 +6560,16 @@ const tg = window.Telegram && window.Telegram.WebApp;
       });
       const msgEl = document.getElementById('auditMsg');
       if (!entries.length) {
-        msgEl.textContent = 'Kamida bitta mahsulot uchun qoldiq kiriting.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Kamida bitta mahsulot uchun qoldiq kiriting.', 'err');
         return;
       }
-      msgEl.textContent = 'Yuborilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/audit-submit', { initData, entries, branchId: currentStockBranchId });
+      setMsg(msgEl, 'Yuborilmoqda...');
+      const res = await apiPost('/api/audit-submit', { entries, branchId: currentStockBranchId });
       if (res.ok) {
         overlay.remove();
         showAuditReport(res.audit);
       } else {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
       }
     };
   }
@@ -6980,21 +6827,18 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const branchId = branchSelectEl ? (branchSelectEl.value || null) : null;
       const msgEl = document.getElementById('cfExpenseMsg');
       if (!amount || !/^\d+$/.test(amount) || parseInt(amount, 10) <= 0) {
-        msgEl.textContent = 'To\'g\'ri summa kiriting.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'To\'g\'ri summa kiriting.', 'err');
         return;
       }
-      msgEl.textContent = 'Qo\'shilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/expense-add', { initData, amount, category, note, branchId });
+      setMsg(msgEl, 'Qo\'shilmoqda...');
+      const res = await apiPost('/api/expense-add', { amount, category, note, branchId });
       if (res.ok) {
         document.getElementById('cfAmountInput').value = '';
         document.getElementById('cfNoteInput').value = '';
         loadCashflowData(profile, onBack);
       } else {
         handleFeatureBlocked(res);
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
       }
     });
 
@@ -7006,7 +6850,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadCfTrendChart() {
     const el = document.getElementById('cfTrendChart');
     if (!el) return;
-    const res = await apiPost('/api/z-report-list', { initData, branchId: cashflowState.branchId });
+    const res = await apiPost('/api/z-report-list', { branchId: cashflowState.branchId });
     if (res.networkError) { renderNetworkErrorInline(el, res.reason, loadCfTrendChart); return; }
     if (!res.ok || !res.reports || !res.reports.length) {
       el.innerHTML = `<div class="bosh">Grafik uchun hali yopilgan kun yo'q. "Kunlik Z-hisobot" bo'limidan kunni yoping.</div>`;
@@ -7037,7 +6881,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadBranchReportAndRender() {
     const el = document.getElementById('cfBranchReport');
     if (!el) return;
-    const res = await apiPost('/api/branch-report', { initData, period: cashflowState.period });
+    const res = await apiPost('/api/branch-report', { period: cashflowState.period });
     if (res.networkError) { renderNetworkErrorInline(el, res.reason, loadBranchReportAndRender); return; }
     el.innerHTML = branchReportHtml(res.ok ? res.report : []);
   }
@@ -7047,7 +6891,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const listEl = document.getElementById('cfExpenseList');
     const msgEl = document.getElementById('cfExpenseMsg');
     if (!statsEl || !listEl) return;
-    const res = await apiPost('/api/cashflow', { initData, branchId: cashflowState.branchId });
+    const res = await apiPost('/api/cashflow', { branchId: cashflowState.branchId });
     if (res.networkError) {
       renderNetworkErrorInline(statsEl, res.reason, () => loadCashflowData(profile, onBack));
       listEl.innerHTML = '';
@@ -7073,7 +6917,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     listEl.querySelectorAll('[data-remove-expense]').forEach(btn => {
       btn.addEventListener('click', async () => {
         btn.disabled = true;
-        await apiPost('/api/expense-remove', { initData, id: btn.getAttribute('data-remove-expense') });
+        await apiPost('/api/expense-remove', { id: btn.getAttribute('data-remove-expense') });
         loadCashflowData(profile, onBack);
       });
     });
@@ -7178,7 +7022,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (input) input.value = '';
     if (sendBtn) sendBtn.disabled = true;
 
-    const res = await apiPost('/api/ai-ask', { initData, question: qTrim });
+    const res = await apiPost('/api/ai-ask', { question: qTrim });
     aiChatState.sending = false;
     if (res.ok) {
       aiChatState.messages.push({ role: 'bot', text: res.answer });
@@ -7281,7 +7125,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     document.getElementById('dailyReportToggle').addEventListener('change', async (e) => {
       const checked = e.target.checked;
       e.target.disabled = true;
-      const res = await apiPost('/api/daily-report-toggle', { initData, enabled: checked });
+      const res = await apiPost('/api/daily-report-toggle', { enabled: checked });
       e.target.disabled = false;
       if (!res.ok) { e.target.checked = !checked; alert(res.reason || 'Xatolik yuz berdi.'); }
     });
@@ -7289,17 +7133,16 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const btn = document.getElementById('dailyReportSendBtn');
       const msgEl = document.getElementById('dailyReportMsg');
       btn.disabled = true;
-      const res = await apiPost('/api/daily-report-send-now', { initData });
+      const res = await apiPost('/api/daily-report-send-now');
       btn.disabled = false;
       if (!res.ok) { msgEl.textContent = res.reason || 'Xatolik yuz berdi.'; msgEl.className = 'xabar err'; return; }
-      msgEl.textContent = 'Yuborildi — Telegram\'dagi bot xabarini tekshiring.';
-      msgEl.className = 'xabar ok';
+      setMsg(msgEl, 'Yuborildi — Telegram\'dagi bot xabarini tekshiring.', 'ok');
     });
 
     document.getElementById('aiDirDailyToggle').addEventListener('change', async (e) => {
       const checked = e.target.checked;
       e.target.disabled = true;
-      const res = await apiPost('/api/ai-director-toggle', { initData, enabled: checked });
+      const res = await apiPost('/api/ai-director-toggle', { enabled: checked });
       e.target.disabled = false;
       if (!res.ok) { e.target.checked = !checked; alert(res.reason || 'Xatolik yuz berdi.'); }
     });
@@ -7307,17 +7150,16 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const btn = document.getElementById('aiDirDailySendBtn');
       const msgEl = document.getElementById('aiDirDailyMsg');
       btn.disabled = true;
-      const res = await apiPost('/api/ai-director-send-now', { initData });
+      const res = await apiPost('/api/ai-director-send-now');
       btn.disabled = false;
       if (!res.ok) { msgEl.textContent = res.reason || 'Xatolik yuz berdi.'; msgEl.className = 'xabar err'; return; }
-      msgEl.textContent = 'Yuborildi — Telegram\'dagi bot xabarini tekshiring.';
-      msgEl.className = 'xabar ok';
+      setMsg(msgEl, 'Yuborildi — Telegram\'dagi bot xabarini tekshiring.', 'ok');
     });
 
     document.getElementById('aiDirWeeklyToggle').addEventListener('change', async (e) => {
       const checked = e.target.checked;
       e.target.disabled = true;
-      const res = await apiPost('/api/ai-director-weekly-toggle', { initData, enabled: checked });
+      const res = await apiPost('/api/ai-director-weekly-toggle', { enabled: checked });
       e.target.disabled = false;
       if (!res.ok) { e.target.checked = !checked; alert(res.reason || 'Xatolik yuz berdi.'); }
     });
@@ -7325,11 +7167,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const btn = document.getElementById('aiDirWeeklySendBtn');
       const msgEl = document.getElementById('aiDirWeeklyMsg');
       btn.disabled = true;
-      const res = await apiPost('/api/ai-director-weekly-send-now', { initData });
+      const res = await apiPost('/api/ai-director-weekly-send-now');
       btn.disabled = false;
       if (!res.ok) { msgEl.textContent = res.reason || 'Xatolik yuz berdi.'; msgEl.className = 'xabar err'; return; }
-      msgEl.textContent = 'Yuborildi — Telegram\'dagi bot xabarini tekshiring.';
-      msgEl.className = 'xabar ok';
+      setMsg(msgEl, 'Yuborildi — Telegram\'dagi bot xabarini tekshiring.', 'ok');
     });
 
     aiRenderChat();
@@ -7341,7 +7182,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const dailyReportTextEl = document.getElementById('dailyReportText');
     const dailyReportToggleEl = document.getElementById('dailyReportToggle');
     if (dailyReportTextEl) {
-      const res = await apiPost('/api/daily-report-preview', { initData });
+      const res = await apiPost('/api/daily-report-preview');
       if (res.ok) {
         dailyReportTextEl.innerHTML = `<div style="white-space:pre-line;">${res.text}</div>` +
           (res.sentToday ? `<div class="bosh" style="margin-top:6px;">✅ Bugun allaqachon yuborilgan.</div>` : '');
@@ -7356,7 +7197,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const dailyTextEl = document.getElementById('aiDirDailyText');
     const dailyToggle = document.getElementById('aiDirDailyToggle');
     if (dailyTextEl) {
-      const res = await apiPost('/api/ai-director-preview', { initData });
+      const res = await apiPost('/api/ai-director-preview');
       if (res.ok) {
         dailyTextEl.innerHTML = `<div style="white-space:pre-line;">${res.text}</div>` +
           (res.sentToday ? `<div class="bosh" style="margin-top:6px;">✅ Bugun allaqachon yuborilgan.</div>` : '');
@@ -7371,7 +7212,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const weeklyTextEl = document.getElementById('aiDirWeeklyText');
     const weeklyToggle = document.getElementById('aiDirWeeklyToggle');
     if (weeklyTextEl) {
-      const res = await apiPost('/api/ai-director-weekly-preview', { initData });
+      const res = await apiPost('/api/ai-director-weekly-preview');
       if (res.ok) {
         weeklyTextEl.innerHTML = `<div style="white-space:pre-line;">${res.text}</div>` +
           (res.sentThisWeek ? `<div class="bosh" style="margin-top:6px;">✅ Shu hafta allaqachon yuborilgan.</div>` : '');
@@ -7389,7 +7230,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const peakEl = document.getElementById('aiPeak');
     const forecastEl = document.getElementById('aiForecast');
     if (!topEl) return;
-    const res = await apiPost('/api/ai-analytics', { initData, period: aiState.period });
+    const res = await apiPost('/api/ai-analytics', { period: aiState.period });
     if (res.networkError) {
       renderNetworkErrorInline(topEl, res.reason, loadAiData);
       peakEl.innerHTML = '';
@@ -7530,27 +7371,22 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const branchId = document.getElementById('staffBranchInput').value;
       const msgEl = document.getElementById('staffMsg');
       if (!val) {
-        msgEl.textContent = 'Iltimos, ID yoki username kiriting.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Iltimos, ID yoki username kiriting.', 'err');
         return;
       }
       if (!roles.length) {
-        msgEl.textContent = 'Kamida bitta lavozim belgilang.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Kamida bitta lavozim belgilang.', 'err');
         return;
       }
-      msgEl.textContent = 'Qo\'shilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/add-staff', { initData, input: val, roles, branchId });
+      setMsg(msgEl, 'Qo\'shilmoqda...');
+      const res = await apiPost('/api/add-staff', { input: val, roles, branchId });
       if (res.ok) {
-        msgEl.textContent = 'Xodim qo\'shildi.';
-        msgEl.className = 'xabar ok';
+        setMsg(msgEl, 'Xodim qo\'shildi.', 'ok');
         document.getElementById('staffInput').value = '';
         document.querySelectorAll('.staffRoleAddCheckbox').forEach(cb => cb.checked = false);
         loadStaffAndRender();
       } else {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
       }
     });
 
@@ -7560,17 +7396,14 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const msgEl = document.getElementById('staffInviteMsg');
       const wrap = document.getElementById('staffInviteLinkWrap');
       if (!roles.length) {
-        msgEl.textContent = 'Kamida bitta lavozim belgilang. ("Egasi (hamkor)" havola orqali berilmaydi — buni faqat ID/username orqali qo\'shishda tanlang.)';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Kamida bitta lavozim belgilang. ("Egasi (hamkor)" havola orqali berilmaydi — buni faqat ID/username orqali qo\'shishda tanlang.)', 'err');
         return;
       }
-      msgEl.textContent = 'Yaratilmoqda...';
-      msgEl.className = 'xabar';
+      setMsg(msgEl, 'Yaratilmoqda...');
       wrap.innerHTML = '';
-      const res = await apiPost('/api/create-staff-invite', { initData, roles, branchId });
+      const res = await apiPost('/api/create-staff-invite', { roles, branchId });
       if (!res.ok) {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
         return;
       }
       msgEl.textContent = '';
@@ -7583,11 +7416,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
       `;
       document.getElementById('copyStaffInviteLinkBtn').addEventListener('click', () => {
         navigator.clipboard.writeText(res.link).then(() => {
-          msgEl.textContent = 'Havola nusxalandi.';
-          msgEl.className = 'xabar ok';
+          setMsg(msgEl, 'Havola nusxalandi.', 'ok');
         }).catch(() => {
-          msgEl.textContent = 'Nusxalab bo\'lmadi, havolani qo\'lda ko\'chiring.';
-          msgEl.className = 'xabar err';
+          setMsg(msgEl, 'Nusxalab bo\'lmadi, havolani qo\'lda ko\'chiring.', 'err');
         });
       });
     });
@@ -7596,7 +7427,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const id = e.target.getAttribute('data-remove-staff-id');
       if (!id) return;
       e.target.disabled = true;
-      await apiPost('/api/remove-staff', { initData, id });
+      await apiPost('/api/remove-staff', { id });
       loadStaffAndRender();
     });
 
@@ -7604,7 +7435,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const branchStaffId = e.target.getAttribute('data-staff-branch-id');
       if (branchStaffId) {
         e.target.disabled = true;
-        await apiPost('/api/set-staff-branch', { initData, id: branchStaffId, branchId: e.target.value });
+        await apiPost('/api/set-staff-branch', { id: branchStaffId, branchId: e.target.value });
         loadStaffAndRender();
         return;
       }
@@ -7618,14 +7449,14 @@ const tg = window.Telegram && window.Telegram.WebApp;
           return;
         }
         checkboxes.forEach(cb => cb.disabled = true);
-        await apiPost('/api/set-staff-roles', { initData, id: roleStaffId, roles });
+        await apiPost('/api/set-staff-roles', { id: roleStaffId, roles });
         loadStaffAndRender();
       }
     });
 
     document.getElementById('clearNotifErrorsBtn').addEventListener('click', async () => {
       if (!confirm('Bildirishnoma xatolari jurnalini tozalamoqchimisiz?')) return;
-      await apiPost('/api/notification-error-log-clear', { initData });
+      await apiPost('/api/notification-error-log-clear');
       loadStaffControlData();
     });
 
@@ -7638,7 +7469,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const logEl = document.getElementById('scLog');
     if (!ratingEl) return;
 
-    const perfRes = await apiPost('/api/staff-performance-report', { initData, period: staffControlState.period });
+    const perfRes = await apiPost('/api/staff-performance-report', { period: staffControlState.period });
     if (perfRes.networkError) {
       renderNetworkErrorInline(ratingEl, perfRes.reason, loadStaffControlData);
       return;
@@ -7647,7 +7478,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       ? staffPerformanceHtml(perfRes.report)
       : `<div class="xabar err">${escapeHtml(perfRes.reason || 'Xatolik yuz berdi.')}</div>`;
 
-    const logRes = await apiPost('/api/staff-activity-log', { initData, limit: 50 });
+    const logRes = await apiPost('/api/staff-activity-log', { limit: 50 });
     if (logRes.networkError) {
       renderNetworkErrorInline(logEl, logRes.reason, loadStaffControlData);
       return;
@@ -7658,7 +7489,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
     const notifErrEl = document.getElementById('scNotifErrors');
     if (notifErrEl) {
-      const notifRes = await apiPost('/api/notification-error-log', { initData });
+      const notifRes = await apiPost('/api/notification-error-log');
       notifErrEl.innerHTML = notifRes.ok
         ? notificationErrorLogHtml(notifRes.entries)
         : `<div class="xabar err">${escapeHtml((notifRes.reason) || 'Xatolik yuz berdi.')}</div>`;
@@ -7801,7 +7632,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function exportOrderHistory(format, btnEl) {
     if (btnEl) btnEl.disabled = true;
     const res = await apiPost('/api/order-history-export', {
-      initData,
       format,
       dateFrom: orderHistoryState.dateFrom || undefined,
       dateTo: orderHistoryState.dateTo || undefined,
@@ -7825,7 +7655,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const pagEl = document.getElementById('ohPagination');
     if (!listEl) return;
     const res = await apiPost('/api/order-history', {
-      initData,
       dateFrom: orderHistoryState.dateFrom || undefined,
       dateTo: orderHistoryState.dateTo || undefined,
       employeeId: orderHistoryState.employeeId || undefined,
@@ -7928,7 +7757,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadSupportInbox(profile, onBack, isBackgroundRefresh) {
     const listEl = document.getElementById('supInboxList');
     if (!listEl) { if (supportStaffPollTimer) { clearInterval(supportStaffPollTimer); supportStaffPollTimer = null; } return; }
-    const res = await apiPost('/api/support-inbox', { initData });
+    const res = await apiPost('/api/support-inbox');
     if (res.networkError) { if (!isBackgroundRefresh) renderNetworkErrorInline(listEl, res.reason, () => loadSupportInbox(profile, onBack)); return; }
     if (!res.ok) {
       if (!isBackgroundRefresh) { handleFeatureBlocked(res); renderFeatureBlockedInline(listEl, res.reason); }
@@ -7980,7 +7809,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const msgsEl = document.getElementById('supThreadMsgs');
     const scrollToBottom = () => { msgsEl.scrollTop = msgsEl.scrollHeight; };
     const loadThread = async (isFirstLoad) => {
-      const res = await apiPost('/api/support-thread-staff', { initData, customerId });
+      const res = await apiPost('/api/support-thread-staff', { customerId });
       if (!document.getElementById('supThreadMsgs')) { if (supportStaffPollTimer) { clearInterval(supportStaffPollTimer); supportStaffPollTimer = null; } return; }
       if (!res.ok) { msgsEl.innerHTML = `<div class="bosh">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`; return; }
       msgsEl.innerHTML = customerSupportMessagesHtml(res.messages || []);
@@ -7995,7 +7824,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const text = input.value.trim();
       if (!text) return;
       sendBtn.disabled = true;
-      const res = await apiPost('/api/support-reply', { initData, customerId, text });
+      const res = await apiPost('/api/support-reply', { customerId, text });
       sendBtn.disabled = false;
       if (!res.ok) { alert(res.reason || 'Xabar yuborilmadi.'); return; }
       input.value = '';
@@ -8039,7 +7868,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadAdminSupportInbox(onBack, isBackgroundRefresh) {
     const listEl = document.getElementById('adminSupInboxList');
     if (!listEl) { if (adminSupportPollTimer) { clearInterval(adminSupportPollTimer); adminSupportPollTimer = null; } return; }
-    const res = await apiPost('/api/admin-support-inbox', { initData });
+    const res = await apiPost('/api/admin-support-inbox');
     if (res.networkError) { if (!isBackgroundRefresh) renderNetworkErrorInline(listEl, res.reason, () => loadAdminSupportInbox(onBack)); return; }
     if (!res.ok) {
       if (!isBackgroundRefresh) listEl.innerHTML = `<div class="bosh">${escapeHtml(res.reason || 'Yuklanmadi.')}</div>`;
@@ -8091,7 +7920,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const msgsEl = document.getElementById('adminSupThreadMsgs');
     const scrollToBottom = () => { msgsEl.scrollTop = msgsEl.scrollHeight; };
     const loadThread = async (isFirstLoad) => {
-      const res = await apiPost('/api/admin-support-thread', { initData, ownerId });
+      const res = await apiPost('/api/admin-support-thread', { ownerId });
       if (!document.getElementById('adminSupThreadMsgs')) { if (adminSupportPollTimer) { clearInterval(adminSupportPollTimer); adminSupportPollTimer = null; } return; }
       if (!res.ok) { msgsEl.innerHTML = `<div class="bosh">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`; return; }
       msgsEl.innerHTML = adminSupportMessagesHtml(res.messages || []);
@@ -8106,7 +7935,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const text = input.value.trim();
       if (!text) return;
       sendBtn.disabled = true;
-      const res = await apiPost('/api/admin-support-reply', { initData, ownerId, text });
+      const res = await apiPost('/api/admin-support-reply', { ownerId, text });
       sendBtn.disabled = false;
       if (!res.ok) { alert(res.reason || 'Xabar yuborilmadi.'); return; }
       input.value = '';
@@ -8168,17 +7997,14 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
     document.getElementById('zrCreateBtn').addEventListener('click', async () => {
       const msgEl = document.getElementById('zrMsg');
-      msgEl.textContent = 'Yopilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/z-report-create', { initData, branchId: zReportState.branchId || null });
+      setMsg(msgEl, 'Yopilmoqda...');
+      const res = await apiPost('/api/z-report-create', { branchId: zReportState.branchId || null });
       if (res.ok) {
-        msgEl.textContent = res.wasUpdate ? 'Bugungi hisobot yangilandi.' : 'Bugungi kun yopildi.';
-        msgEl.className = 'xabar ok';
+        setMsg(msgEl, res.wasUpdate ? 'Bugungi hisobot yangilandi.' : 'Bugungi kun yopildi.', 'ok');
         loadZReportList();
       } else {
         handleFeatureBlocked(res);
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
       }
     });
 
@@ -8188,16 +8014,13 @@ const tg = window.Telegram && window.Telegram.WebApp;
         if (!confirm("DIQQAT: barcha savdo, xarajat va Z-hisobotlar butunlay, qaytarib bo'lmaydigan tarzda o'chiriladi. Davom etasizmi?")) return;
         if (!confirm("Tasdiqlang: rostdan ham HAMMASINI o'chirasizmi?")) return;
         const msgEl = document.getElementById('zrDeleteAllMsg');
-        msgEl.textContent = 'O\'chirilmoqda...';
-        msgEl.className = 'xabar';
-        const res = await apiPost('/api/super-admin-reset-reports', { initData });
+        setMsg(msgEl, 'O\'chirilmoqda...');
+        const res = await apiPost('/api/super-admin-reset-reports');
         if (res.ok) {
-          msgEl.textContent = 'Barcha hisobotlar o\'chirildi. Hammasi yangidan boshlandi.';
-          msgEl.className = 'xabar ok';
+          setMsg(msgEl, 'Barcha hisobotlar o\'chirildi. Hammasi yangidan boshlandi.', 'ok');
           loadZReportList();
         } else {
-          msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-          msgEl.className = 'xabar err';
+          setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
         }
       });
     }
@@ -8214,7 +8037,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const listEl = document.getElementById('zrList');
     const chartEl = document.getElementById('zrChart');
     if (!listEl) return;
-    const res = await apiPost('/api/z-report-list', { initData, branchId: zReportState.branchId });
+    const res = await apiPost('/api/z-report-list', { branchId: zReportState.branchId });
     if (res.networkError) {
       renderNetworkErrorInline(listEl, res.reason, loadZReportList);
       if (chartEl) chartEl.innerHTML = '';
@@ -8268,7 +8091,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const select = document.getElementById('menuDirectStockInput');
     if (!select) return;
     select.innerHTML = '<option value="">Yuklanmoqda...</option>';
-    const res = await apiPost('/api/stock-list', { initData, branchId: currentStockBranchId });
+    const res = await apiPost('/api/stock-list', { branchId: currentStockBranchId });
     if (!select.isConnected) return;
     const stock = (res.ok && Array.isArray(res.stock)) ? res.stock : [];
     if (!stock.length) {
@@ -8282,7 +8105,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function openRecipeEditor(menuItem) {
     recipeEditorMenuId = menuItem.id;
     recipeEditorBranchId = currentStockBranchId;
-    const res = await apiPost('/api/stock-list', { initData, branchId: recipeEditorBranchId });
+    const res = await apiPost('/api/stock-list', { branchId: recipeEditorBranchId });
     recipeEditorStock = res.ok ? res.stock : [];
     renderRecipeEditorOverlay(menuItem);
   }
@@ -8300,9 +8123,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         `).join('')
       : `<div class="bosh">Avval skladga mahsulot qo'shing.</div>`;
 
-    const overlay = document.createElement('div');
-    overlay.className = 'overlay';
-    overlay.innerHTML = `
+    const overlay = openOverlay(`
       <div class="modal" style="max-width:380px; max-height:80vh; overflow:auto;">
         <h3>Retsept: ${escapeHtml(menuItem.name)}</h3>
         <p>Har bir taom uchun sarflanadigan miqdorni kiriting (bo'sh = ishlatilmaydi).</p>
@@ -8313,8 +8134,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <button class="btn" id="recipeSaveBtn">Saqlash</button>
         </div>
       </div>
-    `;
-    document.body.appendChild(overlay);
+    `);
 
     overlay.querySelectorAll('[data-recipe-convert]').forEach(btn => {
       btn.addEventListener('click', () => {
@@ -8339,15 +8159,13 @@ const tg = window.Telegram && window.Telegram.WebApp;
         }
       });
       const msgEl = document.getElementById('recipeMsg');
-      msgEl.textContent = 'Saqlanmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/menu-set-recipe', { initData, menuId: recipeEditorMenuId, recipe, branchId: recipeEditorBranchId });
+      setMsg(msgEl, 'Saqlanmoqda...');
+      const res = await apiPost('/api/menu-set-recipe', { menuId: recipeEditorMenuId, recipe, branchId: recipeEditorBranchId });
       if (res.ok) {
         overlay.remove();
         loadMenuAndRender();
       } else {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
       }
     };
   }
@@ -8357,22 +8175,20 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const isDirectInitially = !!menuItem.directStockId;
     const overlayBranchId = currentStockBranchId;
 
-    const stockRes = await apiPost('/api/stock-list', { initData, branchId: overlayBranchId });
+    const stockRes = await apiPost('/api/stock-list', { branchId: overlayBranchId });
     const stockList = (stockRes.ok && Array.isArray(stockRes.stock)) ? stockRes.stock : [];
     const stockOptionsHtml = stockList.length
       ? stockList.map(s => `<option value="${escapeHtml(s.id)}" ${s.id === menuItem.directStockId ? 'selected' : ''}>${escapeHtml(s.name)} (${escapeHtml(STOCK_UNIT_LABELS[s.unit] || s.unit)})</option>`).join('')
       : '';
 
-    const catRes = await apiPost('/api/category-list', { initData, branchId: overlayBranchId });
+    const catRes = await apiPost('/api/category-list', { branchId: overlayBranchId });
     const categoriesList = (catRes.ok && Array.isArray(catRes.categories)) ? catRes.categories : [];
     let categoryOptionsHtml = '<option value="">— Bo\'lim tanlanmagan —</option>';
     if (menuItem.category && !categoriesList.some(c => c.name === menuItem.category)) {
       categoryOptionsHtml += `<option value="${escapeHtml(menuItem.category)}" selected>${escapeHtml(menuItem.category)} (ro'yxatda yo'q)</option>`;
     }
     categoryOptionsHtml += categoriesList.map(c => `<option value="${escapeHtml(c.name)}" ${c.name === (menuItem.category || '') ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('');
-    const overlay = document.createElement('div');
-    overlay.className = 'overlay';
-    overlay.innerHTML = `
+    const overlay = openOverlay(`
       <div class="modal" style="max-width:380px; max-height:85vh; overflow:auto;">
         <h3>Taomni tahrirlash</h3>
         <input type="text" id="editMenuNameInput" placeholder="Taom nomi" value="${escapeHtml(menuItem.name || '')}">
@@ -8404,8 +8220,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <button class="btn" id="editMenuSaveBtn">Saqlash</button>
         </div>
       </div>
-    `;
-    document.body.appendChild(overlay);
+    `);
 
     document.getElementById('editMenuCancelBtn').onclick = () => overlay.remove();
 
@@ -8426,8 +8241,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         preview.src = pendingImage;
         preview.style.display = pendingImage ? 'block' : 'none';
       } catch (err) {
-        msgEl.textContent = err.message || 'Rasmni yuklab bo\'lmadi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, err.message || 'Rasmni yuklab bo\'lmadi.', 'err');
         e.target.value = '';
       }
     });
@@ -8442,42 +8256,36 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const msgEl = document.getElementById('editMenuMsg');
       const priceOptions = collectPriceOptions('editMenuPriceOptionsWrap');
       if (priceOptions === null) {
-        msgEl.textContent = 'Narx variantlarini to\'g\'ri kiriting (nomi va narxi).';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Narx variantlarini to\'g\'ri kiriting (nomi va narxi).', 'err');
         return;
       }
       if (priceOptions.length === 1) {
-        msgEl.textContent = 'Kamida 2 ta narx variantini kiriting yoki bittasini o\'chirib, yakka narxdan foydalaning.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Kamida 2 ta narx variantini kiriting yoki bittasini o\'chirib, yakka narxdan foydalaning.', 'err');
         return;
       }
       if (!priceOptions.length && (!name || !price || !/^\d+$/.test(price) || parseInt(price, 10) <= 0)) {
-        msgEl.textContent = 'Taom nomi va to\'g\'ri narx kiriting.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Taom nomi va to\'g\'ri narx kiriting.', 'err');
         return;
       }
       if (!name) {
-        msgEl.textContent = 'Taom nomini kiriting.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Taom nomini kiriting.', 'err');
         return;
       }
-      msgEl.textContent = 'Saqlanmoqda...';
-      msgEl.className = 'xabar';
+      setMsg(msgEl, 'Saqlanmoqda...');
       const res = await apiPost('/api/menu-update', {
-        initData, id: menuItem.id, name, price, prices: priceOptions, category, description, imageUrl: pendingImage, directStockId, branchId: overlayBranchId
+        id: menuItem.id, name, price, prices: priceOptions, category, description, imageUrl: pendingImage, directStockId, branchId: overlayBranchId
       });
       if (res.ok) {
         overlay.remove();
         loadMenuAndRender();
       } else {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
       }
     };
   }
 
   async function loadOwnProfileAndRender() {
-    const res = await apiPost('/api/my-profile', { initData });
+    const res = await apiPost('/api/my-profile');
     if (res.networkError) { renderNetworkErrorScreen(res.reason, loadOwnProfileAndRender); return; }
     if (res.ok && res.profile) {
       applyBrandColor(res.profile.brandColor);
@@ -8489,7 +8297,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
   async function loadOwnersAndRender() {
     resetBrandColor();
-    const res = await apiPost('/api/owners', { initData });
+    const res = await apiPost('/api/owners');
     if (res.networkError) { renderNetworkErrorScreen(res.reason, loadOwnersAndRender); return; }
     renderAdminPanel(res.ok ? res.owners : [], res.ok ? res.revenue : null);
   }
@@ -8571,7 +8379,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
   async function refreshCustomerNotifBadge() {
     if (!customerState.ownerId) return;
-    const res = await apiPost('/api/customer-notifications', { initData, ownerId: customerState.ownerId });
+    const res = await apiPost('/api/customer-notifications', { ownerId: customerState.ownerId });
     if (!res || !res.ok) return;
     const seen = getCustomerNotifSeenTime();
     customerState.notifUnseenCount = seen
@@ -8830,7 +8638,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     listEl.querySelectorAll('[data-fav-id]').forEach(btn => btn.onclick = async () => {
       const id = btn.getAttribute('data-fav-id');
       btn.disabled = true;
-      const res = await apiPost('/api/customer-favorite-toggle', { initData, ownerId: customerState.ownerId, itemId: id });
+      const res = await apiPost('/api/customer-favorite-toggle', { ownerId: customerState.ownerId, itemId: id });
       if (res.ok) customerState.favorites = res.favorites;
       else if (handleFeatureBlocked(res)) { btn.disabled = false; return; }
       if (customerState.tab === 'sevimli') renderCustomerFavoritesTab();
@@ -8908,7 +8716,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     wrap.querySelectorAll('[data-fav-id]').forEach(btn => btn.onclick = async () => {
       const id = btn.getAttribute('data-fav-id');
       btn.disabled = true;
-      const res = await apiPost('/api/customer-favorite-toggle', { initData, ownerId: customerState.ownerId, itemId: id });
+      const res = await apiPost('/api/customer-favorite-toggle', { ownerId: customerState.ownerId, itemId: id });
       if (res.ok) customerState.favorites = res.favorites;
       else if (handleFeatureBlocked(res)) { btn.disabled = false; return; }
       renderCustomerMenuTab();
@@ -9069,9 +8877,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   function openCustomerSupportChat() {
-    const overlay = document.createElement('div');
-    overlay.className = 'overlay';
-    overlay.innerHTML = `
+    const overlay = openOverlay(`
       <div class="modal" style="max-width:380px; max-height:85vh; display:flex; flex-direction:column; padding:0; overflow:hidden;">
         <div style="padding:16px 16px 10px; border-bottom:1px solid var(--border-color); display:flex; align-items:center; gap:8px;">
           ${icon('message-circle', 'icon-sm')}
@@ -9086,8 +8892,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <button type="button" class="btn" id="custSupportSendBtn" style="width:auto; padding:0 18px;">${icon('send', 'icon-sm')}</button>
         </div>
       </div>
-    `;
-    document.body.appendChild(overlay);
+    `);
     overlay.addEventListener('click', (e) => { if (e.target === overlay) closeCustomerSupportChat(overlay); });
     overlay.querySelector('#custSupportCloseBtn').addEventListener('click', () => closeCustomerSupportChat(overlay));
 
@@ -9095,7 +8900,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const scrollToBottom = () => { msgsEl.scrollTop = msgsEl.scrollHeight; };
 
     const loadThread = async (isFirstLoad) => {
-      const res = await apiPost('/api/support-thread', { initData, ownerId: customerState.ownerId });
+      const res = await apiPost('/api/support-thread', { ownerId: customerState.ownerId });
       if (handleFeatureBlocked(res)) { closeCustomerSupportChat(overlay); return; }
       if (!res.ok) { msgsEl.innerHTML = `<div class="bosh">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`; return; }
       msgsEl.innerHTML = customerSupportMessagesHtml(res.messages || []);
@@ -9111,7 +8916,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const text = input.value.trim();
       if (!text) return;
       sendBtn.disabled = true;
-      const res = await apiPost('/api/support-send', { initData, ownerId: customerState.ownerId, text });
+      const res = await apiPost('/api/support-send', { ownerId: customerState.ownerId, text });
       sendBtn.disabled = false;
       if (handleFeatureBlocked(res)) { closeCustomerSupportChat(overlay); return; }
       if (!res.ok) { alert(res.reason || 'Xabar yuborilmadi.'); return; }
@@ -9143,9 +8948,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   function openOwnerAdminSupportChat() {
-    const overlay = document.createElement('div');
-    overlay.className = 'overlay';
-    overlay.innerHTML = `
+    const overlay = openOverlay(`
       <div class="modal" style="max-width:380px; max-height:85vh; display:flex; flex-direction:column; padding:0; overflow:hidden;">
         <div style="padding:16px 16px 10px; border-bottom:1px solid var(--border-color); display:flex; align-items:center; gap:8px;">
           ${icon('send', 'icon-sm')}
@@ -9160,8 +8963,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <button type="button" class="btn" id="ownerAdminSupportSendBtn" style="width:auto; padding:0 18px;">${icon('send', 'icon-sm')}</button>
         </div>
       </div>
-    `;
-    document.body.appendChild(overlay);
+    `);
     const close = () => closeOwnerAdminSupportChat(overlay);
     overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
     overlay.querySelector('#ownerAdminSupportCloseBtn').addEventListener('click', close);
@@ -9170,7 +8972,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const scrollToBottom = () => { msgsEl.scrollTop = msgsEl.scrollHeight; };
 
     const loadThread = async (isFirstLoad) => {
-      const res = await apiPost('/api/owner-admin-support-thread', { initData });
+      const res = await apiPost('/api/owner-admin-support-thread');
       if (!document.body.contains(overlay)) return;
       if (!res.ok) { msgsEl.innerHTML = `<div class="bosh">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`; return; }
       msgsEl.innerHTML = ownerAdminSupportMessagesHtml(res.messages || []);
@@ -9186,7 +8988,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const text = input.value.trim();
       if (!text) return;
       sendBtn.disabled = true;
-      const res = await apiPost('/api/owner-admin-support-send', { initData, text });
+      const res = await apiPost('/api/owner-admin-support-send', { text });
       sendBtn.disabled = false;
       if (!res.ok) { alert(res.reason || 'Xabar yuborilmadi.'); return; }
       input.value = '';
@@ -9214,10 +9016,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }
     const fabBar = document.getElementById('cCartFab');
     if (fabBar) fabBar.classList.add('hidden');
-    const overlay = document.createElement('div');
-    overlay.className = 'overlay';
-    overlay.innerHTML = `<div class="modal" style="max-width:380px; max-height:85vh; overflow:auto;"></div>`;
-    document.body.appendChild(overlay);
+    const overlay = openOverlay(`<div class="modal" style="max-width:380px; max-height:85vh; overflow:auto;"></div>`);
     overlay.addEventListener('click', (e) => { if (e.target === overlay) { overlay.remove(); updateCustomerCartFab(); } });
     renderCheckoutModalBody(overlay);
   }
@@ -9273,12 +9072,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const locationStatusEl = modalEl.querySelector('#cLocationStatus');
     if (locationBtn) locationBtn.addEventListener('click', () => {
       if (!navigator.geolocation) {
-        locationStatusEl.textContent = 'Bu qurilma/brauzer joylashuvni aniqlay olmaydi. Joylashuv (GPS) sozlamalarini tekshiring yoki manzilni pastga yozib qoldiring.';
-        locationStatusEl.className = 'xabar err';
+        setMsg(locationStatusEl, 'Bu qurilma/brauzer joylashuvni aniqlay olmaydi. Joylashuv (GPS) sozlamalarini tekshiring yoki manzilni pastga yozib qoldiring.', 'err');
         return;
       }
-      locationStatusEl.textContent = 'Aniqlanmoqda...';
-      locationStatusEl.className = 'xabar';
+      setMsg(locationStatusEl, 'Aniqlanmoqda...');
       navigator.geolocation.getCurrentPosition(
         (pos) => {
           customerState.location = { lat: pos.coords.latitude, lng: pos.coords.longitude };
@@ -9420,7 +9217,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadCustomerAddressList(onBack) {
     const el = document.getElementById('custAddrList');
     if (!el) return;
-    const res = await apiPost('/api/customer-address-list', { initData, ownerId: customerState.ownerId });
+    const res = await apiPost('/api/customer-address-list', { ownerId: customerState.ownerId });
     const el2 = document.getElementById('custAddrList');
     if (!el2) return;
     if (res.networkError) { renderNetworkErrorInline(el2, res.reason, () => loadCustomerAddressList(onBack)); return; }
@@ -9434,7 +9231,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         e.stopPropagation();
         btn.disabled = true;
         const id = btn.getAttribute('data-addr-remove');
-        const res2 = await apiPost('/api/customer-address-remove', { initData, ownerId: customerState.ownerId, addressId: id });
+        const res2 = await apiPost('/api/customer-address-remove', { ownerId: customerState.ownerId, addressId: id });
         if (res2.ok) { customerState.addresses = res2.addresses || []; loadCustomerAddressList(onBack); }
         else btn.disabled = false;
       });
@@ -9472,12 +9269,10 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const locStatusEl = document.getElementById('custAddrLocStatus');
     locBtn.addEventListener('click', () => {
       if (!navigator.geolocation) {
-        locStatusEl.textContent = 'Bu qurilma/brauzer joylashuvni aniqlay olmaydi. Manzilni pastga yozib qoldiring.';
-        locStatusEl.className = 'xabar err';
+        setMsg(locStatusEl, 'Bu qurilma/brauzer joylashuvni aniqlay olmaydi. Manzilni pastga yozib qoldiring.', 'err');
         return;
       }
-      locStatusEl.textContent = 'Aniqlanmoqda...';
-      locStatusEl.className = 'xabar';
+      setMsg(locStatusEl, 'Aniqlanmoqda...');
       navigator.geolocation.getCurrentPosition(
         (pos) => {
           formLoc.current = { lat: pos.coords.latitude, lng: pos.coords.longitude };
@@ -9486,8 +9281,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           locBtn.innerHTML = `${icon('check-circle', 'icon-xs icon-success')} Joylashuv aniqlandi (qayta aniqlash)`;
         },
         () => {
-          locStatusEl.textContent = 'Joylashuvni aniqlab bo\'lmadi. Manzilni pastga yozib qoldiring.';
-          locStatusEl.className = 'xabar err';
+          setMsg(locStatusEl, 'Joylashuvni aniqlab bo\'lmadi. Manzilni pastga yozib qoldiring.', 'err');
         },
         { enableHighAccuracy: true, timeout: 10000 }
       );
@@ -9498,19 +9292,16 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const addressNote = document.getElementById('custAddrNoteInput').value;
       const extraPhone = document.getElementById('custAddrPhoneInput').value;
       if (!label.trim()) {
-        msgEl.textContent = 'Manzil nomini kiriting (masalan: Uy, Ish).';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Manzil nomini kiriting (masalan: Uy, Ish).', 'err');
         return;
       }
       if (!formLoc.current && !addressNote.trim()) {
-        msgEl.textContent = 'Joylashuvni aniqlang yoki manzilni yozib qoldiring.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Joylashuvni aniqlang yoki manzilni yozib qoldiring.', 'err');
         return;
       }
-      msgEl.textContent = 'Saqlanmoqda...';
-      msgEl.className = 'xabar';
+      setMsg(msgEl, 'Saqlanmoqda...');
       const res = await apiPost('/api/customer-address-save', {
-        initData, ownerId: customerState.ownerId,
+        ownerId: customerState.ownerId,
         addressId: existing ? existing.id : null,
         label, addressNote, extraPhone,
         location: formLoc.current
@@ -9519,8 +9310,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         customerState.addresses = res.addresses || [];
         onDone && onDone();
       } else {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
       }
     });
   }
@@ -9563,7 +9353,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function loadCustomerNotifList() {
     const el = document.getElementById('custNotifList');
     if (!el) return;
-    const res = await apiPost('/api/customer-notifications', { initData, ownerId: customerState.ownerId });
+    const res = await apiPost('/api/customer-notifications', { ownerId: customerState.ownerId });
     const el2 = document.getElementById('custNotifList');
     if (!el2) return;
     if (res.networkError) { renderNetworkErrorInline(el2, res.reason, () => loadCustomerNotifList()); return; }
@@ -9659,7 +9449,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     listEl.querySelectorAll('[data-received-id]').forEach(btn => btn.addEventListener('click', async () => {
       const orderId = btn.getAttribute('data-received-id');
       btn.disabled = true;
-      const res = await apiPost('/api/customer-confirm-received', { initData, ownerId: customerState.ownerId, orderId });
+      const res = await apiPost('/api/customer-confirm-received', { ownerId: customerState.ownerId, orderId });
       if (!res.ok) {
         btn.disabled = false;
         const alertFn = (tg && tg.showAlert) ? (msg) => tg.showAlert(msg) : (msg) => alert(msg);
@@ -9713,7 +9503,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function refreshCustomerHistoryList() {
     const listEl = document.getElementById('customerHistoryList');
     if (!listEl) { stopCustomerHistoryPolling(); return; }
-    const res = await apiPost('/api/customer-orders-history', { initData, ownerId: customerState.ownerId });
+    const res = await apiPost('/api/customer-orders-history', { ownerId: customerState.ownerId });
     const listEl2 = document.getElementById('customerHistoryList');
     if (!listEl2) return;
     if (!res.ok) {
@@ -9780,18 +9570,15 @@ const tg = window.Telegram && window.Telegram.WebApp;
       });
 
     if (!items.length) {
-      msgEl.textContent = 'Savat bo\'sh. Kamida bitta taom tanlang.';
-      msgEl.className = 'xabar err';
+      setMsg(msgEl, 'Savat bo\'sh. Kamida bitta taom tanlang.', 'err');
       return;
     }
     if (customerState.orderType === 'dostavka' && !customerState.location) {
-      msgEl.textContent = 'Dostavka uchun joylashuvingizni (location) aniqlashingiz shart.';
-      msgEl.className = 'xabar err';
+      setMsg(msgEl, 'Dostavka uchun joylashuvingizni (location) aniqlashingiz shart.', 'err');
       return;
     }
     if (customerState.orderType === 'dostavka' && !isUzPhone(customerState.extraPhone)) {
-      msgEl.textContent = 'Telefon raqamini O\'zbekiston formatida kiriting (masalan: +998901234567).';
-      msgEl.className = 'xabar err';
+      setMsg(msgEl, 'Telefon raqamini O\'zbekiston formatida kiriting (masalan: +998901234567).', 'err');
       return;
     }
 
@@ -9801,10 +9588,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
       customerState.lastOrderRequestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
     }
 
-    msgEl.textContent = 'Yuborilmoqda...';
-    msgEl.className = 'xabar';
+    setMsg(msgEl, 'Yuborilmoqda...');
     const res = await apiPost('/api/customer-order', {
-      initData,
       ownerId: customerState.ownerId,
       branchId: customerState.branchId || null,
       items,
@@ -9858,15 +9643,12 @@ const tg = window.Telegram && window.Telegram.WebApp;
       if (needsPaymentProofModal) showPaymentProofModal();
     } else {
       if (sendBtn) sendBtn.disabled = false;
-      msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-      msgEl.className = 'xabar err';
+      setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
     }
   }
 
   function showPaymentProofModal() {
-    const overlay = document.createElement('div');
-    overlay.className = 'overlay';
-    overlay.innerHTML = `
+    const overlay = openOverlay(`
       <div class="modal payment-proof-modal">
         <h3>${icon('warning', 'icon-sm modal-warn-icon')} Chek rasmini yuboring</h3>
         <p>Buyurtma hali <b>tasdiqlanmagan</b>.<br>To'lov chekining rasmini botning shaxsiy chatiga yuboring.</p>
@@ -9874,8 +9656,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <button type="button" class="btn xavfli" id="paymentProofOkBtn" style="width:100%;">Tushundim</button>
         </div>
       </div>
-    `;
-    document.body.appendChild(overlay);
+    `);
     overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
     overlay.querySelector('#paymentProofOkBtn').addEventListener('click', () => overlay.remove());
   }
@@ -9929,28 +9710,23 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const lastName = document.getElementById('regLastName').value.trim();
       const phone = document.getElementById('regPhone').value.trim();
       if (!firstName || !lastName || !phone) {
-        msgEl.textContent = 'Barcha maydonlarni to\'ldiring.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Barcha maydonlarni to\'ldiring.', 'err');
         return;
       }
       if (!isUzPhone(phone)) {
-        msgEl.textContent = 'Telefon raqamini O\'zbekiston formatida kiriting (masalan: +998901234567).';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Telefon raqamini O\'zbekiston formatida kiriting (masalan: +998901234567).', 'err');
         return;
       }
       btn.disabled = true;
-      msgEl.textContent = 'Yuborilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/profile-register', { initData, firstName, lastName, phone });
+      setMsg(msgEl, 'Yuborilmoqda...');
+      const res = await apiPost('/api/profile-register', { firstName, lastName, phone });
       if (res.networkError) {
-        msgEl.textContent = res.reason;
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason, 'err');
         btn.disabled = false;
         return;
       }
       if (!res.ok) {
-        msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
         btn.disabled = false;
         return;
       }
@@ -10152,7 +9928,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     apiPost('/api/restaurant-brand', { ownerId }).then(r => {
       if (stillLoading && r && r.ok) ekran(customerWelcomeLoadingHtml(r));
     }).catch(() => {});
-    const verifyRes = await apiPost('/api/customer-verify', { initData, ownerId });
+    const verifyRes = await apiPost('/api/customer-verify', { ownerId });
     stillLoading = false;
     if (verifyRes.networkError) {
       renderNetworkErrorScreen(verifyRes.reason, () => renderCustomerApp(ownerId));
@@ -10191,13 +9967,13 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   async function continueCustomerAppLoad(ownerId) {
-    const kitchenStatus = await apiPost('/api/kitchen-status', { initData, ownerId });
+    const kitchenStatus = await apiPost('/api/kitchen-status', { ownerId });
     if (kitchenStatus.ok && !kitchenStatus.open) {
       renderKitchenClosedScreen(ownerId, kitchenStatus);
       return;
     }
 
-    const menuRes = await apiPost('/api/customer-menu-list', { initData, ownerId, branchId: customerState.branchId });
+    const menuRes = await apiPost('/api/customer-menu-list', { ownerId, branchId: customerState.branchId });
     customerState.menu = menuRes.ok ? menuRes.menu : [];
     customerState.categories = menuRes.ok ? (menuRes.categories || []) : [];
     customerState.promotions = menuRes.ok ? menuRes.promotions : [];
@@ -10393,7 +10169,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (btn) {
       btn.addEventListener('click', async () => {
         btn.disabled = true;
-        const r = await apiPost('/api/kitchen-remind', { initData, ownerId });
+        const r = await apiPost('/api/kitchen-remind', { ownerId });
         if (r.ok) {
           btn.innerHTML = '<span>🔔 Eslatma yoqilgan</span>';
         } else {
@@ -10434,7 +10210,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (!btn) return;
     btn.addEventListener('click', async () => {
       btn.disabled = true;
-      const res = await apiPost('/api/partner-register-link', { initData });
+      const res = await apiPost('/api/partner-register-link');
       btn.disabled = false;
       if (!res.ok) { alert(res.reason || 'Xatolik yuz berdi.'); return; }
       if (tg && typeof tg.openTelegramLink === 'function') {
@@ -10449,7 +10225,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     clearAppHeader();
     resetBrandColor();
     ekran(customerWelcomeLoadingHtml(readCachedBrand()));
-    const res = await apiPost('/api/customer-restaurants-list', { initData });
+    const res = await apiPost('/api/customer-restaurants-list');
     if (res.networkError) {
       renderNetworkErrorScreen(res.reason, renderCustomerEntry);
       return;
@@ -10531,23 +10307,19 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const msgEl = document.getElementById('ownerLoginMsg');
       const btn = document.getElementById('ownerLoginBtn');
       if (!login || !password) {
-        msgEl.textContent = 'Login va parolni kiriting.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Login va parolni kiriting.', 'err');
         return;
       }
       btn.disabled = true;
-      msgEl.textContent = 'Tekshirilmoqda...';
-      msgEl.className = 'xabar';
+      setMsg(msgEl, 'Tekshirilmoqda...');
       const res = await apiPost('/api/owner-login', { login, password });
       btn.disabled = false;
       if (res.networkError) {
-        msgEl.textContent = res.reason;
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason, 'err');
         return;
       }
       if (!res.ok) {
-        msgEl.textContent = res.reason || 'Login yoki parol noto\'g\'ri.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason || 'Login yoki parol noto\'g\'ri.', 'err');
         return;
       }
       initData = res.sessionToken;
@@ -10576,8 +10348,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         document.getElementById('pwNewInput').value = '';
         document.getElementById('pwNewRepeatInput').value = '';
         const msgEl = document.getElementById('pwChangeMsg');
-        msgEl.textContent = '';
-        msgEl.className = 'xabar';
+        setMsg(msgEl, '');
         changeForm.classList.add('hidden');
       });
     }
@@ -10590,33 +10361,27 @@ const tg = window.Telegram && window.Telegram.WebApp;
         const newPasswordRepeat = document.getElementById('pwNewRepeatInput').value;
         const msgEl = document.getElementById('pwChangeMsg');
         if (!currentPassword || !newPassword) {
-          msgEl.textContent = 'Barcha maydonlarni to\'ldiring.';
-          msgEl.className = 'xabar err';
+          setMsg(msgEl, 'Barcha maydonlarni to\'ldiring.', 'err');
           return;
         }
         if (newPassword.length < 6) {
-          msgEl.textContent = 'Yangi parol kamida 6 belgidan iborat bo\'lishi kerak.';
-          msgEl.className = 'xabar err';
+          setMsg(msgEl, 'Yangi parol kamida 6 belgidan iborat bo\'lishi kerak.', 'err');
           return;
         }
         if (newPassword !== newPasswordRepeat) {
-          msgEl.textContent = 'Yangi parollar mos kelmadi.';
-          msgEl.className = 'xabar err';
+          setMsg(msgEl, 'Yangi parollar mos kelmadi.', 'err');
           return;
         }
         changeSaveBtn.disabled = true;
-        msgEl.textContent = 'Saqlanmoqda...';
-        msgEl.className = 'xabar';
-        const res = await apiPost('/api/owner-change-password', { initData, currentPassword, newPassword });
+        setMsg(msgEl, 'Saqlanmoqda...');
+        const res = await apiPost('/api/owner-change-password', { currentPassword, newPassword });
         changeSaveBtn.disabled = false;
         if (res.networkError) {
-          msgEl.textContent = res.reason;
-          msgEl.className = 'xabar err';
+          setMsg(msgEl, res.reason, 'err');
           return;
         }
         if (!res.ok) {
-          msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-          msgEl.className = 'xabar err';
+          setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
           return;
         }
         if (usingOwnerSession) {
@@ -10626,8 +10391,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           renderOwnerLoginScreen('Parol muvaffaqiyatli o\'zgartirildi. Yangi parol bilan qayta kiring.');
           return;
         }
-        msgEl.textContent = 'Parol muvaffaqiyatli o\'zgartirildi.';
-        msgEl.className = 'xabar ok';
+        setMsg(msgEl, 'Parol muvaffaqiyatli o\'zgartirildi.', 'ok');
         document.getElementById('pwCurrentInput').value = '';
         document.getElementById('pwNewInput').value = '';
         document.getElementById('pwNewRepeatInput').value = '';
@@ -10645,8 +10409,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       removeCancelBtn.addEventListener('click', () => {
         document.getElementById('pwRemoveCurrentInput').value = '';
         const msgEl = document.getElementById('pwRemoveMsg');
-        msgEl.textContent = '';
-        msgEl.className = 'xabar';
+        setMsg(msgEl, '');
         removeForm.classList.add('hidden');
       });
     }
@@ -10657,23 +10420,19 @@ const tg = window.Telegram && window.Telegram.WebApp;
         const currentPassword = document.getElementById('pwRemoveCurrentInput').value;
         const msgEl = document.getElementById('pwRemoveMsg');
         if (!currentPassword) {
-          msgEl.textContent = 'Joriy parolni kiriting.';
-          msgEl.className = 'xabar err';
+          setMsg(msgEl, 'Joriy parolni kiriting.', 'err');
           return;
         }
         removeConfirmBtn.disabled = true;
-        msgEl.textContent = 'Bajarilmoqda...';
-        msgEl.className = 'xabar';
-        const res = await apiPost('/api/owner-remove-password', { initData, currentPassword });
+        setMsg(msgEl, 'Bajarilmoqda...');
+        const res = await apiPost('/api/owner-remove-password', { currentPassword });
         removeConfirmBtn.disabled = false;
         if (res.networkError) {
-          msgEl.textContent = res.reason;
-          msgEl.className = 'xabar err';
+          setMsg(msgEl, res.reason, 'err');
           return;
         }
         if (!res.ok) {
-          msgEl.textContent = res.reason || 'Xatolik yuz berdi.';
-          msgEl.className = 'xabar err';
+          setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
           return;
         }
 
@@ -10686,7 +10445,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   async function ownerLogout() {
-    await apiPost('/api/owner-logout', { initData });
+    await apiPost('/api/owner-logout');
     localStorage.removeItem(OWNER_SESSION_STORAGE_KEY);
     location.reload();
   }
@@ -10706,7 +10465,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   async function bootstrapApp() {
 
     ekran(customerWelcomeLoadingHtml(readCachedBrand()));
-    const data = await apiPost('/api/verify', { initData });
+    const data = await apiPost('/api/verify');
     if (data.networkError) {
       renderNetworkErrorScreen(data.reason, bootstrapApp);
       return;
@@ -10786,23 +10545,19 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const msgEl = document.getElementById('ownerGateMsg');
       const btn = document.getElementById('ownerGateBtn');
       if (!password) {
-        msgEl.textContent = 'Parolni kiriting.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, 'Parolni kiriting.', 'err');
         return;
       }
       btn.disabled = true;
-      msgEl.textContent = 'Tekshirilmoqda...';
-      msgEl.className = 'xabar';
-      const res = await apiPost('/api/owner-confirm-password', { initData, password });
+      setMsg(msgEl, 'Tekshirilmoqda...');
+      const res = await apiPost('/api/owner-confirm-password', { password });
       btn.disabled = false;
       if (res.networkError) {
-        msgEl.textContent = res.reason;
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason, 'err');
         return;
       }
       if (!res.ok) {
-        msgEl.textContent = res.reason || 'Parol noto\'g\'ri.';
-        msgEl.className = 'xabar err';
+        setMsg(msgEl, res.reason || 'Parol noto\'g\'ri.', 'err');
         return;
       }
       if (gateKey) localStorage.setItem(gateKey, '1');
