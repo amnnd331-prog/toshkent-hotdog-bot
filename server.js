@@ -349,6 +349,13 @@ function getBlockedOwnerAccess(owners, userId) {
   return null;
 }
 
+// Egasi (yoki admin nomidan ish ko'rayotgan) kontekstmi?
+function isOwnerRole(ctx) { return !!ctx && ctx.role === 'egasi'; }
+// Kirish rad etilganda: obuna bloklangan bo'lsa maxsus ekran, aks holda sabab.
+function denyAccess(res, owners, userId, fallbackReason) {
+  return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, fallbackReason));
+}
+function sendFeatureBlocked(res, featureId) { return sendJSON(res, 200, featureBlockedResult(featureId)); }
 function subscriptionBlockedJSON(owners, userId, fallbackReason) {
   const access = getBlockedOwnerAccess(owners, userId);
   if (access) return { ok: false, reason: 'subscription_blocked', access };
@@ -1600,18 +1607,25 @@ function logStaffAction(owner, entry) {
   if (owner.staffActionLog.length > 2000) owner.staffActionLog.length = 2000;
 }
 
+const TELEGRAM_TIMEOUT_MS = 15000;
 function telegramApi(method, params) {
   return new Promise((resolve, reject) => {
-    const qs = new URLSearchParams(params).toString();
-    const url = `https://api.telegram.org/bot${BOT_TOKEN}/${method}?${qs}`;
-    https.get(url, res => {
+    // POST (form-urlencoded): uzun xabarlar URL uzunligi chegarasiga urilmaydi
+    const body = new URLSearchParams(params || {}).toString();
+    const req = https.request(`https://api.telegram.org/bot${BOT_TOKEN}/${method}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) }
+    }, res => {
       let data = '';
       res.on('data', chunk => { data += chunk; });
       res.on('end', () => {
         try { resolve(JSON.parse(data)); }
         catch (e) { reject(e); }
       });
-    }).on('error', reject);
+    });
+    req.setTimeout(TELEGRAM_TIMEOUT_MS, () => req.destroy(new Error(`Telegram ${method} timeout`)));
+    req.on('error', reject);
+    req.end(body);
   });
 }
 
@@ -3007,7 +3021,7 @@ async function handleTelegramUpdate(update) {
       // (ular alohida owner yozuvi emas, shuning uchun resolveOwnerContext
       // orqali aniqlanadi — findOwner faqat asosiy egasini topadi).
       const ctx = resolveOwnerContext(owners, from.id);
-      if (!ctx || ctx.role !== 'egasi') {
+      if (!isOwnerRole(ctx)) {
         const blocked = getBlockedOwnerAccess(owners, from.id);
         if (blocked) await sendSubscriptionBlockedScreen(chatId, blocked);
         else await sendMessage(chatId, 'Faqat tasdiqlangan oshxona egasi guruhni biriktira oladi.');
@@ -3059,7 +3073,7 @@ async function handleTelegramUpdate(update) {
     if ((msg.chat.type === 'group' || msg.chat.type === 'supergroup') && /^\/oshpaz_biriktir(@\S+)?(\s+\S+)?$/.test(text)) {
       const owners = pruneExpiredOwners();
       const ctx = resolveOwnerContext(owners, from.id);
-      if (!ctx || ctx.role !== 'egasi') {
+      if (!isOwnerRole(ctx)) {
         const blocked = getBlockedOwnerAccess(owners, from.id);
         if (blocked) await sendSubscriptionBlockedScreen(chatId, blocked);
         else await sendMessage(chatId, 'Faqat tasdiqlangan oshxona egasi guruhni biriktira oladi.');
@@ -3261,7 +3275,7 @@ async function handleTelegramUpdate(update) {
     if (text === '/hisobot' || text.startsWith('/hisobot@') || text.startsWith('/hisobot ')) {
       const owners = pruneExpiredOwners();
       const ctx = resolveOwnerContext(owners, from.id);
-      if (!ctx || ctx.role !== 'egasi') {
+      if (!isOwnerRole(ctx)) {
         await sendMessage(chatId, "Bu buyruq faqat oshxona egasi va uning hamkorlariga mavjud.");
         return;
       }
@@ -4135,8 +4149,16 @@ async function resolveUserInput(input) {
 }
 
 function sendJSON(res, status, obj) {
+  if (res.headersSent) return;
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(obj));
+}
+const sendOk = (res, data) => sendJSON(res, 200, Object.assign({ ok: true }, data));
+const sendFail = (res, reason, extra) => sendJSON(res, 200, Object.assign({ ok: false, reason }, extra));
+function bodyErrorReason(err) {
+  return err && err.message === 'body_too_large'
+    ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring."
+    : "noto'g'ri so'rov";
 }
 
 const MAX_REQUEST_BODY_BYTES = 4 * 1024 * 1024;
@@ -4154,7 +4176,8 @@ function readBody(req, cb) {
   });
   req.on('end', () => {
     if (tooLarge) return;
-    try { cb(null, JSON.parse(body || '{}')); }
+    let parsed;
+    try { parsed = JSON.parse(body || '{}'); }
     catch (e) {
       // Diagnostika: JSON.parse nima uchun muvaffaqiyatsiz bo'lganini
       // server konsolida ko'rish uchun (masalan Replit/PM2 log'larida).
@@ -4165,8 +4188,10 @@ function readBody(req, cb) {
         '| body boshi:', body.slice(0, 300),
         '| body oxiri:', body.slice(-100)
       );
-      cb(e);
+      return cb(e);
     }
+    // cb tashqarida chaqiriladi: handler ichidagi xato qayta cb(err) ga tushmasin
+    cb(null, parsed);
   });
   req.on('error', (e) => {
     console.error(`readBody req oqim xatosi [${req.method} ${req.url}]:`, e.message);
@@ -4842,2639 +4867,2412 @@ const server = http.createServer((req, res) => {
   }
 });
 
-function handleRequest(req, res) {
+// ==========================================================================
+// HTTP API — barcha endpointlar shu registry orqali ro'yxatga olinadi.
+//   route(url, fn)  — xom handler: fn(payload, res)
+//   authed(url, fn) — Telegram initData tekshirilgan: fn(payload, res, { user, userId })
+// Body o'qish, JSON xatosi va handler ichidagi istisnolar markazda ushlanadi.
+// ==========================================================================
+const API_ROUTES = new Map();
+function route(url, handler) { API_ROUTES.set(url, handler); }
+function authed(url, handler) {
+  API_ROUTES.set(url, (payload, res) => {
+    const check = verifyAuth(payload.initData);
+    if (!check.ok) return sendFail(res, check.reason);
+    return handler(payload, res, { user: check.user, userId: String(check.user && check.user.id) });
+  });
+}
 
-  if (req.method === 'POST' && req.url === '/api/verify') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData } = payload;
-      if (!initData) return sendJSON(res, 400, { ok: false, reason: 'initData yo\'q' });
 
-      const result = verifyAuth(initData);
-      if (!result.ok) return sendJSON(res, 200, { ok: false, reason: result.reason });
+route('/api/verify', (payload, res) => {
+  const { initData } = payload;
+  if (!initData) return sendJSON(res, 400, { ok: false, reason: 'initData yo\'q' });
 
-      const userId = String(result.user && result.user.id);
-      const admin = isAdminId(userId);
-      const owners = pruneExpiredOwners();
-      const owner = findOwner(owners, userId);
-      const ownerOk = isOwnerAccessValid(owner);
-      const staffInfo = (!admin && !ownerOk) ? findStaffInfo(owners, userId) : null;
+  const result = verifyAuth(initData);
+  if (!result.ok) return sendFail(res, result.reason);
 
-      const staffBlocked = !!(staffInfo && staffInfo.rawRoles.length > 0 && staffInfo.roles.length === 0);
-      const ok = admin || ownerOk || !!(staffInfo && !staffBlocked);
+  const userId = String(result.user && result.user.id);
+  const admin = isAdminId(userId);
+  const owners = pruneExpiredOwners();
+  const owner = findOwner(owners, userId);
+  const ownerOk = isOwnerAccessValid(owner);
+  const staffInfo = (!admin && !ownerOk) ? findStaffInfo(owners, userId) : null;
 
-      return sendJSON(res, 200, {
-        ok,
-        isAdmin: admin,
-        isOwner: !admin && ownerOk,
-        role: staffInfo ? staffInfo.role : null,
-        roles: staffInfo ? staffInfo.roles : null,
-        roleLabel: staffInfo ? rolesLabel(staffInfo.roles) : null,
-        ownerRestaurantName: staffInfo ? staffInfo.ownerName : (ownerOk ? ((owner.profile && owner.profile.name) || null) : null),
-        ownerLogoUrl: staffInfo ? staffInfo.ownerLogoUrl : (ownerOk ? ((owner.profile && owner.profile.logoUrl) || null) : null),
-        ownerBrandColor: staffInfo ? staffInfo.ownerBrandColor : (ownerOk ? ((owner.profile && owner.profile.brandColor) || null) : null),
-        hasProfile: !admin && ownerOk && !!(owner && owner.profile && owner.profile.completedAt),
+  const staffBlocked = !!(staffInfo && staffInfo.rawRoles.length > 0 && staffInfo.roles.length === 0);
+  const ok = admin || ownerOk || !!(staffInfo && !staffBlocked);
 
-        hasOwnerLogin: !admin && ownerOk && !!(owner && owner.login && owner.passwordHash),
-        personRegistered: admin || isRegisteredUser(userId),
-        reason: ok
-          ? null
-          : (staffBlocked
-              ? 'Lavozimingiz (' + rolesLabel(staffInfo.rawRoles) + ') joriy tarifda yopilgan. Administrator bilan bog\'laning.'
-              : 'Bu ilova faqat administrator, tasdiqlangan do\'kon egalari va ularning xodimlari uchun.')
-      });
-    });
-    return;
+  return sendJSON(res, 200, {
+    ok,
+    isAdmin: admin,
+    isOwner: !admin && ownerOk,
+    role: staffInfo ? staffInfo.role : null,
+    roles: staffInfo ? staffInfo.roles : null,
+    roleLabel: staffInfo ? rolesLabel(staffInfo.roles) : null,
+    ownerRestaurantName: staffInfo ? staffInfo.ownerName : (ownerOk ? ((owner.profile && owner.profile.name) || null) : null),
+    ownerLogoUrl: staffInfo ? staffInfo.ownerLogoUrl : (ownerOk ? ((owner.profile && owner.profile.logoUrl) || null) : null),
+    ownerBrandColor: staffInfo ? staffInfo.ownerBrandColor : (ownerOk ? ((owner.profile && owner.profile.brandColor) || null) : null),
+    hasProfile: !admin && ownerOk && !!(owner && owner.profile && owner.profile.completedAt),
+
+    hasOwnerLogin: !admin && ownerOk && !!(owner && owner.login && owner.passwordHash),
+    personRegistered: admin || isRegisteredUser(userId),
+    reason: ok
+      ? null
+      : (staffBlocked
+          ? 'Lavozimingiz (' + rolesLabel(staffInfo.rawRoles) + ') joriy tarifda yopilgan. Administrator bilan bog\'laning.'
+          : 'Bu ilova faqat administrator, tasdiqlangan do\'kon egalari va ularning xodimlari uchun.')
+  });
+});
+
+authed('/api/profile-register', (payload, res, { user }) => {
+  const { firstName, lastName, phone } = payload;
+
+  const ism = String(firstName || '').trim();
+  const familiya = String(lastName || '').trim();
+  const raqam = String(phone || '').trim();
+
+  if (!ism || ism.length > 60) {
+    return sendFail(res, 'Ismingizni to\'g\'ri kiriting.');
+  }
+  if (!familiya || familiya.length > 60) {
+    return sendFail(res, 'Familiyangizni to\'g\'ri kiriting.');
+  }
+  if (!isPlausiblePhone(raqam)) {
+    return sendFail(res, 'Telefon raqam noto\'g\'ri formatda (masalan: +998901234567).');
   }
 
-  if (req.method === 'POST' && req.url === '/api/profile-register') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, firstName, lastName, phone } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+  const userId = String(user.id);
+  const profiles = loadProfiles();
+  const idx = profiles.findIndex(p => String(p.id) === userId);
+  const profile = {
+    id: userId,
+    username: (user && user.username) || null,
+    firstName: ism,
+    lastName: familiya,
+    phone: raqam,
+    registeredAt: new Date().toISOString()
+  };
+  if (idx >= 0) profiles[idx] = profile; else profiles.push(profile);
+  saveProfiles(profiles);
 
-      const ism = String(firstName || '').trim();
-      const familiya = String(lastName || '').trim();
-      const raqam = String(phone || '').trim();
+  return sendOk(res);
+});
 
-      if (!ism || ism.length > 60) {
-        return sendJSON(res, 200, { ok: false, reason: 'Ismingizni to\'g\'ri kiriting.' });
-      }
-      if (!familiya || familiya.length > 60) {
-        return sendJSON(res, 200, { ok: false, reason: 'Familiyangizni to\'g\'ri kiriting.' });
-      }
-      if (!isPlausiblePhone(raqam)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Telefon raqam noto\'g\'ri formatda (masalan: +998901234567).' });
-      }
+authed('/api/staff-list', (payload, res, { userId }) => {
+  const owners = pruneExpiredOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi ko\'ra oladi');
+  const owner = ownerCtx.owner;
 
-      const userId = String(check.user && check.user.id);
-      const profiles = loadProfiles();
-      const idx = profiles.findIndex(p => String(p.id) === userId);
-      const profile = {
-        id: userId,
-        username: (check.user && check.user.username) || null,
-        firstName: ism,
-        lastName: familiya,
-        phone: raqam,
-        registeredAt: new Date().toISOString()
-      };
-      if (idx >= 0) profiles[idx] = profile; else profiles.push(profile);
-      saveProfiles(profiles);
+  return sendOk(res, { staff: owner.staff || [] });
+});
 
-      return sendJSON(res, 200, { ok: true });
-    });
-    return;
+authed('/api/add-staff', async (payload, res, { userId }) => {
+  const { input, role, roles, branchId } = payload;
+
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi xodim qo\'sha oladi');
+  const owner = ownerCtx.owner;
+
+  const rolesArr = Array.isArray(roles) ? roles : (role ? [role] : []);
+  const uniqueRoles = [...new Set(rolesArr)].filter(isValidRole)
+    // 69-bosqich: 'egasi' boshqa rollar bilan birga tanlangan bo'lsa ham,
+    // har doim ro'yxat boshida bo'lishi kerak — chunki ctx.role (birinchi
+    // rol) 'egasi' bo'lgandagina to'liq egasi huquqi to'g'ri ishlaydi.
+    .sort((a, b) => (a === 'egasi' ? -1 : b === 'egasi' ? 1 : 0));
+  if (!uniqueRoles.length) {
+    return sendFail(res, 'Kamida bitta lavozim tanlang.');
   }
 
-  if (req.method === 'POST' && req.url === '/api/staff-list') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = pruneExpiredOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi ko\'ra oladi'));
-      const owner = ownerCtx.owner;
-
-      return sendJSON(res, 200, { ok: true, staff: owner.staff || [] });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/add-staff') {
-    readBody(req, async (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, input, role, roles, branchId } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi xodim qo\'sha oladi'));
-      const owner = ownerCtx.owner;
-
-      const rolesArr = Array.isArray(roles) ? roles : (role ? [role] : []);
-      const uniqueRoles = [...new Set(rolesArr)].filter(isValidRole)
-        // 69-bosqich: 'egasi' boshqa rollar bilan birga tanlangan bo'lsa ham,
-        // har doim ro'yxat boshida bo'lishi kerak — chunki ctx.role (birinchi
-        // rol) 'egasi' bo'lgandagina to'liq egasi huquqi to'g'ri ishlaydi.
-        .sort((a, b) => (a === 'egasi' ? -1 : b === 'egasi' ? 1 : 0));
-      if (!uniqueRoles.length) {
-        return sendJSON(res, 200, { ok: false, reason: 'Kamida bitta lavozim tanlang.' });
-      }
-
-      let branchIdVal = null;
-      if (branchId) {
-        if (!findBranch(owner, branchId)) {
-          return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi.' });
-        }
-        branchIdVal = branchId;
-      }
-
-      const resolved = await resolveUserInput(input);
-      if (resolved.error) return sendJSON(res, 200, { ok: false, reason: resolved.error });
-
-      if (isAdminId(resolved.id)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu foydalanuvchi administrator, xodim qilib bo\'lmaydi.' });
-      }
-      if (findOwner(owners, resolved.id)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu foydalanuvchi allaqachon oshxona egasi.' });
-      }
-      const existingStaff = findStaffInfo(owners, resolved.id);
-      if (existingStaff) {
-        return sendJSON(res, 200, { ok: false, reason: existingStaff.ownerId === owner.id
-          ? 'Bu foydalanuvchi allaqachon sizning xodimingiz.'
-          : 'Bu foydalanuvchi boshqa oshxonada xodim sifatida ro\'yxatda.' });
-      }
-
-      if (!owner.staff) owner.staff = [];
-      owner.staff.push({
-        id: resolved.id,
-        username: resolved.username || null,
-        role: uniqueRoles[0],
-        roles: uniqueRoles,
-        branchId: branchIdVal,
-        addedAt: new Date().toISOString()
-      });
-      saveOwners(owners);
-
-      sendMessage(resolved.id,
-        `👋 Sizni <b>${(owner.profile && owner.profile.name) || 'oshxona'}</b> jamoasiga <b>${rolesLabel(uniqueRoles)}</b> sifatida qo\'shishdi.\nMini App tugmasi orqali oching.`);
-
-      return sendJSON(res, 200, { ok: true });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/create-staff-invite') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, role, roles, branchId } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi havola yarata oladi'));
-      const owner = ownerCtx.owner;
-      if (!ownerCanUseFeature(owner, 'staff-invite')) return sendJSON(res, 200, featureBlockedResult('staff-invite'));
-
-      const rolesArr = Array.isArray(roles) ? roles : (role ? [role] : []);
-      const uniqueRoles = [...new Set(rolesArr)].filter(isValidRole)
-        // Havola orqali "Egasi (hamkor)" huquqi berilmaydi — bu faqat
-        // ID/username orqali to'g'ridan-to'g'ri qo'shishda mavjud, chunki
-        // havola har kimga yuborilishi va noto'g'ri odamga to'liq egasi
-        // huquqi tegib qolishi mumkin.
-        .filter(r => r !== 'egasi');
-      if (!uniqueRoles.length) {
-        return sendJSON(res, 200, { ok: false, reason: 'Kamida bitta lavozim tanlang. Egasi (hamkor) huquqi havola orqali berilmaydi.' });
-      }
-
-      let branchIdVal = null;
-      if (branchId) {
-        if (!findBranch(owner, branchId)) {
-          return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi.' });
-        }
-        branchIdVal = branchId;
-      }
-
-      if (!BOT_USERNAME || BOT_USERNAME === 'BOT_USERNAME_BU_YERGA') {
-        return sendJSON(res, 200, { ok: false, reason: 'Serverda BOT_USERNAME sozlanmagan.' });
-      }
-
-      const token = crypto.randomBytes(16).toString('hex');
-      if (!owner.staffInvites) owner.staffInvites = [];
-
-      owner.staffInvites = owner.staffInvites.filter(inv => !inv.used && new Date(inv.expiresAt) > new Date());
-      owner.staffInvites.push({
-        token,
-        roles: uniqueRoles,
-        branchId: branchIdVal,
-        createdAt: new Date().toISOString(),
-        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-        used: false,
-        usedBy: null,
-        usedAt: null
-      });
-      saveOwners(owners);
-
-      const link = `https://t.me/${BOT_USERNAME}?start=staffinv_${owner.id}_${token}`;
-      return sendJSON(res, 200, { ok: true, link, roles: uniqueRoles });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/set-staff-roles') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, id, roles } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
-      const owner = ownerCtx.owner;
-      if (!ownerCanUseFeature(owner, 'staff-roles')) return sendJSON(res, 200, featureBlockedResult('staff-roles'));
-      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
-
-      const staff = (owner.staff || []).find(s => String(s.id) === String(id));
-      if (!staff) return sendJSON(res, 200, { ok: false, reason: 'Bunday xodim topilmadi' });
-
-      const uniqueRoles = [...new Set(Array.isArray(roles) ? roles : [])].filter(isValidRole);
-      if (!uniqueRoles.length) {
-        return sendJSON(res, 200, { ok: false, reason: 'Kamida bitta lavozim tanlang.' });
-      }
-
-      staff.roles = uniqueRoles;
-      staff.role = uniqueRoles[0];
-      saveOwners(owners);
-
-      return sendJSON(res, 200, { ok: true, staff });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/set-staff-branch') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, id, branchId } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
-      const owner = ownerCtx.owner;
-      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
-
-      const staff = (owner.staff || []).find(s => String(s.id) === String(id));
-      if (!staff) return sendJSON(res, 200, { ok: false, reason: 'Bunday xodim topilmadi' });
-
-      if (branchId) {
-        if (!findBranch(owner, branchId)) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi.' });
-        staff.branchId = branchId;
-      } else {
-        staff.branchId = null;
-      }
-      saveOwners(owners);
-
-      return sendJSON(res, 200, { ok: true, staff });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/remove-staff') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, id } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
-      const owner = ownerCtx.owner;
-      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
-
-      owner.staff = (owner.staff || []).filter(s => String(s.id) !== String(id));
-      saveOwners(owners);
-
-      return sendJSON(res, 200, { ok: true });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/branch-list') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = pruneExpiredOwners();
-      const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
-      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
-
-      return sendJSON(res, 200, {
-        ok: true,
-        branches: ctx.owner.branches || [],
-        maxBranches: ownerMaxBranches(ctx.owner),
-        centralBranchName: ctx.owner.centralBranchName || null
-      });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/central-branch-rename') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, name } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
-      const owner = ownerCtx.owner;
-
-      const trimmedName = String(name || '').trim();
-      owner.centralBranchName = trimmedName || null;
-      saveOwners(owners);
-
-      return sendJSON(res, 200, { ok: true, centralBranchName: owner.centralBranchName });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/branch-add') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, name, address, phone } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi filial qo\'sha oladi'));
-      const owner = ownerCtx.owner;
-      if (!ownerCanUseFeature(owner, 'branch-manage')) return sendJSON(res, 200, featureBlockedResult('branch-manage'));
-
-      const trimmedName = String(name || '').trim();
-      const trimmedAddress = String(address || '').trim();
-      if (!trimmedName || !trimmedAddress) {
-        return sendJSON(res, 200, { ok: false, reason: 'Filial nomi va manzilini kiriting.' });
-      }
-
-      const maxBranches = ownerMaxBranches(owner);
-      const currentCount = (owner.branches || []).length;
-      if (maxBranches && currentCount >= maxBranches) {
-        return sendJSON(res, 200, {
-          ok: false,
-          reason: `Joriy tarifingiz bo'yicha ko'pi bilan ${maxBranches} ta filial ochish mumkin. Kengaytirish uchun administrator bilan bog'laning.`,
-          blockedFeature: true,
-          featureId: 'branch-manage'
-        });
-      }
-
-      if (!owner.branches) owner.branches = [];
-      const newBranch = {
-        id: generateBranchId(),
-        name: trimmedName,
-        address: trimmedAddress,
-        phone: phone ? String(phone).trim() : null,
-        createdAt: new Date().toISOString(),
-        // 1-bosqich: markaziy menyu va bo'limlar boshlang'ich nuqta sifatida
-        // filialga nusxalanadi — shu paytdan boshlab filial menyusi mustaqil
-        // tahrirlanadi va markaziy menyudagi keyingi o'zgarishlarga bog'liq bo'lmaydi.
-        menu: JSON.parse(JSON.stringify(owner.menu || [])),
-        categories: JSON.parse(JSON.stringify(ensureOwnerCategories(owner)))
-      };
-      owner.branches.push(newBranch);
-      saveOwners(owners);
-
-      return sendJSON(res, 200, { ok: true, branch: newBranch });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/branch-rename') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, id, name, address, phone } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
-      const owner = ownerCtx.owner;
-      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
-
-      const branch = findBranch(owner, id);
-      if (!branch) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi' });
-
-      const trimmedName = String(name || '').trim();
-      const trimmedAddress = String(address || '').trim();
-      if (!trimmedName || !trimmedAddress) {
-        return sendJSON(res, 200, { ok: false, reason: 'Filial nomi va manzilini kiriting.' });
-      }
-      branch.name = trimmedName;
-      branch.address = trimmedAddress;
-      branch.phone = phone ? String(phone).trim() : null;
-      saveOwners(owners);
-
-      return sendJSON(res, 200, { ok: true, branch });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/branch-remove') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, id } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
-      const owner = ownerCtx.owner;
-      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
-
-      owner.branches = (owner.branches || []).filter(b => String(b.id) !== String(id));
-      saveOwners(owners);
-
-      return sendJSON(res, 200, { ok: true });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/menu-list') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = pruneExpiredOwners();
-      const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
-      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
-
-      const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
-      const pool = resolveMenuPool(ctx.owner, branchId);
-      if (!pool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi' });
-      const stockPool = resolveStockPool(ctx.owner, branchId) || ctx.owner;
-
-      const menuWithStock = (pool.menu || []).map(m => Object.assign({}, m, { outOfStock: menuItemOutOfStock(stockPool, m) }));
-      return sendJSON(res, 200, { ok: true, menu: menuWithStock, categories: sortedOwnerCategories(pool), role: ctx.role, branchId, branches: ctx.owner.branches || [] });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/category-list') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = pruneExpiredOwners();
-      const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
-      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
-
-      const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
-      const pool = resolveMenuPool(ctx.owner, branchId);
-      if (!pool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi' });
-
-      return sendJSON(res, 200, { ok: true, categories: sortedOwnerCategories(pool), branchId });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/category-add') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, name } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
-      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi bo\'limlarni boshqara oladi'));
-      const owner = ctx.owner;
-      if (!ctx.isAdminActing && !ownerCanUseFeature(owner, 'category-manage')) return sendJSON(res, 200, featureBlockedResult('category-manage'));
-
-      const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
-      const pool = resolveMenuPool(owner, branchId);
-      if (!pool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi' });
-
-      const nameTrim = String(name || '').trim();
-      if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Bo\'lim nomini kiriting.' });
-
-      const categories = ensureOwnerCategories(pool);
-      const exists = categories.some(c => c.name.toLowerCase() === nameTrim.toLowerCase());
-      if (exists) return sendJSON(res, 200, { ok: false, reason: 'Bunday bo\'lim allaqachon mavjud.' });
-
-      const maxOrder = categories.reduce((max, c) => Math.max(max, c.order), -1);
-      const category = { id: crypto.randomBytes(4).toString('hex'), name: nameTrim, order: maxOrder + 1 };
-      categories.push(category);
-      saveOwners(owners);
-
-      return sendJSON(res, 200, { ok: true, category, categories: sortedOwnerCategories(pool) });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/category-remove') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, id } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
-      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
-      const owner = ctx.owner;
-      if (!ctx.isAdminActing && !ownerCanUseFeature(owner, 'category-manage')) return sendJSON(res, 200, featureBlockedResult('category-manage'));
-      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
-
-      const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
-      const pool = resolveMenuPool(owner, branchId);
-      if (!pool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi' });
-
-      ensureOwnerCategories(pool);
-      pool.categories = pool.categories.filter(c => c.id !== id);
-
-      pool.categories.sort((a, b) => a.order - b.order).forEach((c, i) => { c.order = i; });
-      saveOwners(owners);
-
-      return sendJSON(res, 200, { ok: true, categories: sortedOwnerCategories(pool) });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/category-reorder') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, orderedIds } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
-      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
-      const owner = ctx.owner;
-      if (!ctx.isAdminActing && !ownerCanUseFeature(owner, 'category-manage')) return sendJSON(res, 200, featureBlockedResult('category-manage'));
-      if (!Array.isArray(orderedIds)) return sendJSON(res, 200, { ok: false, reason: 'Tartib ro\'yxati noto\'g\'ri.' });
-
-      const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
-      const pool = resolveMenuPool(owner, branchId);
-      if (!pool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi' });
-
-      const categories = ensureOwnerCategories(pool);
-      const byId = new Map(categories.map(c => [c.id, c]));
-      let nextOrder = 0;
-      orderedIds.forEach(id => {
-        const c = byId.get(String(id));
-        if (c) { c.order = nextOrder++; byId.delete(String(id)); }
-      });
-
-      categories.slice().sort((a, b) => a.order - b.order)
-        .filter(c => byId.has(c.id))
-        .forEach(c => { c.order = nextOrder++; });
-
-      saveOwners(owners);
-      return sendJSON(res, 200, { ok: true, categories: sortedOwnerCategories(pool) });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/menu-add') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, name, price, prices, category, description, imageUrl, directStockId } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
-      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi menyuni boshqara oladi'));
-      const owner = ctx.owner;
-      if (!ctx.isAdminActing && !ownerCanUseFeature(owner, 'menu-manage')) return sendJSON(res, 200, featureBlockedResult('menu-manage'));
-
-      const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
-      const pool = resolveMenuPool(owner, branchId);
-      if (!pool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi' });
-      const stockPool = resolveStockPool(owner, branchId);
-
-      const nameTrim = String(name || '').trim();
-      if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Taom nomini kiriting.' });
-
-      const pricesResult = normalizeMenuItemPrices(prices);
-      if (!pricesResult.ok) return sendJSON(res, 200, { ok: false, reason: pricesResult.reason });
-
-      let priceNum;
-      if (pricesResult.list.length) {
-        priceNum = Math.min(...pricesResult.list.map(p => p.price));
-      } else {
-        priceNum = Number(price);
-        if (!Number.isFinite(priceNum) || priceNum <= 0) return sendJSON(res, 200, { ok: false, reason: 'Narxni to\'g\'ri kiriting.' });
-      }
-      const imageTrim = String(imageUrl || '').trim();
-      if (!isValidImageValue(imageTrim)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Rasm noto\'g\'ri formatda yoki hajmi katta (rasmni kichikroq tanlang).' });
-      }
-
-      let directStockIdVal = null;
-      if (directStockId !== undefined && directStockId !== null && directStockId !== '') {
-        const stockItem = findStockItem(stockPool, directStockId);
-        if (!stockItem) return sendJSON(res, 200, { ok: false, reason: 'Bunday sklad mahsuloti topilmadi.' });
-        directStockIdVal = directStockId;
-      }
-
-      if (!pool.menu) pool.menu = [];
-      const item = {
-        id: crypto.randomBytes(4).toString('hex'),
-        name: nameTrim,
-        price: priceNum,
-        prices: pricesResult.list.length ? pricesResult.list : undefined,
-        category: String(category || '').trim() || null,
-        description: String(description || '').trim() || null,
-        imageUrl: imageTrim || null,
-        available: true,
-        directStockId: directStockIdVal,
-        addedAt: new Date().toISOString()
-      };
-      pool.menu.push(item);
-      saveOwners(owners);
-
-      return sendJSON(res, 200, { ok: true, item });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/menu-update') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, id, name, price, prices, category, description, imageUrl, available, directStockId } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
-      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi menyuni boshqara oladi'));
-      const owner = ctx.owner;
-      if (!ctx.isAdminActing && !ownerCanUseFeature(owner, 'menu-manage')) return sendJSON(res, 200, featureBlockedResult('menu-manage'));
-      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
-
-      const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
-      const pool = resolveMenuPool(owner, branchId);
-      if (!pool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi' });
-      const stockPool = resolveStockPool(owner, branchId);
-
-      const item = (pool.menu || []).find(m => m.id === id);
-      if (!item) return sendJSON(res, 200, { ok: false, reason: 'Taom topilmadi.' });
-
-      if (name !== undefined) {
-        const nameTrim = String(name || '').trim();
-        if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Taom nomini kiriting.' });
-        item.name = nameTrim;
-      }
-      if (prices !== undefined) {
-        const pricesResult = normalizeMenuItemPrices(prices);
-        if (!pricesResult.ok) return sendJSON(res, 200, { ok: false, reason: pricesResult.reason });
-        if (pricesResult.list.length) {
-          item.prices = pricesResult.list;
-          item.price = Math.min(...pricesResult.list.map(p => p.price));
-        } else {
-          item.prices = undefined;
-        }
-      }
-      if (price !== undefined) {
-        const priceNum = Number(price);
-        if (!Number.isFinite(priceNum) || priceNum <= 0) return sendJSON(res, 200, { ok: false, reason: 'Narxni to\'g\'ri kiriting.' });
-        if (!Array.isArray(item.prices) || !item.prices.length) item.price = priceNum;
-      }
-      if (category !== undefined) item.category = String(category || '').trim() || null;
-      if (description !== undefined) item.description = String(description || '').trim() || null;
-      if (imageUrl !== undefined) {
-        const imageTrim = String(imageUrl || '').trim();
-        if (!isValidImageValue(imageTrim)) {
-          return sendJSON(res, 200, { ok: false, reason: 'Rasm noto\'g\'ri formatda yoki hajmi katta (rasmni kichikroq tanlang).' });
-        }
-        item.imageUrl = imageTrim || null;
-      }
-      if (available !== undefined) item.available = !!available;
-
-      if (directStockId !== undefined) {
-        const directTrim = String(directStockId || '').trim();
-        if (!directTrim) {
-          item.directStockId = null;
-        } else {
-
-          if (Array.isArray(item.recipe) && item.recipe.length) {
-            return sendJSON(res, 200, { ok: false, reason: 'Bu taomda retsept bor — avval retseptni tozalang, keyin turi o\'zgartiring.' });
-          }
-          const stockItem = findStockItem(stockPool, directTrim);
-          if (!stockItem) return sendJSON(res, 200, { ok: false, reason: 'Bunday sklad mahsuloti topilmadi.' });
-          item.directStockId = directTrim;
-        }
-      }
-      saveOwners(owners);
-
-      return sendJSON(res, 200, { ok: true, item });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/menu-remove') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, id } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
-      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
-      const owner = ctx.owner;
-      if (!ctx.isAdminActing && !ownerCanUseFeature(owner, 'menu-manage')) return sendJSON(res, 200, featureBlockedResult('menu-manage'));
-      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
-
-      const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
-      const pool = resolveMenuPool(owner, branchId);
-      if (!pool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi' });
-
-      pool.menu = (pool.menu || []).filter(m => m.id !== id);
-      saveOwners(owners);
-
-      return sendJSON(res, 200, { ok: true });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/combo-list') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = pruneExpiredOwners();
-      const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
-
-      const combos = (ctx.owner.combos || []).map(c => Object.assign({}, c, {
-        price: c.priceMode === 'auto' ? comboAutoPrice(ctx.owner, c.itemIds) : c.price,
-        outOfStock: comboOutOfStock(ctx.owner, c)
-      }));
-      return sendJSON(res, 200, { ok: true, combos });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/combo-add') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, name, itemIds, priceMode, price, category, imageUrl } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi combo boshqara oladi'));
-      const owner = ownerCtx.owner;
-      if (!ownerCanUseFeature(owner, 'combo-manage')) return sendJSON(res, 200, featureBlockedResult('combo-manage'));
-
-      const nameTrim = String(name || '').trim();
-      if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Combo nomini kiriting.' });
-
-      if (!Array.isArray(itemIds) || itemIds.length < 2) {
-        return sendJSON(res, 200, { ok: false, reason: 'Combo tarkibida kamida 2 ta taom bo\'lishi kerak.' });
-      }
-      const cleanItemIds = [];
-      for (const entry of itemIds) {
-        const menuItem = (owner.menu || []).find(m => m.id === entry.menuItemId);
-        if (!menuItem) return sendJSON(res, 200, { ok: false, reason: 'Tarkibda menyuda mavjud bo\'lmagan taom bor.' });
-        const qtyNum = Number(entry.qty) || 1;
-        if (qtyNum <= 0) return sendJSON(res, 200, { ok: false, reason: 'Har bir taom miqdori musbat bo\'lishi kerak.' });
-        cleanItemIds.push({ menuItemId: entry.menuItemId, qty: qtyNum });
-      }
-
-      const priceModeVal = priceMode === 'manual' ? 'manual' : 'auto';
-      let priceVal;
-      if (priceModeVal === 'manual') {
-        priceVal = Number(price);
-        if (!Number.isFinite(priceVal) || priceVal <= 0) return sendJSON(res, 200, { ok: false, reason: 'Combo narxini to\'g\'ri kiriting.' });
-      } else {
-        priceVal = comboAutoPrice(owner, cleanItemIds);
-      }
-
-      const imageTrim = String(imageUrl || '').trim();
-      if (!isValidImageValue(imageTrim)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Rasm noto\'g\'ri formatda yoki hajmi katta (rasmni kichikroq tanlang).' });
-      }
-
-      if (!owner.combos) owner.combos = [];
-      const combo = {
-        id: crypto.randomBytes(4).toString('hex'),
-        name: nameTrim,
-        itemIds: cleanItemIds,
-        priceMode: priceModeVal,
-        price: priceVal,
-        category: String(category || '').trim() || null,
-        imageUrl: imageTrim || null,
-        available: true,
-        addedAt: new Date().toISOString()
-      };
-      owner.combos.push(combo);
-      saveOwners(owners);
-
-      return sendJSON(res, 200, { ok: true, combo });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/combo-update') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, id, name, itemIds, priceMode, price, category, imageUrl, available } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi combo boshqara oladi'));
-      const owner = ownerCtx.owner;
-      if (!ownerCanUseFeature(owner, 'combo-manage')) return sendJSON(res, 200, featureBlockedResult('combo-manage'));
-      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
-
-      const combo = findCombo(owner, id);
-      if (!combo) return sendJSON(res, 200, { ok: false, reason: 'Combo topilmadi.' });
-
-      if (name !== undefined) {
-        const nameTrim = String(name || '').trim();
-        if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Combo nomini kiriting.' });
-        combo.name = nameTrim;
-      }
-      if (itemIds !== undefined) {
-        if (!Array.isArray(itemIds) || itemIds.length < 2) {
-          return sendJSON(res, 200, { ok: false, reason: 'Combo tarkibida kamida 2 ta taom bo\'lishi kerak.' });
-        }
-        const cleanItemIds = [];
-        for (const entry of itemIds) {
-          const menuItem = (owner.menu || []).find(m => m.id === entry.menuItemId);
-          if (!menuItem) return sendJSON(res, 200, { ok: false, reason: 'Tarkibda menyuda mavjud bo\'lmagan taom bor.' });
-          const qtyNum = Number(entry.qty) || 1;
-          if (qtyNum <= 0) return sendJSON(res, 200, { ok: false, reason: 'Har bir taom miqdori musbat bo\'lishi kerak.' });
-          cleanItemIds.push({ menuItemId: entry.menuItemId, qty: qtyNum });
-        }
-        combo.itemIds = cleanItemIds;
-      }
-      if (priceMode !== undefined) combo.priceMode = priceMode === 'manual' ? 'manual' : 'auto';
-      if (combo.priceMode === 'manual') {
-        if (price !== undefined) {
-          const priceVal = Number(price);
-          if (!Number.isFinite(priceVal) || priceVal <= 0) return sendJSON(res, 200, { ok: false, reason: 'Combo narxini to\'g\'ri kiriting.' });
-          combo.price = priceVal;
-        }
-      } else {
-
-        combo.price = comboAutoPrice(owner, combo.itemIds);
-      }
-      if (category !== undefined) combo.category = String(category || '').trim() || null;
-      if (imageUrl !== undefined) {
-        const imageTrim = String(imageUrl || '').trim();
-        if (!isValidImageValue(imageTrim)) {
-          return sendJSON(res, 200, { ok: false, reason: 'Rasm noto\'g\'ri formatda yoki hajmi katta (rasmni kichikroq tanlang).' });
-        }
-        combo.imageUrl = imageTrim || null;
-      }
-      if (available !== undefined) combo.available = !!available;
-      saveOwners(owners);
-
-      return sendJSON(res, 200, { ok: true, combo });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/combo-remove') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, id } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
-      const owner = ownerCtx.owner;
-      if (!ownerCanUseFeature(owner, 'combo-manage')) return sendJSON(res, 200, featureBlockedResult('combo-manage'));
-      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
-
-      owner.combos = (owner.combos || []).filter(c => c.id !== id);
-      saveOwners(owners);
-
-      return sendJSON(res, 200, { ok: true });
-    });
-    return;
-  }
-
-  // Mijoz Mini App ichida "Siz ham oshxona egasimisiz? Hamkor bo'ling"
-  // havolasini bossa, shu endpoint bot username'ni qaytaradi — keyin
-  // frontend Telegram.WebApp.openTelegramLink(`https://t.me/${botUsername}
-  // ?start=owner_register`) chaqiradi. Owner'ga emas, HAR QANDAY ro'yxatdan
-  // o'tgan Telegram foydalanuvchisiga ochiq (mijoz bo'lishi kerak, shu
-  // sababli isOwnerAccessValid tekshiruvi YO'Q — faqat initData haqiqiyligi
-  // tekshiriladi).
-  if (req.method === 'POST' && req.url === '/api/partner-register-link') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      if (!BOT_USERNAME || BOT_USERNAME === 'BOT_USERNAME_BU_YERGA') {
-        return sendJSON(res, 200, { ok: false, reason: 'Serverda BOT_USERNAME sozlanmagan.' });
-      }
-      return sendJSON(res, 200, { ok: true, botUsername: BOT_USERNAME });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/customer-link') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi ko\'ra oladi'));
-      const owner = ownerCtx.owner;
-      if (!BOT_USERNAME || BOT_USERNAME === 'BOT_USERNAME_BU_YERGA') {
-        return sendJSON(res, 200, { ok: false, reason: 'Serverda BOT_USERNAME sozlanmagan.' });
-      }
-      const link = `https://t.me/${BOT_USERNAME}?start=menu_${owner.id}`;
-      return sendJSON(res, 200, { ok: true, link });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/delivery-group-status') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi ko\'ra oladi'));
-      const owner = ownerCtx.owner;
-      if (!ownerCanUseFeature(owner, 'delivery-group')) return sendJSON(res, 200, featureBlockedResult('delivery-group'));
-      return sendJSON(res, 200, {
-        ok: true,
-        bound: !!owner.deliveryGroupId,
-        groupTitle: owner.deliveryGroupTitle || null,
-        threadBound: !!owner.deliveryGroupThreadId
-      });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/delivery-group-remove') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
-      const owner = ownerCtx.owner;
-      if (!ownerCanUseFeature(owner, 'delivery-group')) return sendJSON(res, 200, featureBlockedResult('delivery-group'));
-      owner.deliveryGroupId = null;
-      owner.deliveryGroupTitle = null;
-      owner.deliveryGroupThreadId = null;
-      saveOwners(owners);
-      return sendJSON(res, 200, { ok: true });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/kitchen-group-status') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi ko\'ra oladi'));
-      const owner = ownerCtx.owner;
-      if (!ownerCanUseFeature(owner, 'kitchen-group')) return sendJSON(res, 200, featureBlockedResult('kitchen-group'));
-      return sendJSON(res, 200, {
-        ok: true,
-        bound: !!owner.kitchenGroupId,
-        groupTitle: owner.kitchenGroupTitle || null,
-        threadBound: !!owner.kitchenGroupThreadId
-      });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/kitchen-group-remove') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
-      const owner = ownerCtx.owner;
-      if (!ownerCanUseFeature(owner, 'kitchen-group')) return sendJSON(res, 200, featureBlockedResult('kitchen-group'));
-      owner.kitchenGroupId = null;
-      owner.kitchenGroupTitle = null;
-      owner.kitchenGroupThreadId = null;
-      saveOwners(owners);
-      return sendJSON(res, 200, { ok: true });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/promo-list') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi ko\'ra oladi'));
-      const owner = ownerCtx.owner;
-      return sendJSON(res, 200, { ok: true, promotions: owner.promotions || [] });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/promo-add') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, title, description, discountPercent, minTotal } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi qo\'sha oladi'));
-      const owner = ownerCtx.owner;
-      if (!ownerCanUseFeature(owner, 'promo-manage')) return sendJSON(res, 200, featureBlockedResult('promo-manage'));
-
-      const titleTrim = String(title || '').trim();
-      const percentNum = Number(discountPercent);
-      if (!titleTrim) return sendJSON(res, 200, { ok: false, reason: 'Aksiya nomini kiriting.' });
-      if (!Number.isFinite(percentNum) || percentNum <= 0 || percentNum > 90) {
-        return sendJSON(res, 200, { ok: false, reason: 'Chegirma foizi 1-90 oralig\'ida bo\'lishi kerak.' });
-      }
-      let minTotalNum = null;
-      if (minTotal !== undefined && minTotal !== null && minTotal !== '') {
-        const n = Number(minTotal);
-        if (!Number.isFinite(n) || n < 0) return sendJSON(res, 200, { ok: false, reason: 'Minimal summa noto\'g\'ri.' });
-        minTotalNum = n;
-      }
-
-      if (!owner.promotions) owner.promotions = [];
-      const promo = {
-        id: crypto.randomBytes(4).toString('hex'),
-        title: titleTrim,
-        description: String(description || '').trim() || null,
-        discountPercent: percentNum,
-        minTotal: minTotalNum,
-        active: true,
-        createdAt: new Date().toISOString()
-      };
-      owner.promotions.push(promo);
-      saveOwners(owners);
-      return sendJSON(res, 200, { ok: true, promo });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/promo-toggle') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, id } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
-      const owner = ownerCtx.owner;
-
-      const promo = (owner.promotions || []).find(p => p.id === id);
-      if (!promo) return sendJSON(res, 200, { ok: false, reason: 'Aksiya topilmadi.' });
-      promo.active = !promo.active;
-      saveOwners(owners);
-      return sendJSON(res, 200, { ok: true, promo });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/promo-remove') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, id } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
-      const owner = ownerCtx.owner;
-      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
-
-      owner.promotions = (owner.promotions || []).filter(p => p.id !== id);
-      saveOwners(owners);
-      return sendJSON(res, 200, { ok: true });
-    });
-    return;
-  }
-
-  function isBannerWithinWindow(banner) {
-    const now = Date.now();
-    if (banner.startAt && new Date(banner.startAt).getTime() > now) return false;
-    if (banner.endAt && new Date(banner.endAt).getTime() < now) return false;
-    // Banner faqat haftaning muayyan kunida (masalan har juma) ko'rinishi
-    // uchun bog'langan bo'lsa — bugun (Toshkent vaqti) o'sha kun bo'lmasa,
-    // ko'rsatilmaydi. Owner buni bir marta sozlaydi, keyin har hafta
-    // avtomatik o'zi chiqib-yashirinib turadi.
-    if (banner.weeklyDay !== null && banner.weeklyDay !== undefined) {
-      if (kitchenTashkentDate().getUTCDay() !== banner.weeklyDay) return false;
+  let branchIdVal = null;
+  if (branchId) {
+    if (!findBranch(owner, branchId)) {
+      return sendFail(res, 'Bunday filial topilmadi.');
     }
-    return true;
+    branchIdVal = branchId;
   }
 
-  function activeOwnerBanners(owner) {
-    const regular = (owner.banners || [])
-      .filter(b => b.active !== false && isBannerWithinWindow(b))
-      .map(b => ({ id: b.id, imageUrl: b.imageUrl, title: b.title, link: b.link }));
+  const resolved = await resolveUserInput(input);
+  if (resolved.error) return sendFail(res, resolved.error);
 
-    // Juma banneri — bu oddiy bannerlar ro'yxatidan butunlay alohida
-    // saqlanadi (owner.fridayBanner). Faqat bugun (Toshkent vaqti bo'yicha)
-    // juma bo'lsa va o'chirib qo'yilmagan bo'lsa, mijozlar ekraniga
-    // qo'shilib chiqadi — boshqa bannerlarni boshqarishga hech qanday
-    // ta'sir qilmaydi.
-    const fb = owner.fridayBanner;
-    if (fb && fb.imageUrl && fb.active !== false && isTashkentFridayNow()) {
-      regular.unshift({ id: 'friday-banner', imageUrl: fb.imageUrl, title: fb.title, link: fb.link });
+  if (isAdminId(resolved.id)) {
+    return sendFail(res, 'Bu foydalanuvchi administrator, xodim qilib bo\'lmaydi.');
+  }
+  if (findOwner(owners, resolved.id)) {
+    return sendFail(res, 'Bu foydalanuvchi allaqachon oshxona egasi.');
+  }
+  const existingStaff = findStaffInfo(owners, resolved.id);
+  if (existingStaff) {
+    return sendFail(res, existingStaff.ownerId === owner.id
+      ? 'Bu foydalanuvchi allaqachon sizning xodimingiz.'
+      : 'Bu foydalanuvchi boshqa oshxonada xodim sifatida ro\'yxatda.');
+  }
+
+  if (!owner.staff) owner.staff = [];
+  owner.staff.push({
+    id: resolved.id,
+    username: resolved.username || null,
+    role: uniqueRoles[0],
+    roles: uniqueRoles,
+    branchId: branchIdVal,
+    addedAt: new Date().toISOString()
+  });
+  saveOwners(owners);
+
+  sendMessage(resolved.id,
+    `👋 Sizni <b>${(owner.profile && owner.profile.name) || 'oshxona'}</b> jamoasiga <b>${rolesLabel(uniqueRoles)}</b> sifatida qo\'shishdi.\nMini App tugmasi orqali oching.`);
+
+  return sendOk(res);
+});
+
+authed('/api/create-staff-invite', (payload, res, { userId }) => {
+  const { role, roles, branchId } = payload;
+
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi havola yarata oladi');
+  const owner = ownerCtx.owner;
+  if (!ownerCanUseFeature(owner, 'staff-invite')) return sendFeatureBlocked(res, 'staff-invite');
+
+  const rolesArr = Array.isArray(roles) ? roles : (role ? [role] : []);
+  const uniqueRoles = [...new Set(rolesArr)].filter(isValidRole)
+    // Havola orqali "Egasi (hamkor)" huquqi berilmaydi — bu faqat
+    // ID/username orqali to'g'ridan-to'g'ri qo'shishda mavjud, chunki
+    // havola har kimga yuborilishi va noto'g'ri odamga to'liq egasi
+    // huquqi tegib qolishi mumkin.
+    .filter(r => r !== 'egasi');
+  if (!uniqueRoles.length) {
+    return sendFail(res, 'Kamida bitta lavozim tanlang. Egasi (hamkor) huquqi havola orqali berilmaydi.');
+  }
+
+  let branchIdVal = null;
+  if (branchId) {
+    if (!findBranch(owner, branchId)) {
+      return sendFail(res, 'Bunday filial topilmadi.');
     }
-    return regular;
+    branchIdVal = branchId;
   }
 
-  if (req.method === 'POST' && req.url === '/api/banner-list') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi ko\'ra oladi'));
-      const owner = ownerCtx.owner;
-      return sendJSON(res, 200, { ok: true, banners: owner.banners || [] });
+  if (!BOT_USERNAME || BOT_USERNAME === 'BOT_USERNAME_BU_YERGA') {
+    return sendFail(res, 'Serverda BOT_USERNAME sozlanmagan.');
+  }
+
+  const token = crypto.randomBytes(16).toString('hex');
+  if (!owner.staffInvites) owner.staffInvites = [];
+
+  owner.staffInvites = owner.staffInvites.filter(inv => !inv.used && new Date(inv.expiresAt) > new Date());
+  owner.staffInvites.push({
+    token,
+    roles: uniqueRoles,
+    branchId: branchIdVal,
+    createdAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
+    used: false,
+    usedBy: null,
+    usedAt: null
+  });
+  saveOwners(owners);
+
+  const link = `https://t.me/${BOT_USERNAME}?start=staffinv_${owner.id}_${token}`;
+  return sendOk(res, { link, roles: uniqueRoles });
+});
+
+authed('/api/set-staff-roles', (payload, res, { userId }) => {
+  const { id, roles } = payload;
+
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'zgartira oladi');
+  const owner = ownerCtx.owner;
+  if (!ownerCanUseFeature(owner, 'staff-roles')) return sendFeatureBlocked(res, 'staff-roles');
+  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
+
+  const staff = (owner.staff || []).find(s => String(s.id) === String(id));
+  if (!staff) return sendFail(res, 'Bunday xodim topilmadi');
+
+  const uniqueRoles = [...new Set(Array.isArray(roles) ? roles : [])].filter(isValidRole);
+  if (!uniqueRoles.length) {
+    return sendFail(res, 'Kamida bitta lavozim tanlang.');
+  }
+
+  staff.roles = uniqueRoles;
+  staff.role = uniqueRoles[0];
+  saveOwners(owners);
+
+  return sendOk(res, { staff });
+});
+
+authed('/api/set-staff-branch', (payload, res, { userId }) => {
+  const { id, branchId } = payload;
+
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'zgartira oladi');
+  const owner = ownerCtx.owner;
+  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
+
+  const staff = (owner.staff || []).find(s => String(s.id) === String(id));
+  if (!staff) return sendFail(res, 'Bunday xodim topilmadi');
+
+  if (branchId) {
+    if (!findBranch(owner, branchId)) return sendFail(res, 'Bunday filial topilmadi.');
+    staff.branchId = branchId;
+  } else {
+    staff.branchId = null;
+  }
+  saveOwners(owners);
+
+  return sendOk(res, { staff });
+});
+
+authed('/api/remove-staff', (payload, res, { userId }) => {
+  const { id } = payload;
+
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'chira oladi');
+  const owner = ownerCtx.owner;
+  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
+
+  owner.staff = (owner.staff || []).filter(s => String(s.id) !== String(id));
+  saveOwners(owners);
+
+  return sendOk(res);
+});
+
+authed('/api/branch-list', (payload, res, { userId }) => {
+  const owners = pruneExpiredOwners();
+  const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
+  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
+
+  return sendOk(res, {
+    branches: ctx.owner.branches || [],
+    maxBranches: ownerMaxBranches(ctx.owner),
+    centralBranchName: ctx.owner.centralBranchName || null
+  });
+});
+
+authed('/api/central-branch-rename', (payload, res, { userId }) => {
+  const { name } = payload;
+
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'zgartira oladi');
+  const owner = ownerCtx.owner;
+
+  const trimmedName = String(name || '').trim();
+  owner.centralBranchName = trimmedName || null;
+  saveOwners(owners);
+
+  return sendOk(res, { centralBranchName: owner.centralBranchName });
+});
+
+authed('/api/branch-add', (payload, res, { userId }) => {
+  const { name, address, phone } = payload;
+
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi filial qo\'sha oladi');
+  const owner = ownerCtx.owner;
+  if (!ownerCanUseFeature(owner, 'branch-manage')) return sendFeatureBlocked(res, 'branch-manage');
+
+  const trimmedName = String(name || '').trim();
+  const trimmedAddress = String(address || '').trim();
+  if (!trimmedName || !trimmedAddress) {
+    return sendFail(res, 'Filial nomi va manzilini kiriting.');
+  }
+
+  const maxBranches = ownerMaxBranches(owner);
+  const currentCount = (owner.branches || []).length;
+  if (maxBranches && currentCount >= maxBranches) {
+    return sendJSON(res, 200, {
+      ok: false,
+      reason: `Joriy tarifingiz bo'yicha ko'pi bilan ${maxBranches} ta filial ochish mumkin. Kengaytirish uchun administrator bilan bog'laning.`,
+      blockedFeature: true,
+      featureId: 'branch-manage'
     });
-    return;
   }
 
-  if (req.method === 'POST' && req.url === '/api/banner-add') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, imageUrl, title, link, startAt, endAt, weeklyDay } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi qo\'sha oladi'));
-      const owner = ownerCtx.owner;
-      if (!ownerCanUseFeature(owner, 'banner-manage')) return sendJSON(res, 200, featureBlockedResult('banner-manage'));
+  if (!owner.branches) owner.branches = [];
+  const newBranch = {
+    id: generateBranchId(),
+    name: trimmedName,
+    address: trimmedAddress,
+    phone: phone ? String(phone).trim() : null,
+    createdAt: new Date().toISOString(),
+    // 1-bosqich: markaziy menyu va bo'limlar boshlang'ich nuqta sifatida
+    // filialga nusxalanadi — shu paytdan boshlab filial menyusi mustaqil
+    // tahrirlanadi va markaziy menyudagi keyingi o'zgarishlarga bog'liq bo'lmaydi.
+    menu: JSON.parse(JSON.stringify(owner.menu || [])),
+    categories: JSON.parse(JSON.stringify(ensureOwnerCategories(owner)))
+  };
+  owner.branches.push(newBranch);
+  saveOwners(owners);
 
-      const imageTrim = String(imageUrl || '').trim();
-      if (!imageTrim) return sendJSON(res, 200, { ok: false, reason: 'Banner uchun rasm tanlang.' });
-      if (!isValidImageValue(imageTrim)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Rasm noto\'g\'ri formatda yoki hajmi katta (rasmni kichikroq tanlang).' });
-      }
-      const linkTrim = String(link || '').trim();
-      if (linkTrim && !/^https?:\/\//i.test(linkTrim)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Havola http:// yoki https:// bilan boshlanishi kerak.' });
-      }
-      let startAtVal = null;
-      if (startAt) {
-        const d = new Date(startAt);
-        if (isNaN(d.getTime())) return sendJSON(res, 200, { ok: false, reason: 'Boshlanish sanasi noto\'g\'ri.' });
-        startAtVal = d.toISOString();
-      }
-      let endAtVal = null;
-      if (endAt) {
-        const d = new Date(endAt);
-        if (isNaN(d.getTime())) return sendJSON(res, 200, { ok: false, reason: 'Tugash sanasi noto\'g\'ri.' });
-        endAtVal = d.toISOString();
-      }
-      if (startAtVal && endAtVal && new Date(endAtVal).getTime() <= new Date(startAtVal).getTime()) {
-        return sendJSON(res, 200, { ok: false, reason: 'Tugash sanasi boshlanish sanasidan keyin bo\'lishi kerak.' });
-      }
-      let weeklyDayVal = null;
-      if (weeklyDay !== undefined && weeklyDay !== null && weeklyDay !== '') {
-        const n = parseInt(weeklyDay, 10);
-        if (!Number.isInteger(n) || n < 0 || n > 6) return sendJSON(res, 200, { ok: false, reason: 'Hafta kuni noto\'g\'ri.' });
-        weeklyDayVal = n;
-      }
+  return sendOk(res, { branch: newBranch });
+});
 
-      if (!owner.banners) owner.banners = [];
-      const banner = {
-        id: crypto.randomBytes(4).toString('hex'),
-        imageUrl: imageTrim,
-        title: String(title || '').trim() || null,
-        link: linkTrim || null,
-        active: true,
-        startAt: startAtVal,
-        endAt: endAtVal,
-        weeklyDay: weeklyDayVal,
-        createdAt: new Date().toISOString()
+
+authed('/api/branch-remove', (payload, res, { userId }) => {
+  const { id } = payload;
+
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'chira oladi');
+  const owner = ownerCtx.owner;
+  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
+
+  owner.branches = (owner.branches || []).filter(b => String(b.id) !== String(id));
+  saveOwners(owners);
+
+  return sendOk(res);
+});
+
+authed('/api/menu-list', (payload, res, { userId }) => {
+  const owners = pruneExpiredOwners();
+  const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
+  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
+
+  const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
+  const pool = resolveMenuPool(ctx.owner, branchId);
+  if (!pool) return sendFail(res, 'Bunday filial topilmadi');
+  const stockPool = resolveStockPool(ctx.owner, branchId) || ctx.owner;
+
+  const menuWithStock = (pool.menu || []).map(m => Object.assign({}, m, { outOfStock: menuItemOutOfStock(stockPool, m) }));
+  return sendOk(res, { menu: menuWithStock, categories: sortedOwnerCategories(pool), role: ctx.role, branchId, branches: ctx.owner.branches || [] });
+});
+
+authed('/api/category-list', (payload, res, { userId }) => {
+  const owners = pruneExpiredOwners();
+  const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
+  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
+
+  const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
+  const pool = resolveMenuPool(ctx.owner, branchId);
+  if (!pool) return sendFail(res, 'Bunday filial topilmadi');
+
+  return sendOk(res, { categories: sortedOwnerCategories(pool), branchId });
+});
+
+authed('/api/category-add', (payload, res, { userId }) => {
+  const { name } = payload;
+
+  const owners = loadOwners();
+  const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
+  if (!ctx) return denyAccess(res, owners, userId, 'Faqat oshxona egasi bo\'limlarni boshqara oladi');
+  const owner = ctx.owner;
+  if (!ctx.isAdminActing && !ownerCanUseFeature(owner, 'category-manage')) return sendFeatureBlocked(res, 'category-manage');
+
+  const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
+  const pool = resolveMenuPool(owner, branchId);
+  if (!pool) return sendFail(res, 'Bunday filial topilmadi');
+
+  const nameTrim = String(name || '').trim();
+  if (!nameTrim) return sendFail(res, 'Bo\'lim nomini kiriting.');
+
+  const categories = ensureOwnerCategories(pool);
+  const exists = categories.some(c => c.name.toLowerCase() === nameTrim.toLowerCase());
+  if (exists) return sendFail(res, 'Bunday bo\'lim allaqachon mavjud.');
+
+  const maxOrder = categories.reduce((max, c) => Math.max(max, c.order), -1);
+  const category = { id: crypto.randomBytes(4).toString('hex'), name: nameTrim, order: maxOrder + 1 };
+  categories.push(category);
+  saveOwners(owners);
+
+  return sendOk(res, { category, categories: sortedOwnerCategories(pool) });
+});
+
+authed('/api/category-remove', (payload, res, { userId }) => {
+  const { id } = payload;
+
+  const owners = loadOwners();
+  const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
+  if (!ctx) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'chira oladi');
+  const owner = ctx.owner;
+  if (!ctx.isAdminActing && !ownerCanUseFeature(owner, 'category-manage')) return sendFeatureBlocked(res, 'category-manage');
+  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
+
+  const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
+  const pool = resolveMenuPool(owner, branchId);
+  if (!pool) return sendFail(res, 'Bunday filial topilmadi');
+
+  ensureOwnerCategories(pool);
+  pool.categories = pool.categories.filter(c => c.id !== id);
+
+  pool.categories.sort((a, b) => a.order - b.order).forEach((c, i) => { c.order = i; });
+  saveOwners(owners);
+
+  return sendOk(res, { categories: sortedOwnerCategories(pool) });
+});
+
+authed('/api/category-reorder', (payload, res, { userId }) => {
+  const { orderedIds } = payload;
+
+  const owners = loadOwners();
+  const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
+  if (!ctx) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'zgartira oladi');
+  const owner = ctx.owner;
+  if (!ctx.isAdminActing && !ownerCanUseFeature(owner, 'category-manage')) return sendFeatureBlocked(res, 'category-manage');
+  if (!Array.isArray(orderedIds)) return sendFail(res, 'Tartib ro\'yxati noto\'g\'ri.');
+
+  const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
+  const pool = resolveMenuPool(owner, branchId);
+  if (!pool) return sendFail(res, 'Bunday filial topilmadi');
+
+  const categories = ensureOwnerCategories(pool);
+  const byId = new Map(categories.map(c => [c.id, c]));
+  let nextOrder = 0;
+  orderedIds.forEach(id => {
+    const c = byId.get(String(id));
+    if (c) { c.order = nextOrder++; byId.delete(String(id)); }
+  });
+
+  categories.slice().sort((a, b) => a.order - b.order)
+    .filter(c => byId.has(c.id))
+    .forEach(c => { c.order = nextOrder++; });
+
+  saveOwners(owners);
+  return sendOk(res, { categories: sortedOwnerCategories(pool) });
+});
+
+authed('/api/menu-add', (payload, res, { userId }) => {
+  const { name, price, prices, category, description, imageUrl, directStockId } = payload;
+
+  const owners = loadOwners();
+  const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
+  if (!ctx) return denyAccess(res, owners, userId, 'Faqat oshxona egasi menyuni boshqara oladi');
+  const owner = ctx.owner;
+  if (!ctx.isAdminActing && !ownerCanUseFeature(owner, 'menu-manage')) return sendFeatureBlocked(res, 'menu-manage');
+
+  const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
+  const pool = resolveMenuPool(owner, branchId);
+  if (!pool) return sendFail(res, 'Bunday filial topilmadi');
+  const stockPool = resolveStockPool(owner, branchId);
+
+  const nameTrim = String(name || '').trim();
+  if (!nameTrim) return sendFail(res, 'Taom nomini kiriting.');
+
+  const pricesResult = normalizeMenuItemPrices(prices);
+  if (!pricesResult.ok) return sendFail(res, pricesResult.reason);
+
+  let priceNum;
+  if (pricesResult.list.length) {
+    priceNum = Math.min(...pricesResult.list.map(p => p.price));
+  } else {
+    priceNum = Number(price);
+    if (!Number.isFinite(priceNum) || priceNum <= 0) return sendFail(res, 'Narxni to\'g\'ri kiriting.');
+  }
+  const imageTrim = String(imageUrl || '').trim();
+  if (!isValidImageValue(imageTrim)) {
+    return sendFail(res, 'Rasm noto\'g\'ri formatda yoki hajmi katta (rasmni kichikroq tanlang).');
+  }
+
+  let directStockIdVal = null;
+  if (directStockId !== undefined && directStockId !== null && directStockId !== '') {
+    const stockItem = findStockItem(stockPool, directStockId);
+    if (!stockItem) return sendFail(res, 'Bunday sklad mahsuloti topilmadi.');
+    directStockIdVal = directStockId;
+  }
+
+  if (!pool.menu) pool.menu = [];
+  const item = {
+    id: crypto.randomBytes(4).toString('hex'),
+    name: nameTrim,
+    price: priceNum,
+    prices: pricesResult.list.length ? pricesResult.list : undefined,
+    category: String(category || '').trim() || null,
+    description: String(description || '').trim() || null,
+    imageUrl: imageTrim || null,
+    available: true,
+    directStockId: directStockIdVal,
+    addedAt: new Date().toISOString()
+  };
+  pool.menu.push(item);
+  saveOwners(owners);
+
+  return sendOk(res, { item });
+});
+
+authed('/api/menu-update', (payload, res, { userId }) => {
+  const { id, name, price, prices, category, description, imageUrl, available, directStockId } = payload;
+
+  const owners = loadOwners();
+  const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
+  if (!ctx) return denyAccess(res, owners, userId, 'Faqat oshxona egasi menyuni boshqara oladi');
+  const owner = ctx.owner;
+  if (!ctx.isAdminActing && !ownerCanUseFeature(owner, 'menu-manage')) return sendFeatureBlocked(res, 'menu-manage');
+  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
+
+  const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
+  const pool = resolveMenuPool(owner, branchId);
+  if (!pool) return sendFail(res, 'Bunday filial topilmadi');
+  const stockPool = resolveStockPool(owner, branchId);
+
+  const item = (pool.menu || []).find(m => m.id === id);
+  if (!item) return sendFail(res, 'Taom topilmadi.');
+
+  if (name !== undefined) {
+    const nameTrim = String(name || '').trim();
+    if (!nameTrim) return sendFail(res, 'Taom nomini kiriting.');
+    item.name = nameTrim;
+  }
+  if (prices !== undefined) {
+    const pricesResult = normalizeMenuItemPrices(prices);
+    if (!pricesResult.ok) return sendFail(res, pricesResult.reason);
+    if (pricesResult.list.length) {
+      item.prices = pricesResult.list;
+      item.price = Math.min(...pricesResult.list.map(p => p.price));
+    } else {
+      item.prices = undefined;
+    }
+  }
+  if (price !== undefined) {
+    const priceNum = Number(price);
+    if (!Number.isFinite(priceNum) || priceNum <= 0) return sendFail(res, 'Narxni to\'g\'ri kiriting.');
+    if (!Array.isArray(item.prices) || !item.prices.length) item.price = priceNum;
+  }
+  if (category !== undefined) item.category = String(category || '').trim() || null;
+  if (description !== undefined) item.description = String(description || '').trim() || null;
+  if (imageUrl !== undefined) {
+    const imageTrim = String(imageUrl || '').trim();
+    if (!isValidImageValue(imageTrim)) {
+      return sendFail(res, 'Rasm noto\'g\'ri formatda yoki hajmi katta (rasmni kichikroq tanlang).');
+    }
+    item.imageUrl = imageTrim || null;
+  }
+  if (available !== undefined) item.available = !!available;
+
+  if (directStockId !== undefined) {
+    const directTrim = String(directStockId || '').trim();
+    if (!directTrim) {
+      item.directStockId = null;
+    } else {
+
+      if (Array.isArray(item.recipe) && item.recipe.length) {
+        return sendFail(res, 'Bu taomda retsept bor — avval retseptni tozalang, keyin turi o\'zgartiring.');
+      }
+      const stockItem = findStockItem(stockPool, directTrim);
+      if (!stockItem) return sendFail(res, 'Bunday sklad mahsuloti topilmadi.');
+      item.directStockId = directTrim;
+    }
+  }
+  saveOwners(owners);
+
+  return sendOk(res, { item });
+});
+
+authed('/api/menu-remove', (payload, res, { userId }) => {
+  const { id } = payload;
+
+  const owners = loadOwners();
+  const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
+  if (!ctx) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'chira oladi');
+  const owner = ctx.owner;
+  if (!ctx.isAdminActing && !ownerCanUseFeature(owner, 'menu-manage')) return sendFeatureBlocked(res, 'menu-manage');
+  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
+
+  const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
+  const pool = resolveMenuPool(owner, branchId);
+  if (!pool) return sendFail(res, 'Bunday filial topilmadi');
+
+  pool.menu = (pool.menu || []).filter(m => m.id !== id);
+  saveOwners(owners);
+
+  return sendOk(res);
+});
+
+authed('/api/combo-list', (payload, res, { userId }) => {
+  const owners = pruneExpiredOwners();
+  const ctx = resolveOwnerContext(owners, userId);
+  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
+
+  const combos = (ctx.owner.combos || []).map(c => Object.assign({}, c, {
+    price: c.priceMode === 'auto' ? comboAutoPrice(ctx.owner, c.itemIds) : c.price,
+    outOfStock: comboOutOfStock(ctx.owner, c)
+  }));
+  return sendOk(res, { combos });
+});
+
+authed('/api/combo-add', (payload, res, { userId }) => {
+  const { name, itemIds, priceMode, price, category, imageUrl } = payload;
+
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi combo boshqara oladi');
+  const owner = ownerCtx.owner;
+  if (!ownerCanUseFeature(owner, 'combo-manage')) return sendFeatureBlocked(res, 'combo-manage');
+
+  const nameTrim = String(name || '').trim();
+  if (!nameTrim) return sendFail(res, 'Combo nomini kiriting.');
+
+  if (!Array.isArray(itemIds) || itemIds.length < 2) {
+    return sendFail(res, 'Combo tarkibida kamida 2 ta taom bo\'lishi kerak.');
+  }
+  const cleanItemIds = [];
+  for (const entry of itemIds) {
+    const menuItem = (owner.menu || []).find(m => m.id === entry.menuItemId);
+    if (!menuItem) return sendFail(res, 'Tarkibda menyuda mavjud bo\'lmagan taom bor.');
+    const qtyNum = Number(entry.qty) || 1;
+    if (qtyNum <= 0) return sendFail(res, 'Har bir taom miqdori musbat bo\'lishi kerak.');
+    cleanItemIds.push({ menuItemId: entry.menuItemId, qty: qtyNum });
+  }
+
+  const priceModeVal = priceMode === 'manual' ? 'manual' : 'auto';
+  let priceVal;
+  if (priceModeVal === 'manual') {
+    priceVal = Number(price);
+    if (!Number.isFinite(priceVal) || priceVal <= 0) return sendFail(res, 'Combo narxini to\'g\'ri kiriting.');
+  } else {
+    priceVal = comboAutoPrice(owner, cleanItemIds);
+  }
+
+  const imageTrim = String(imageUrl || '').trim();
+  if (!isValidImageValue(imageTrim)) {
+    return sendFail(res, 'Rasm noto\'g\'ri formatda yoki hajmi katta (rasmni kichikroq tanlang).');
+  }
+
+  if (!owner.combos) owner.combos = [];
+  const combo = {
+    id: crypto.randomBytes(4).toString('hex'),
+    name: nameTrim,
+    itemIds: cleanItemIds,
+    priceMode: priceModeVal,
+    price: priceVal,
+    category: String(category || '').trim() || null,
+    imageUrl: imageTrim || null,
+    available: true,
+    addedAt: new Date().toISOString()
+  };
+  owner.combos.push(combo);
+  saveOwners(owners);
+
+  return sendOk(res, { combo });
+});
+
+authed('/api/combo-update', (payload, res, { userId }) => {
+  const { id, name, itemIds, priceMode, price, category, imageUrl, available } = payload;
+
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi combo boshqara oladi');
+  const owner = ownerCtx.owner;
+  if (!ownerCanUseFeature(owner, 'combo-manage')) return sendFeatureBlocked(res, 'combo-manage');
+  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
+
+  const combo = findCombo(owner, id);
+  if (!combo) return sendFail(res, 'Combo topilmadi.');
+
+  if (name !== undefined) {
+    const nameTrim = String(name || '').trim();
+    if (!nameTrim) return sendFail(res, 'Combo nomini kiriting.');
+    combo.name = nameTrim;
+  }
+  if (itemIds !== undefined) {
+    if (!Array.isArray(itemIds) || itemIds.length < 2) {
+      return sendFail(res, 'Combo tarkibida kamida 2 ta taom bo\'lishi kerak.');
+    }
+    const cleanItemIds = [];
+    for (const entry of itemIds) {
+      const menuItem = (owner.menu || []).find(m => m.id === entry.menuItemId);
+      if (!menuItem) return sendFail(res, 'Tarkibda menyuda mavjud bo\'lmagan taom bor.');
+      const qtyNum = Number(entry.qty) || 1;
+      if (qtyNum <= 0) return sendFail(res, 'Har bir taom miqdori musbat bo\'lishi kerak.');
+      cleanItemIds.push({ menuItemId: entry.menuItemId, qty: qtyNum });
+    }
+    combo.itemIds = cleanItemIds;
+  }
+  if (priceMode !== undefined) combo.priceMode = priceMode === 'manual' ? 'manual' : 'auto';
+  if (combo.priceMode === 'manual') {
+    if (price !== undefined) {
+      const priceVal = Number(price);
+      if (!Number.isFinite(priceVal) || priceVal <= 0) return sendFail(res, 'Combo narxini to\'g\'ri kiriting.');
+      combo.price = priceVal;
+    }
+  } else {
+
+    combo.price = comboAutoPrice(owner, combo.itemIds);
+  }
+  if (category !== undefined) combo.category = String(category || '').trim() || null;
+  if (imageUrl !== undefined) {
+    const imageTrim = String(imageUrl || '').trim();
+    if (!isValidImageValue(imageTrim)) {
+      return sendFail(res, 'Rasm noto\'g\'ri formatda yoki hajmi katta (rasmni kichikroq tanlang).');
+    }
+    combo.imageUrl = imageTrim || null;
+  }
+  if (available !== undefined) combo.available = !!available;
+  saveOwners(owners);
+
+  return sendOk(res, { combo });
+});
+
+authed('/api/combo-remove', (payload, res, { userId }) => {
+  const { id } = payload;
+
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'chira oladi');
+  const owner = ownerCtx.owner;
+  if (!ownerCanUseFeature(owner, 'combo-manage')) return sendFeatureBlocked(res, 'combo-manage');
+  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
+
+  owner.combos = (owner.combos || []).filter(c => c.id !== id);
+  saveOwners(owners);
+
+  return sendOk(res);
+});
+
+// Mijoz Mini App ichida "Siz ham oshxona egasimisiz? Hamkor bo'ling"
+// havolasini bossa, shu endpoint bot username'ni qaytaradi — keyin
+// frontend Telegram.WebApp.openTelegramLink(`https://t.me/${botUsername}
+// ?start=owner_register`) chaqiradi. Owner'ga emas, HAR QANDAY ro'yxatdan
+// o'tgan Telegram foydalanuvchisiga ochiq (mijoz bo'lishi kerak, shu
+// sababli isOwnerAccessValid tekshiruvi YO'Q — faqat initData haqiqiyligi
+// tekshiriladi).
+authed('/api/partner-register-link', (payload, res) => {
+  if (!BOT_USERNAME || BOT_USERNAME === 'BOT_USERNAME_BU_YERGA') {
+    return sendFail(res, 'Serverda BOT_USERNAME sozlanmagan.');
+  }
+  return sendOk(res, { botUsername: BOT_USERNAME });
+});
+
+authed('/api/customer-link', (payload, res, { userId }) => {
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi ko\'ra oladi');
+  const owner = ownerCtx.owner;
+  if (!BOT_USERNAME || BOT_USERNAME === 'BOT_USERNAME_BU_YERGA') {
+    return sendFail(res, 'Serverda BOT_USERNAME sozlanmagan.');
+  }
+  const link = `https://t.me/${BOT_USERNAME}?start=menu_${owner.id}`;
+  return sendOk(res, { link });
+});
+
+authed('/api/delivery-group-status', (payload, res, { userId }) => {
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi ko\'ra oladi');
+  const owner = ownerCtx.owner;
+  if (!ownerCanUseFeature(owner, 'delivery-group')) return sendFeatureBlocked(res, 'delivery-group');
+  return sendOk(res, {
+    bound: !!owner.deliveryGroupId,
+    groupTitle: owner.deliveryGroupTitle || null,
+    threadBound: !!owner.deliveryGroupThreadId
+  });
+});
+
+authed('/api/delivery-group-remove', (payload, res, { userId }) => {
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'zgartira oladi');
+  const owner = ownerCtx.owner;
+  if (!ownerCanUseFeature(owner, 'delivery-group')) return sendFeatureBlocked(res, 'delivery-group');
+  owner.deliveryGroupId = null;
+  owner.deliveryGroupTitle = null;
+  owner.deliveryGroupThreadId = null;
+  saveOwners(owners);
+  return sendOk(res);
+});
+
+authed('/api/kitchen-group-status', (payload, res, { userId }) => {
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi ko\'ra oladi');
+  const owner = ownerCtx.owner;
+  if (!ownerCanUseFeature(owner, 'kitchen-group')) return sendFeatureBlocked(res, 'kitchen-group');
+  return sendOk(res, {
+    bound: !!owner.kitchenGroupId,
+    groupTitle: owner.kitchenGroupTitle || null,
+    threadBound: !!owner.kitchenGroupThreadId
+  });
+});
+
+authed('/api/kitchen-group-remove', (payload, res, { userId }) => {
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'zgartira oladi');
+  const owner = ownerCtx.owner;
+  if (!ownerCanUseFeature(owner, 'kitchen-group')) return sendFeatureBlocked(res, 'kitchen-group');
+  owner.kitchenGroupId = null;
+  owner.kitchenGroupTitle = null;
+  owner.kitchenGroupThreadId = null;
+  saveOwners(owners);
+  return sendOk(res);
+});
+
+authed('/api/promo-list', (payload, res, { userId }) => {
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi ko\'ra oladi');
+  const owner = ownerCtx.owner;
+  return sendOk(res, { promotions: owner.promotions || [] });
+});
+
+authed('/api/promo-add', (payload, res, { userId }) => {
+  const { title, description, discountPercent, minTotal } = payload;
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi qo\'sha oladi');
+  const owner = ownerCtx.owner;
+  if (!ownerCanUseFeature(owner, 'promo-manage')) return sendFeatureBlocked(res, 'promo-manage');
+
+  const titleTrim = String(title || '').trim();
+  const percentNum = Number(discountPercent);
+  if (!titleTrim) return sendFail(res, 'Aksiya nomini kiriting.');
+  if (!Number.isFinite(percentNum) || percentNum <= 0 || percentNum > 90) {
+    return sendFail(res, 'Chegirma foizi 1-90 oralig\'ida bo\'lishi kerak.');
+  }
+  let minTotalNum = null;
+  if (minTotal !== undefined && minTotal !== null && minTotal !== '') {
+    const n = Number(minTotal);
+    if (!Number.isFinite(n) || n < 0) return sendFail(res, 'Minimal summa noto\'g\'ri.');
+    minTotalNum = n;
+  }
+
+  if (!owner.promotions) owner.promotions = [];
+  const promo = {
+    id: crypto.randomBytes(4).toString('hex'),
+    title: titleTrim,
+    description: String(description || '').trim() || null,
+    discountPercent: percentNum,
+    minTotal: minTotalNum,
+    active: true,
+    createdAt: new Date().toISOString()
+  };
+  owner.promotions.push(promo);
+  saveOwners(owners);
+  return sendOk(res, { promo });
+});
+
+authed('/api/promo-toggle', (payload, res, { userId }) => {
+  const { id } = payload;
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'zgartira oladi');
+  const owner = ownerCtx.owner;
+
+  const promo = (owner.promotions || []).find(p => p.id === id);
+  if (!promo) return sendFail(res, 'Aksiya topilmadi.');
+  promo.active = !promo.active;
+  saveOwners(owners);
+  return sendOk(res, { promo });
+});
+
+authed('/api/promo-remove', (payload, res, { userId }) => {
+  const { id } = payload;
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'chira oladi');
+  const owner = ownerCtx.owner;
+  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
+
+  owner.promotions = (owner.promotions || []).filter(p => p.id !== id);
+  saveOwners(owners);
+  return sendOk(res);
+});
+
+function isBannerWithinWindow(banner) {
+  const now = Date.now();
+  if (banner.startAt && new Date(banner.startAt).getTime() > now) return false;
+  if (banner.endAt && new Date(banner.endAt).getTime() < now) return false;
+  // Banner faqat haftaning muayyan kunida (masalan har juma) ko'rinishi
+  // uchun bog'langan bo'lsa — bugun (Toshkent vaqti) o'sha kun bo'lmasa,
+  // ko'rsatilmaydi. Owner buni bir marta sozlaydi, keyin har hafta
+  // avtomatik o'zi chiqib-yashirinib turadi.
+  if (banner.weeklyDay !== null && banner.weeklyDay !== undefined) {
+    if (kitchenTashkentDate().getUTCDay() !== banner.weeklyDay) return false;
+  }
+  return true;
+}
+
+function activeOwnerBanners(owner) {
+  const regular = (owner.banners || [])
+    .filter(b => b.active !== false && isBannerWithinWindow(b))
+    .map(b => ({ id: b.id, imageUrl: b.imageUrl, title: b.title, link: b.link }));
+
+  // Juma banneri — bu oddiy bannerlar ro'yxatidan butunlay alohida
+  // saqlanadi (owner.fridayBanner). Faqat bugun (Toshkent vaqti bo'yicha)
+  // juma bo'lsa va o'chirib qo'yilmagan bo'lsa, mijozlar ekraniga
+  // qo'shilib chiqadi — boshqa bannerlarni boshqarishga hech qanday
+  // ta'sir qilmaydi.
+  const fb = owner.fridayBanner;
+  if (fb && fb.imageUrl && fb.active !== false && isTashkentFridayNow()) {
+    regular.unshift({ id: 'friday-banner', imageUrl: fb.imageUrl, title: fb.title, link: fb.link });
+  }
+  return regular;
+}
+
+authed('/api/banner-list', (payload, res, { userId }) => {
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi ko\'ra oladi');
+  const owner = ownerCtx.owner;
+  return sendOk(res, { banners: owner.banners || [] });
+});
+
+authed('/api/banner-add', (payload, res, { userId }) => {
+  const { imageUrl, title, link, startAt, endAt, weeklyDay } = payload;
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi qo\'sha oladi');
+  const owner = ownerCtx.owner;
+  if (!ownerCanUseFeature(owner, 'banner-manage')) return sendFeatureBlocked(res, 'banner-manage');
+
+  const imageTrim = String(imageUrl || '').trim();
+  if (!imageTrim) return sendFail(res, 'Banner uchun rasm tanlang.');
+  if (!isValidImageValue(imageTrim)) {
+    return sendFail(res, 'Rasm noto\'g\'ri formatda yoki hajmi katta (rasmni kichikroq tanlang).');
+  }
+  const linkTrim = String(link || '').trim();
+  if (linkTrim && !/^https?:\/\//i.test(linkTrim)) {
+    return sendFail(res, 'Havola http:// yoki https:// bilan boshlanishi kerak.');
+  }
+  let startAtVal = null;
+  if (startAt) {
+    const d = new Date(startAt);
+    if (isNaN(d.getTime())) return sendFail(res, 'Boshlanish sanasi noto\'g\'ri.');
+    startAtVal = d.toISOString();
+  }
+  let endAtVal = null;
+  if (endAt) {
+    const d = new Date(endAt);
+    if (isNaN(d.getTime())) return sendFail(res, 'Tugash sanasi noto\'g\'ri.');
+    endAtVal = d.toISOString();
+  }
+  if (startAtVal && endAtVal && new Date(endAtVal).getTime() <= new Date(startAtVal).getTime()) {
+    return sendFail(res, 'Tugash sanasi boshlanish sanasidan keyin bo\'lishi kerak.');
+  }
+  let weeklyDayVal = null;
+  if (weeklyDay !== undefined && weeklyDay !== null && weeklyDay !== '') {
+    const n = parseInt(weeklyDay, 10);
+    if (!Number.isInteger(n) || n < 0 || n > 6) return sendFail(res, 'Hafta kuni noto\'g\'ri.');
+    weeklyDayVal = n;
+  }
+
+  if (!owner.banners) owner.banners = [];
+  const banner = {
+    id: crypto.randomBytes(4).toString('hex'),
+    imageUrl: imageTrim,
+    title: String(title || '').trim() || null,
+    link: linkTrim || null,
+    active: true,
+    startAt: startAtVal,
+    endAt: endAtVal,
+    weeklyDay: weeklyDayVal,
+    createdAt: new Date().toISOString()
+  };
+  owner.banners.unshift(banner);
+  saveOwners(owners);
+  return sendOk(res, { banner });
+});
+
+
+authed('/api/banner-toggle', (payload, res, { userId }) => {
+  const { id } = payload;
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'zgartira oladi');
+  const owner = ownerCtx.owner;
+
+  const banner = (owner.banners || []).find(b => b.id === id);
+  if (!banner) return sendFail(res, 'Banner topilmadi.');
+  banner.active = !banner.active;
+  saveOwners(owners);
+  return sendOk(res, { banner });
+});
+
+authed('/api/banner-remove', (payload, res, { userId }) => {
+  const { id } = payload;
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'chira oladi');
+  const owner = ownerCtx.owner;
+  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
+
+  owner.banners = (owner.banners || []).filter(b => b.id !== id);
+  saveOwners(owners);
+  return sendOk(res);
+});
+
+// === Juma banneri (Friday banner) ===
+// Bu bo'lim yuqoridagi oddiy "Reklama bannerlari" (owner.banners) bilan
+// umuman bog'liq emas — alohida maydonda (owner.fridayBanner, bitta
+// obyekt) saqlanadi. Shu sababli bu yerdagi qo'shish/o'chirish/yoqish
+// amallari boshqa bannerlarga hech qanday tarzda aralashmaydi. Faqat
+// haftaning juma kuni avtomatik ko'rinadi (qarang: activeOwnerBanners).
+
+authed('/api/friday-banner-get', (payload, res, { userId }) => {
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi ko\'ra oladi');
+  const owner = ownerCtx.owner;
+  return sendOk(res, { banner: owner.fridayBanner || null });
+});
+
+authed('/api/friday-banner-save', (payload, res, { userId }) => {
+  const { imageUrl, title, link } = payload;
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi qo\'sha oladi');
+  const owner = ownerCtx.owner;
+  if (!ownerCanUseFeature(owner, 'banner-manage')) return sendFeatureBlocked(res, 'banner-manage');
+
+  const imageTrim = String(imageUrl || '').trim();
+  if (!imageTrim) return sendFail(res, 'Banner uchun rasm tanlang.');
+  if (!isValidImageValue(imageTrim)) {
+    return sendFail(res, 'Rasm noto\'g\'ri formatda yoki hajmi katta (rasmni kichikroq tanlang).');
+  }
+  const linkTrim = String(link || '').trim();
+  if (linkTrim && !/^https?:\/\//i.test(linkTrim)) {
+    return sendFail(res, 'Havola http:// yoki https:// bilan boshlanishi kerak.');
+  }
+  const prevActive = owner.fridayBanner ? owner.fridayBanner.active !== false : true;
+  owner.fridayBanner = {
+    imageUrl: imageTrim,
+    title: String(title || '').trim() || null,
+    link: linkTrim || null,
+    active: prevActive,
+    updatedAt: new Date().toISOString()
+  };
+  saveOwners(owners);
+  return sendOk(res, { banner: owner.fridayBanner });
+});
+
+authed('/api/friday-banner-toggle', (payload, res, { userId }) => {
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'zgartira oladi');
+  const owner = ownerCtx.owner;
+  if (!owner.fridayBanner) return sendFail(res, 'Juma banneri topilmagan.');
+  owner.fridayBanner.active = owner.fridayBanner.active === false ? true : false;
+  saveOwners(owners);
+  return sendOk(res, { banner: owner.fridayBanner });
+});
+
+authed('/api/friday-banner-remove', (payload, res, { userId }) => {
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'chira oladi');
+  const owner = ownerCtx.owner;
+  owner.fridayBanner = null;
+  saveOwners(owners);
+  return sendOk(res);
+});
+
+authed('/api/bonus-settings-get', (payload, res, { userId }) => {
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi ko\'ra oladi');
+  const owner = ownerCtx.owner;
+  if (!ownerCanUseFeature(owner, 'bonus-settings')) return sendFeatureBlocked(res, 'bonus-settings');
+  return sendOk(res, { settings: owner.bonusSettings || { enabled: false, earnPercent: 5 } });
+});
+
+authed('/api/bonus-settings-save', (payload, res, { userId }) => {
+  const { enabled, earnPercent } = payload;
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi saqlay oladi');
+  const owner = ownerCtx.owner;
+  if (!ownerCanUseFeature(owner, 'bonus-settings')) return sendFeatureBlocked(res, 'bonus-settings');
+
+  const percentNum = Number(earnPercent);
+  if (!Number.isFinite(percentNum) || percentNum < 0 || percentNum > 50) {
+    return sendFail(res, 'Bonus foizi 0-50 oralig\'ida bo\'lishi kerak.');
+  }
+  owner.bonusSettings = { enabled: !!enabled, earnPercent: percentNum };
+  saveOwners(owners);
+  return sendOk(res, { settings: owner.bonusSettings });
+});
+
+route('/api/restaurant-brand', (payload, res) => {
+  const { ownerId } = payload;
+  if (!ownerId) return sendJSON(res, 200, { ok: false });
+  const owner = findOwner(loadOwners(), ownerId);
+  if (!owner) return sendJSON(res, 200, { ok: false });
+  return sendOk(res, {
+    name: (owner.profile && owner.profile.name) || 'Oshxona',
+    logoUrl: (owner.profile && owner.profile.logoUrl) || null,
+    brandColor: (owner.profile && owner.profile.brandColor) || null
+  });
+});
+
+authed('/api/customer-restaurants-list', (payload, res) => {
+  const owners = pruneExpiredOwners();
+  const restaurants = owners
+    .filter(o => isOwnerAccessValid(o) && o.profile && o.profile.completedAt)
+    .map(o => {
+      const rating = ownerAverageRating(o);
+      return {
+        id: o.id,
+        name: o.profile.name,
+        address: o.profile.address,
+        logoUrl: o.profile.logoUrl || null,
+        brandColor: o.profile.brandColor || null,
+        avgRating: rating.avg,
+        ratingCount: rating.count
       };
-      owner.banners.unshift(banner);
-      saveOwners(owners);
-      return sendJSON(res, 200, { ok: true, banner });
     });
-    return;
+
+  return sendOk(res, { restaurants });
+});
+
+authed('/api/customer-verify', (payload, res, { user }) => {
+  const { ownerId } = payload;
+  if (!ownerId) return sendFail(res, 'Oshxona aniqlanmadi.');
+
+  const userId = String(user.id);
+  const owners = pruneExpiredOwners();
+  const owner = findOwner(owners, ownerId);
+  if (!owner || !isOwnerAccessValid(owner)) {
+    return sendFail(res, 'Bu oshxona hozircha mavjud emas.');
   }
 
-  if (req.method === 'POST' && req.url === '/api/banner-update') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, id, imageUrl, title, link, startAt, endAt, weeklyDay } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
-      const owner = ownerCtx.owner;
-      if (!ownerCanUseFeature(owner, 'banner-manage')) return sendJSON(res, 200, featureBlockedResult('banner-manage'));
+  const customer = findOrCreateCustomer(owner, userId, user);
+  saveOwners(owners);
 
-      const banner = (owner.banners || []).find(b => b.id === id);
-      if (!banner) return sendJSON(res, 200, { ok: false, reason: 'Banner topilmadi.' });
+  return sendOk(res, {
+    restaurant: {
+      id: owner.id,
+      name: (owner.profile && owner.profile.name) || 'Oshxona',
+      address: (owner.profile && owner.profile.address) || null,
+      phone: (owner.profile && owner.profile.phone) || null,
+      workHours: (owner.profile && owner.profile.workHours) || null,
+      logoUrl: (owner.profile && owner.profile.logoUrl) || null,
+      brandColor: (owner.profile && owner.profile.brandColor) || null,
+      paymentCard: owner.customerPaymentCard || { cardNumber: '', cardHolder: '' },
+      // 3-bosqich: mijoz qaysi filialdan buyurtma berishini tanlashi uchun —
+      // filiallar ro'yxati (faqat mijozga kerakli maydonlar bilan).
+      centralBranchName: owner.centralBranchName || null,
+      branches: (owner.branches || []).map(b => ({ id: b.id, name: b.name, address: b.address || null }))
+    },
+    customer: { favorites: customer.favorites, addresses: customer.addresses || [], bonusPoints: customer.bonusPoints, cardOnlyRestricted: customerIsCardOnlyRestricted(owner, userId) },
+    personRegistered: isRegisteredUser(userId),
+    bonusEnabled: !!(owner.bonusSettings && owner.bonusSettings.enabled)
+  });
+});
 
-      if (imageUrl !== undefined) {
-        const imageTrim = String(imageUrl || '').trim();
-        if (!imageTrim) return sendJSON(res, 200, { ok: false, reason: 'Banner uchun rasm tanlang.' });
-        if (!isValidImageValue(imageTrim)) {
-          return sendJSON(res, 200, { ok: false, reason: 'Rasm noto\'g\'ri formatda yoki hajmi katta (rasmni kichikroq tanlang).' });
-        }
-        banner.imageUrl = imageTrim;
-      }
-      if (title !== undefined) banner.title = String(title || '').trim() || null;
-      if (link !== undefined) {
-        const linkTrim = String(link || '').trim();
-        if (linkTrim && !/^https?:\/\//i.test(linkTrim)) {
-          return sendJSON(res, 200, { ok: false, reason: 'Havola http:// yoki https:// bilan boshlanishi kerak.' });
-        }
-        banner.link = linkTrim || null;
-      }
-      if (startAt !== undefined) {
-        if (!startAt) banner.startAt = null;
-        else {
-          const d = new Date(startAt);
-          if (isNaN(d.getTime())) return sendJSON(res, 200, { ok: false, reason: 'Boshlanish sanasi noto\'g\'ri.' });
-          banner.startAt = d.toISOString();
-        }
-      }
-      if (endAt !== undefined) {
-        if (!endAt) banner.endAt = null;
-        else {
-          const d = new Date(endAt);
-          if (isNaN(d.getTime())) return sendJSON(res, 200, { ok: false, reason: 'Tugash sanasi noto\'g\'ri.' });
-          banner.endAt = d.toISOString();
-        }
-      }
-      if (banner.startAt && banner.endAt && new Date(banner.endAt).getTime() <= new Date(banner.startAt).getTime()) {
-        return sendJSON(res, 200, { ok: false, reason: 'Tugash sanasi boshlanish sanasidan keyin bo\'lishi kerak.' });
-      }
-      if (weeklyDay !== undefined) {
-        if (weeklyDay === null || weeklyDay === '') {
-          banner.weeklyDay = null;
-        } else {
-          const n = parseInt(weeklyDay, 10);
-          if (!Number.isInteger(n) || n < 0 || n > 6) return sendJSON(res, 200, { ok: false, reason: 'Hafta kuni noto\'g\'ri.' });
-          banner.weeklyDay = n;
-        }
-      }
-
-      saveOwners(owners);
-      return sendJSON(res, 200, { ok: true, banner });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/banner-toggle') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, id } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
-      const owner = ownerCtx.owner;
-
-      const banner = (owner.banners || []).find(b => b.id === id);
-      if (!banner) return sendJSON(res, 200, { ok: false, reason: 'Banner topilmadi.' });
-      banner.active = !banner.active;
-      saveOwners(owners);
-      return sendJSON(res, 200, { ok: true, banner });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/banner-remove') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, id } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
-      const owner = ownerCtx.owner;
-      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
-
-      owner.banners = (owner.banners || []).filter(b => b.id !== id);
-      saveOwners(owners);
-      return sendJSON(res, 200, { ok: true });
-    });
-    return;
-  }
-
-  // === Juma banneri (Friday banner) ===
-  // Bu bo'lim yuqoridagi oddiy "Reklama bannerlari" (owner.banners) bilan
-  // umuman bog'liq emas — alohida maydonda (owner.fridayBanner, bitta
-  // obyekt) saqlanadi. Shu sababli bu yerdagi qo'shish/o'chirish/yoqish
-  // amallari boshqa bannerlarga hech qanday tarzda aralashmaydi. Faqat
-  // haftaning juma kuni avtomatik ko'rinadi (qarang: activeOwnerBanners).
-
-  if (req.method === 'POST' && req.url === '/api/friday-banner-get') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi ko\'ra oladi'));
-      const owner = ownerCtx.owner;
-      return sendJSON(res, 200, { ok: true, banner: owner.fridayBanner || null });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/friday-banner-save') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, imageUrl, title, link } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi qo\'sha oladi'));
-      const owner = ownerCtx.owner;
-      if (!ownerCanUseFeature(owner, 'banner-manage')) return sendJSON(res, 200, featureBlockedResult('banner-manage'));
-
-      const imageTrim = String(imageUrl || '').trim();
-      if (!imageTrim) return sendJSON(res, 200, { ok: false, reason: 'Banner uchun rasm tanlang.' });
-      if (!isValidImageValue(imageTrim)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Rasm noto\'g\'ri formatda yoki hajmi katta (rasmni kichikroq tanlang).' });
-      }
-      const linkTrim = String(link || '').trim();
-      if (linkTrim && !/^https?:\/\//i.test(linkTrim)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Havola http:// yoki https:// bilan boshlanishi kerak.' });
-      }
-      const prevActive = owner.fridayBanner ? owner.fridayBanner.active !== false : true;
-      owner.fridayBanner = {
-        imageUrl: imageTrim,
-        title: String(title || '').trim() || null,
-        link: linkTrim || null,
-        active: prevActive,
-        updatedAt: new Date().toISOString()
-      };
-      saveOwners(owners);
-      return sendJSON(res, 200, { ok: true, banner: owner.fridayBanner });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/friday-banner-toggle') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'zgartira oladi'));
-      const owner = ownerCtx.owner;
-      if (!owner.fridayBanner) return sendJSON(res, 200, { ok: false, reason: 'Juma banneri topilmagan.' });
-      owner.fridayBanner.active = owner.fridayBanner.active === false ? true : false;
-      saveOwners(owners);
-      return sendJSON(res, 200, { ok: true, banner: owner.fridayBanner });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/friday-banner-remove') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
-      const owner = ownerCtx.owner;
-      owner.fridayBanner = null;
-      saveOwners(owners);
-      return sendJSON(res, 200, { ok: true });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/bonus-settings-get') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi ko\'ra oladi'));
-      const owner = ownerCtx.owner;
-      if (!ownerCanUseFeature(owner, 'bonus-settings')) return sendJSON(res, 200, featureBlockedResult('bonus-settings'));
-      return sendJSON(res, 200, { ok: true, settings: owner.bonusSettings || { enabled: false, earnPercent: 5 } });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/bonus-settings-save') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, enabled, earnPercent } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi saqlay oladi'));
-      const owner = ownerCtx.owner;
-      if (!ownerCanUseFeature(owner, 'bonus-settings')) return sendJSON(res, 200, featureBlockedResult('bonus-settings'));
-
-      const percentNum = Number(earnPercent);
-      if (!Number.isFinite(percentNum) || percentNum < 0 || percentNum > 50) {
-        return sendJSON(res, 200, { ok: false, reason: 'Bonus foizi 0-50 oralig\'ida bo\'lishi kerak.' });
-      }
-      owner.bonusSettings = { enabled: !!enabled, earnPercent: percentNum };
-      saveOwners(owners);
-      return sendJSON(res, 200, { ok: true, settings: owner.bonusSettings });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/restaurant-brand') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { ownerId } = payload;
-      if (!ownerId) return sendJSON(res, 200, { ok: false });
-      const owner = findOwner(loadOwners(), ownerId);
-      if (!owner) return sendJSON(res, 200, { ok: false });
-      return sendJSON(res, 200, {
-        ok: true,
-        name: (owner.profile && owner.profile.name) || 'Oshxona',
-        logoUrl: (owner.profile && owner.profile.logoUrl) || null,
-        brandColor: (owner.profile && owner.profile.brandColor) || null
-      });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/customer-restaurants-list') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const owners = pruneExpiredOwners();
-      const restaurants = owners
-        .filter(o => isOwnerAccessValid(o) && o.profile && o.profile.completedAt)
-        .map(o => {
-          const rating = ownerAverageRating(o);
-          return {
-            id: o.id,
-            name: o.profile.name,
-            address: o.profile.address,
-            logoUrl: o.profile.logoUrl || null,
-            brandColor: o.profile.brandColor || null,
-            avgRating: rating.avg,
-            ratingCount: rating.count
-          };
-        });
-
-      return sendJSON(res, 200, { ok: true, restaurants });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/customer-verify') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, ownerId } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      if (!ownerId) return sendJSON(res, 200, { ok: false, reason: 'Oshxona aniqlanmadi.' });
-
-      const userId = String(check.user && check.user.id);
-      const owners = pruneExpiredOwners();
-      const owner = findOwner(owners, ownerId);
-      if (!owner || !isOwnerAccessValid(owner)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
-      }
-
-      const customer = findOrCreateCustomer(owner, userId, check.user);
-      saveOwners(owners);
-
-      return sendJSON(res, 200, {
-        ok: true,
-        restaurant: {
-          id: owner.id,
-          name: (owner.profile && owner.profile.name) || 'Oshxona',
-          address: (owner.profile && owner.profile.address) || null,
-          phone: (owner.profile && owner.profile.phone) || null,
-          workHours: (owner.profile && owner.profile.workHours) || null,
-          logoUrl: (owner.profile && owner.profile.logoUrl) || null,
-          brandColor: (owner.profile && owner.profile.brandColor) || null,
-          paymentCard: owner.customerPaymentCard || { cardNumber: '', cardHolder: '' },
-          // 3-bosqich: mijoz qaysi filialdan buyurtma berishini tanlashi uchun —
-          // filiallar ro'yxati (faqat mijozga kerakli maydonlar bilan).
-          centralBranchName: owner.centralBranchName || null,
-          branches: (owner.branches || []).map(b => ({ id: b.id, name: b.name, address: b.address || null }))
-        },
-        customer: { favorites: customer.favorites, addresses: customer.addresses || [], bonusPoints: customer.bonusPoints, cardOnlyRestricted: customerIsCardOnlyRestricted(owner, userId) },
-        personRegistered: isRegisteredUser(userId),
-        bonusEnabled: !!(owner.bonusSettings && owner.bonusSettings.enabled)
-      });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/kitchen-status') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, ownerId } = payload || {};
-      const owner = ownerId ? findOwner(loadOwners(), ownerId) : null;
-      const hours = getOwnerWorkHours(owner);
-      const open = isKitchenOpenNow(hours);
-      let alreadyReminded = false;
-      if (initData && ownerId) {
-        const check = verifyAuth(initData);
-        if (check.ok) {
-          const userId = String(check.user.id);
-          const reminders = loadKitchenReminders();
-          alreadyReminded = reminders.some(r => String(r.userId) === userId && String(r.ownerId) === String(ownerId));
-        }
-      }
-      return sendJSON(res, 200, {
-        ok: true,
-        open,
-        opensAt: open ? null : nextKitchenOpenAt(hours).toISOString(),
-        openHour: hours.openHour,
-        openMinute: hours.openMinute || 0,
-        closeHour: hours.closeHour,
-        closeMinute: hours.closeMinute || 0,
-        alreadyReminded
-      });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/kitchen-remind') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, ownerId } = payload || {};
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      if (!ownerId) return sendJSON(res, 200, { ok: false, reason: 'Oshxona aniqlanmadi.' });
-      const owner = findOwner(loadOwners(), ownerId);
-      if (isKitchenOpenNow(getOwnerWorkHours(owner))) return sendJSON(res, 200, { ok: false, reason: 'Oshxona hozir ochiq.' });
-
+route('/api/kitchen-status', (payload, res) => {
+  const { initData, ownerId } = payload || {};
+  const owner = ownerId ? findOwner(loadOwners(), ownerId) : null;
+  const hours = getOwnerWorkHours(owner);
+  const open = isKitchenOpenNow(hours);
+  let alreadyReminded = false;
+  if (initData && ownerId) {
+    const check = verifyAuth(initData);
+    if (check.ok) {
       const userId = String(check.user.id);
       const reminders = loadKitchenReminders();
-      const exists = reminders.some(r => String(r.userId) === userId && String(r.ownerId) === String(ownerId));
-      if (!exists) {
-        reminders.push({
-          id: crypto.randomBytes(4).toString('hex'),
-          userId,
-          ownerId: String(ownerId),
-          createdAt: new Date().toISOString()
-        });
-        saveKitchenReminders(reminders);
-      }
-      return sendJSON(res, 200, { ok: true });
+      alreadyReminded = reminders.some(r => String(r.userId) === userId && String(r.ownerId) === String(ownerId));
+    }
+  }
+  return sendOk(res, {
+    open,
+    opensAt: open ? null : nextKitchenOpenAt(hours).toISOString(),
+    openHour: hours.openHour,
+    openMinute: hours.openMinute || 0,
+    closeHour: hours.closeHour,
+    closeMinute: hours.closeMinute || 0,
+    alreadyReminded
+  });
+});
+
+route('/api/kitchen-remind', (payload, res) => {
+  const { initData, ownerId } = payload || {};
+  const check = verifyAuth(initData);
+  if (!check.ok) return sendFail(res, check.reason);
+  if (!ownerId) return sendFail(res, 'Oshxona aniqlanmadi.');
+  const owner = findOwner(loadOwners(), ownerId);
+  if (isKitchenOpenNow(getOwnerWorkHours(owner))) return sendFail(res, 'Oshxona hozir ochiq.');
+
+  const userId = String(check.user.id);
+  const reminders = loadKitchenReminders();
+  const exists = reminders.some(r => String(r.userId) === userId && String(r.ownerId) === String(ownerId));
+  if (!exists) {
+    reminders.push({
+      id: crypto.randomBytes(4).toString('hex'),
+      userId,
+      ownerId: String(ownerId),
+      createdAt: new Date().toISOString()
     });
-    return;
+    saveKitchenReminders(reminders);
+  }
+  return sendOk(res);
+});
+
+authed('/api/customer-menu-list', (payload, res, { user }) => {
+  const { ownerId, branchId } = payload;
+  const owners = pruneExpiredOwners();
+  const owner = findOwner(owners, ownerId);
+  if (!owner || !isOwnerAccessValid(owner)) return sendFail(res, 'Bu oshxona hozircha mavjud emas.');
+  if (!ownerCanUseFeature(owner, 'customer-menu')) return sendFeatureBlocked(res, 'customer-menu');
+
+  // 3-bosqich: mijoz tanlagan filial mustaqil menyusini (va o'sha
+  // filialning skladiga bog'liq "tugadi" holatini) ko'rsatadi. branchId
+  // yuborilmasa (yoki filiallar umuman yo'q bo'lsa) — markaziy menyu.
+  const menuPool = resolveMenuPool(owner, branchId);
+  if (branchId && !menuPool) return sendFail(res, 'Bunday filial topilmadi.');
+  const stockPool = resolveStockPool(owner, branchId) || owner;
+
+  const menu = (menuPool.menu || []).filter(m => m.available !== false)
+    .map(m => Object.assign({}, m, { outOfStock: menuItemOutOfStock(stockPool, m) }));
+
+  const combos = (owner.combos || []).filter(c => c.available !== false).map(c => Object.assign({}, c, {
+    price: c.priceMode === 'auto' ? comboAutoPrice(owner, c.itemIds) : c.price,
+    outOfStock: comboOutOfStock(owner, c)
+  }));
+  const promotions = (owner.promotions || []).filter(p => p.active);
+
+  const banners = activeOwnerBanners(owner);
+  const recommendations = ownerCanUseFeature(owner, 'ai-waiter')
+    ? buildAiWaiterRecommendations(owner, String(user.id), menu)
+    : { favorites: [], similar: [] };
+  return sendOk(res, { menu, combos, promotions, banners, categories: sortedOwnerCategories(menuPool), recommendations, branchId: branchId || null });
+});
+
+authed('/api/customer-favorite-toggle', (payload, res, { user }) => {
+  const { ownerId, itemId } = payload;
+  if (!itemId) return sendFail(res, 'Taom ko\'rsatilmagan.');
+
+  const userId = String(user.id);
+  const owners = loadOwners();
+  const owner = findOwner(owners, ownerId);
+  if (!owner || !isOwnerAccessValid(owner)) return sendFail(res, 'Bu oshxona hozircha mavjud emas.');
+  if (!ownerCanUseFeature(owner, 'ai-waiter')) return sendFeatureBlocked(res, 'ai-waiter');
+
+  const customer = findOrCreateCustomer(owner, userId, user);
+  const idx = customer.favorites.indexOf(itemId);
+  if (idx >= 0) customer.favorites.splice(idx, 1);
+  else customer.favorites.push(itemId);
+  saveOwners(owners);
+
+  return sendOk(res, { favorites: customer.favorites });
+});
+
+authed('/api/customer-address-list', (payload, res, { user, userId }) => {
+  const { ownerId } = payload;
+
+  const owners = loadOwners();
+  const owner = findOwner(owners, ownerId);
+  if (!owner || !isOwnerAccessValid(owner)) return sendFail(res, 'Bu oshxona hozircha mavjud emas.');
+  if (!ownerCanUseFeature(owner, 'customer-account')) return sendFeatureBlocked(res, 'customer-account');
+
+  const customer = findOrCreateCustomer(owner, userId, user);
+  return sendOk(res, { addresses: customer.addresses || [] });
+});
+
+authed('/api/customer-address-save', (payload, res, { user, userId }) => {
+  const { ownerId, addressId, label, addressNote, location, extraPhone } = payload;
+
+  const owners = loadOwners();
+  const owner = findOwner(owners, ownerId);
+  if (!owner || !isOwnerAccessValid(owner)) return sendFail(res, 'Bu oshxona hozircha mavjud emas.');
+  if (!ownerCanUseFeature(owner, 'customer-account')) return sendFeatureBlocked(res, 'customer-account');
+
+  const labelTrim = String(label || '').trim().slice(0, 40);
+  if (!labelTrim) return sendFail(res, 'Manzil nomini kiriting (masalan: Uy, Ish).');
+
+  let loc = null;
+  if (location && typeof location.lat === 'number' && typeof location.lng === 'number' &&
+      Math.abs(location.lat) <= 90 && Math.abs(location.lng) <= 180) {
+    loc = { lat: location.lat, lng: location.lng };
+  }
+  const addressNoteTrim = String(addressNote || '').trim().slice(0, 300);
+  if (!loc && !addressNoteTrim) {
+    return sendFail(res, 'Joylashuvni aniqlang yoki manzilni yozib qoldiring.');
+  }
+  const extraPhoneTrim = String(extraPhone || '').trim().slice(0, 30);
+  if (extraPhoneTrim && !isPlausiblePhone(extraPhoneTrim)) {
+    return sendFail(res, 'Telefon raqamini O\'zbekiston formatida kiriting (masalan: +998901234567).');
   }
 
-  if (req.method === 'POST' && req.url === '/api/customer-menu-list') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, ownerId, branchId } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const owners = pruneExpiredOwners();
-      const owner = findOwner(owners, ownerId);
-      if (!owner || !isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
-      if (!ownerCanUseFeature(owner, 'customer-menu')) return sendJSON(res, 200, featureBlockedResult('customer-menu'));
+  const customer = findOrCreateCustomer(owner, userId, user);
+  if (!Array.isArray(customer.addresses)) customer.addresses = [];
 
-      // 3-bosqich: mijoz tanlagan filial mustaqil menyusini (va o'sha
-      // filialning skladiga bog'liq "tugadi" holatini) ko'rsatadi. branchId
-      // yuborilmasa (yoki filiallar umuman yo'q bo'lsa) — markaziy menyu.
-      const menuPool = resolveMenuPool(owner, branchId);
-      if (branchId && !menuPool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi.' });
-      const stockPool = resolveStockPool(owner, branchId) || owner;
-
-      const menu = (menuPool.menu || []).filter(m => m.available !== false)
-        .map(m => Object.assign({}, m, { outOfStock: menuItemOutOfStock(stockPool, m) }));
-
-      const combos = (owner.combos || []).filter(c => c.available !== false).map(c => Object.assign({}, c, {
-        price: c.priceMode === 'auto' ? comboAutoPrice(owner, c.itemIds) : c.price,
-        outOfStock: comboOutOfStock(owner, c)
-      }));
-      const promotions = (owner.promotions || []).filter(p => p.active);
-
-      const banners = activeOwnerBanners(owner);
-      const recommendations = ownerCanUseFeature(owner, 'ai-waiter')
-        ? buildAiWaiterRecommendations(owner, String(check.user && check.user.id), menu)
-        : { favorites: [], similar: [] };
-      return sendJSON(res, 200, { ok: true, menu, combos, promotions, banners, categories: sortedOwnerCategories(menuPool), recommendations, branchId: branchId || null });
-    });
-    return;
+  let addr = addressId ? findCustomerAddress(customer, addressId) : null;
+  if (addr) {
+    addr.label = labelTrim;
+    addr.addressNote = addressNoteTrim;
+    addr.location = loc;
+    addr.extraPhone = extraPhoneTrim;
+    addr.updatedAt = new Date().toISOString();
+  } else {
+    if (customer.addresses.length >= MAX_CUSTOMER_ADDRESSES) {
+      return sendFail(res, `Ko'pi bilan ${MAX_CUSTOMER_ADDRESSES} ta manzil saqlash mumkin.`);
+    }
+    addr = {
+      id: crypto.randomBytes(4).toString('hex'),
+      label: labelTrim,
+      addressNote: addressNoteTrim,
+      location: loc,
+      extraPhone: extraPhoneTrim,
+      createdAt: new Date().toISOString()
+    };
+    customer.addresses.push(addr);
   }
+  saveOwners(owners);
+  return sendOk(res, { addresses: customer.addresses });
+});
 
-  if (req.method === 'POST' && req.url === '/api/customer-favorite-toggle') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, ownerId, itemId } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      if (!itemId) return sendJSON(res, 200, { ok: false, reason: 'Taom ko\'rsatilmagan.' });
+authed('/api/customer-address-remove', (payload, res, { user }) => {
+  const { ownerId, addressId } = payload;
+  if (!addressId) return sendFail(res, 'Manzil ko\'rsatilmagan.');
 
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const owner = findOwner(owners, ownerId);
-      if (!owner || !isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
-      if (!ownerCanUseFeature(owner, 'ai-waiter')) return sendJSON(res, 200, featureBlockedResult('ai-waiter'));
+  const userId = String(user.id);
+  const owners = loadOwners();
+  const owner = findOwner(owners, ownerId);
+  if (!owner || !isOwnerAccessValid(owner)) return sendFail(res, 'Bu oshxona hozircha mavjud emas.');
+  if (!ownerCanUseFeature(owner, 'customer-account')) return sendFeatureBlocked(res, 'customer-account');
 
-      const customer = findOrCreateCustomer(owner, userId, check.user);
-      const idx = customer.favorites.indexOf(itemId);
-      if (idx >= 0) customer.favorites.splice(idx, 1);
-      else customer.favorites.push(itemId);
-      saveOwners(owners);
+  const customer = findOrCreateCustomer(owner, userId, user);
+  const idx = (customer.addresses || []).findIndex(a => a.id === addressId);
+  if (idx < 0) return sendFail(res, 'Manzil topilmadi.');
+  customer.addresses.splice(idx, 1);
+  saveOwners(owners);
+  return sendOk(res, { addresses: customer.addresses });
+});
 
-      return sendJSON(res, 200, { ok: true, favorites: customer.favorites });
+authed('/api/customer-orders-history', (payload, res, { userId }) => {
+  const { ownerId } = payload;
+
+  const owners = loadOwners();
+  const owner = findOwner(owners, ownerId);
+  if (!owner) return sendFail(res, 'Bu oshxona hozircha mavjud emas.');
+  if (!ownerCanUseFeature(owner, 'customer-account')) return sendFeatureBlocked(res, 'customer-account');
+
+  const orders = (owner.orders || [])
+    .filter(o => String(o.customerId) === userId)
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+    .slice(0, 50);
+
+  return sendOk(res, { orders });
+});
+
+authed('/api/customer-confirm-received', (payload, res, { userId }) => {
+  const { ownerId, orderId } = payload;
+
+  const owners = loadOwners();
+  const owner = findOwner(owners, ownerId);
+  if (!owner) return sendFail(res, 'Bu oshxona hozircha mavjud emas.');
+  if (!ownerCanUseFeature(owner, 'customer-account')) return sendFeatureBlocked(res, 'customer-account');
+
+  const order = (owner.orders || []).find(o => o.id === orderId);
+  if (!order) return sendFail(res, 'Buyurtma topilmadi.');
+  if (String(order.customerId) !== userId) return sendFail(res, 'Bu sizning buyurtmangiz emas.');
+  if (order.orderType === 'dostavka') return sendFail(res, 'Dostavka buyurtmalarini kuryer belgilaydi.');
+  if (order.status !== 'tayyor') return sendFail(res, 'Buyurtma hali tayyor emas.');
+  if (order.customerReceivedAt) return sendFail(res, 'Bu buyurtma allaqachon olingan deb belgilangan.');
+
+  order.customerReceivedAt = new Date().toISOString();
+  saveOwners(owners);
+
+  return sendOk(res, { order });
+});
+
+authed('/api/customer-notifications', (payload, res, { userId }) => {
+  const { ownerId } = payload;
+
+  const owners = loadOwners();
+  const owner = findOwner(owners, ownerId);
+  if (!owner) return sendFail(res, 'Bu oshxona hozircha mavjud emas.');
+  if (!ownerCanUseFeature(owner, 'customer-account')) return sendFeatureBlocked(res, 'customer-account');
+
+  const myOrders = (owner.orders || [])
+    .filter(o => String(o.customerId) === userId)
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+    .slice(0, 30);
+
+  const notifications = [];
+  myOrders.forEach(o => {
+    const items = o.items || [];
+    const itemsText = items.slice(0, 3).map(it => it.name).join(', ') + (items.length > 3 ? ' va yana...' : '');
+
+    notifications.push({
+      id: `${o.id}-created`, type: 'order', icon: 'clipboard',
+      title: 'Buyurtma qabul qilindi',
+      text: `${itemsText} — ${fmtNum(o.total)} so'm`,
+      time: o.createdAt
     });
-    return;
-  }
 
-  if (req.method === 'POST' && req.url === '/api/customer-address-list') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, ownerId } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const owner = findOwner(owners, ownerId);
-      if (!owner || !isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
-      if (!ownerCanUseFeature(owner, 'customer-account')) return sendJSON(res, 200, featureBlockedResult('customer-account'));
-
-      const customer = findOrCreateCustomer(owner, userId, check.user);
-      return sendJSON(res, 200, { ok: true, addresses: customer.addresses || [] });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/customer-address-save') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, ownerId, addressId, label, addressNote, location, extraPhone } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const owner = findOwner(owners, ownerId);
-      if (!owner || !isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
-      if (!ownerCanUseFeature(owner, 'customer-account')) return sendJSON(res, 200, featureBlockedResult('customer-account'));
-
-      const labelTrim = String(label || '').trim().slice(0, 40);
-      if (!labelTrim) return sendJSON(res, 200, { ok: false, reason: 'Manzil nomini kiriting (masalan: Uy, Ish).' });
-
-      let loc = null;
-      if (location && typeof location.lat === 'number' && typeof location.lng === 'number' &&
-          Math.abs(location.lat) <= 90 && Math.abs(location.lng) <= 180) {
-        loc = { lat: location.lat, lng: location.lng };
-      }
-      const addressNoteTrim = String(addressNote || '').trim().slice(0, 300);
-      if (!loc && !addressNoteTrim) {
-        return sendJSON(res, 200, { ok: false, reason: 'Joylashuvni aniqlang yoki manzilni yozib qoldiring.' });
-      }
-      const extraPhoneTrim = String(extraPhone || '').trim().slice(0, 30);
-      if (extraPhoneTrim && !isPlausiblePhone(extraPhoneTrim)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Telefon raqamini O\'zbekiston formatida kiriting (masalan: +998901234567).' });
-      }
-
-      const customer = findOrCreateCustomer(owner, userId, check.user);
-      if (!Array.isArray(customer.addresses)) customer.addresses = [];
-
-      let addr = addressId ? findCustomerAddress(customer, addressId) : null;
-      if (addr) {
-        addr.label = labelTrim;
-        addr.addressNote = addressNoteTrim;
-        addr.location = loc;
-        addr.extraPhone = extraPhoneTrim;
-        addr.updatedAt = new Date().toISOString();
-      } else {
-        if (customer.addresses.length >= MAX_CUSTOMER_ADDRESSES) {
-          return sendJSON(res, 200, { ok: false, reason: `Ko'pi bilan ${MAX_CUSTOMER_ADDRESSES} ta manzil saqlash mumkin.` });
-        }
-        addr = {
-          id: crypto.randomBytes(4).toString('hex'),
-          label: labelTrim,
-          addressNote: addressNoteTrim,
-          location: loc,
-          extraPhone: extraPhoneTrim,
-          createdAt: new Date().toISOString()
-        };
-        customer.addresses.push(addr);
-      }
-      saveOwners(owners);
-      return sendJSON(res, 200, { ok: true, addresses: customer.addresses });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/customer-address-remove') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, ownerId, addressId } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      if (!addressId) return sendJSON(res, 200, { ok: false, reason: 'Manzil ko\'rsatilmagan.' });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const owner = findOwner(owners, ownerId);
-      if (!owner || !isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
-      if (!ownerCanUseFeature(owner, 'customer-account')) return sendJSON(res, 200, featureBlockedResult('customer-account'));
-
-      const customer = findOrCreateCustomer(owner, userId, check.user);
-      const idx = (customer.addresses || []).findIndex(a => a.id === addressId);
-      if (idx < 0) return sendJSON(res, 200, { ok: false, reason: 'Manzil topilmadi.' });
-      customer.addresses.splice(idx, 1);
-      saveOwners(owners);
-      return sendJSON(res, 200, { ok: true, addresses: customer.addresses });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/customer-orders-history') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, ownerId } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const owner = findOwner(owners, ownerId);
-      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
-      if (!ownerCanUseFeature(owner, 'customer-account')) return sendJSON(res, 200, featureBlockedResult('customer-account'));
-
-      const orders = (owner.orders || [])
-        .filter(o => String(o.customerId) === userId)
-        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-        .slice(0, 50);
-
-      return sendJSON(res, 200, { ok: true, orders });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/customer-confirm-received') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, ownerId, orderId } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const owner = findOwner(owners, ownerId);
-      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
-      if (!ownerCanUseFeature(owner, 'customer-account')) return sendJSON(res, 200, featureBlockedResult('customer-account'));
-
-      const order = (owner.orders || []).find(o => o.id === orderId);
-      if (!order) return sendJSON(res, 200, { ok: false, reason: 'Buyurtma topilmadi.' });
-      if (String(order.customerId) !== userId) return sendJSON(res, 200, { ok: false, reason: 'Bu sizning buyurtmangiz emas.' });
-      if (order.orderType === 'dostavka') return sendJSON(res, 200, { ok: false, reason: 'Dostavka buyurtmalarini kuryer belgilaydi.' });
-      if (order.status !== 'tayyor') return sendJSON(res, 200, { ok: false, reason: 'Buyurtma hali tayyor emas.' });
-      if (order.customerReceivedAt) return sendJSON(res, 200, { ok: false, reason: 'Bu buyurtma allaqachon olingan deb belgilangan.' });
-
-      order.customerReceivedAt = new Date().toISOString();
-      saveOwners(owners);
-
-      return sendJSON(res, 200, { ok: true, order });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/customer-notifications') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, ownerId } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const owner = findOwner(owners, ownerId);
-      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
-      if (!ownerCanUseFeature(owner, 'customer-account')) return sendJSON(res, 200, featureBlockedResult('customer-account'));
-
-      const myOrders = (owner.orders || [])
-        .filter(o => String(o.customerId) === userId)
-        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-        .slice(0, 30);
-
-      const notifications = [];
-      myOrders.forEach(o => {
-        const items = o.items || [];
-        const itemsText = items.slice(0, 3).map(it => it.name).join(', ') + (items.length > 3 ? ' va yana...' : '');
-
-        notifications.push({
-          id: `${o.id}-created`, type: 'order', icon: 'clipboard',
-          title: 'Buyurtma qabul qilindi',
-          text: `${itemsText} — ${fmtNum(o.total)} so'm`,
-          time: o.createdAt
-        });
-
-        if (o.status === 'tayyorlanmoqda' || (o.status === 'tayyor' && o.startedAt)) {
-          notifications.push({
-            id: `${o.id}-progress`, type: 'order', icon: 'chef-hat',
-            title: 'Buyurtmangiz tayyorlanmoqda',
-            text: itemsText,
-            time: o.startedAt || o.updatedAt || o.createdAt
-          });
-        }
-
-        if (o.status === 'tayyor') {
-          notifications.push({
-            id: `${o.id}-ready`, type: 'order', icon: 'check-circle',
-            title: o.orderType === 'dostavka' ? 'Buyurtmangiz tayyor — kuryerga topshirilmoqda' : 'Buyurtmangiz tayyor!',
-            text: itemsText,
-            time: o.readyAt || o.updatedAt || o.createdAt
-          });
-        }
-
-        if (o.deliveredAt) {
-          notifications.push({
-            id: `${o.id}-delivered`, type: 'order', icon: 'check-circle',
-            title: 'Buyurtmangiz yetkazib berildi',
-            text: itemsText,
-            time: o.deliveredAt
-          });
-        }
-
-        if (o.status === 'bekor_qilindi' && o.cancelledAt) {
-          notifications.push({
-            id: `${o.id}-cancelled`, type: 'order', icon: 'x-circle',
-            title: 'Dostavka bekor qilindi',
-            text: o.cancelReason || 'Kechirasiz, buyurtmangizni yetkazib bera olmadik.',
-            time: o.cancelledAt
-          });
-        }
-
-        if (o.paymentProofApprovedAt) {
-          notifications.push({
-            id: `${o.id}-payok`, type: 'order', icon: 'card',
-            title: 'To\'lovingiz tasdiqlandi',
-            text: itemsText,
-            time: o.paymentProofApprovedAt
-          });
-        }
-
-        if (o.paymentProofRejectedAt) {
-          notifications.push({
-            id: `${o.id}-payrej`, type: 'order', icon: 'x-circle',
-            title: 'To\'lov tasdiqlanmadi',
-            text: 'Iltimos, to\'g\'ri chekni qayta yuboring yoki oshxona bilan bog\'laning.',
-            time: o.paymentProofRejectedAt
-          });
-        }
+    if (o.status === 'tayyorlanmoqda' || (o.status === 'tayyor' && o.startedAt)) {
+      notifications.push({
+        id: `${o.id}-progress`, type: 'order', icon: 'chef-hat',
+        title: 'Buyurtmangiz tayyorlanmoqda',
+        text: itemsText,
+        time: o.startedAt || o.updatedAt || o.createdAt
       });
+    }
 
-      (owner.promotions || []).filter(p => p.active).forEach(p => {
-        notifications.push({
-          id: `promo-${p.id}`, type: 'promo', icon: 'star',
-          title: `Yangi aksiya: ${p.title}`,
-          text: `${p.discountPercent}% chegirma${p.minTotal ? ` (${fmtNum(p.minTotal)} so'mdan buyurtmalarga)` : ''}`,
-          time: p.createdAt
-        });
+    if (o.status === 'tayyor') {
+      notifications.push({
+        id: `${o.id}-ready`, type: 'order', icon: 'check-circle',
+        title: o.orderType === 'dostavka' ? 'Buyurtmangiz tayyor — kuryerga topshirilmoqda' : 'Buyurtmangiz tayyor!',
+        text: itemsText,
+        time: o.readyAt || o.updatedAt || o.createdAt
       });
+    }
 
-      notifications.sort((a, b) => new Date(b.time) - new Date(a.time));
-      return sendJSON(res, 200, { ok: true, notifications: notifications.slice(0, 50) });
-    });
-    return;
-  }
-
-  function supportThreadMessages(owner, customerId) {
-    return (owner.supportMessages || [])
-      .filter(m => String(m.customerId) === String(customerId))
-      .sort((a, b) => new Date(a.at) - new Date(b.at));
-  }
-
-  if (req.method === 'POST' && req.url === '/api/support-send') {
-    readBody(req, async (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, ownerId, text } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const owner = findOwner(owners, ownerId);
-      if (!owner || !isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
-      if (!ownerCanUseFeature(owner, 'support-chat')) return sendJSON(res, 200, featureBlockedResult('support-chat'));
-
-      const textTrim = String(text || '').trim().slice(0, 1000);
-      if (!textTrim) return sendJSON(res, 200, { ok: false, reason: 'Xabar matni bo\'sh bo\'lmasligi kerak.' });
-
-      if (!Array.isArray(owner.supportMessages)) owner.supportMessages = [];
-      const customer = findOrCreateCustomer(owner, userId, check.user);
-      const msg = {
-        id: crypto.randomBytes(4).toString('hex'),
-        customerId: userId,
-        from: 'customer',
-        text: textTrim,
-        at: new Date().toISOString(),
-        readByCustomer: true,
-        readByStaff: false
-      };
-      owner.supportMessages.push(msg);
-      saveOwners(owners);
-
-      const staffTargets = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'egasi') || staffHasRole(s, 'kassir')).map(s => s.id))];
-      const profile = findProfile(userId);
-      const alertText = `🆘 <b>Yordam so'rovi</b>\n${orderCustomerContactLabel({ customerName: customerDisplayName(userId, check.user), customerPhone: (profile && profile.phone) || null })}\n\n${escapeHtmlServer(textTrim)}`;
-      for (const targetId of new Set(staffTargets.map(String))) {
-        sendMessage(targetId, alertText);
-      }
-
-      return sendJSON(res, 200, { ok: true, messages: supportThreadMessages(owner, userId) });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/support-thread') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, ownerId } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const owner = findOwner(owners, ownerId);
-      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
-      if (!ownerCanUseFeature(owner, 'support-chat')) return sendJSON(res, 200, featureBlockedResult('support-chat'));
-
-      let changed = false;
-      (owner.supportMessages || []).forEach(m => {
-        if (String(m.customerId) === userId && m.from === 'staff' && !m.readByCustomer) {
-          m.readByCustomer = true;
-          changed = true;
-        }
+    if (o.deliveredAt) {
+      notifications.push({
+        id: `${o.id}-delivered`, type: 'order', icon: 'check-circle',
+        title: 'Buyurtmangiz yetkazib berildi',
+        text: itemsText,
+        time: o.deliveredAt
       });
-      if (changed) saveOwners(owners);
+    }
 
-      return sendJSON(res, 200, { ok: true, messages: supportThreadMessages(owner, userId) });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/support-inbox') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx || !ctxHasAnyRole(ctx, ['egasi', 'kassir'])) {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'limga faqat egasi/kassir kira oladi' });
-      }
-      if (!ownerCanUseFeature(ctx.owner, 'support-chat')) return sendJSON(res, 200, featureBlockedResult('support-chat'));
-
-      const byCustomer = new Map();
-      for (const m of (ctx.owner.supportMessages || [])) {
-        const list = byCustomer.get(m.customerId) || [];
-        list.push(m);
-        byCustomer.set(m.customerId, list);
-      }
-      const threads = [];
-      for (const [customerId, msgs] of byCustomer.entries()) {
-        msgs.sort((a, b) => new Date(a.at) - new Date(b.at));
-        const last = msgs[msgs.length - 1];
-        const customer = findCustomer(ctx.owner, customerId);
-        threads.push({
-          customerId,
-          customerName: (customer && customer.firstName) || `ID: ${customerId}`,
-          lastText: last.text,
-          lastAt: last.at,
-          lastFrom: last.from,
-          unreadCount: msgs.filter(m => m.from === 'customer' && !m.readByStaff).length
-        });
-      }
-      threads.sort((a, b) => new Date(b.lastAt) - new Date(a.lastAt));
-
-      return sendJSON(res, 200, { ok: true, threads });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/support-thread-staff') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, customerId } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx || !ctxHasAnyRole(ctx, ['egasi', 'kassir'])) {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'limga faqat egasi/kassir kira oladi' });
-      }
-      if (!ownerCanUseFeature(ctx.owner, 'support-chat')) return sendJSON(res, 200, featureBlockedResult('support-chat'));
-      if (!customerId) return sendJSON(res, 200, { ok: false, reason: 'Mijoz tanlanmagan.' });
-
-      let changed = false;
-      (ctx.owner.supportMessages || []).forEach(m => {
-        if (String(m.customerId) === String(customerId) && m.from === 'customer' && !m.readByStaff) {
-          m.readByStaff = true;
-          changed = true;
-        }
+    if (o.status === 'bekor_qilindi' && o.cancelledAt) {
+      notifications.push({
+        id: `${o.id}-cancelled`, type: 'order', icon: 'x-circle',
+        title: 'Dostavka bekor qilindi',
+        text: o.cancelReason || 'Kechirasiz, buyurtmangizni yetkazib bera olmadik.',
+        time: o.cancelledAt
       });
-      if (changed) saveOwners(owners);
+    }
 
-      return sendJSON(res, 200, { ok: true, messages: supportThreadMessages(ctx.owner, customerId) });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/support-reply') {
-    readBody(req, async (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, customerId, text } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx || !ctxHasAnyRole(ctx, ['egasi', 'kassir'])) {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'limga faqat egasi/kassir kira oladi' });
-      }
-      if (!ownerCanUseFeature(ctx.owner, 'support-chat')) return sendJSON(res, 200, featureBlockedResult('support-chat'));
-      if (!customerId) return sendJSON(res, 200, { ok: false, reason: 'Mijoz tanlanmagan.' });
-
-      const textTrim = String(text || '').trim().slice(0, 1000);
-      if (!textTrim) return sendJSON(res, 200, { ok: false, reason: 'Xabar matni bo\'sh bo\'lmasligi kerak.' });
-
-      if (!Array.isArray(ctx.owner.supportMessages)) ctx.owner.supportMessages = [];
-      const msg = {
-        id: crypto.randomBytes(4).toString('hex'),
-        customerId: String(customerId),
-        from: 'staff',
-        text: textTrim,
-        at: new Date().toISOString(),
-        readByCustomer: false,
-        readByStaff: true
-      };
-      ctx.owner.supportMessages.push(msg);
-      saveOwners(owners);
-
-      await sendMessage(customerId, `💬 <b>Oshxonadan javob</b>\n${escapeHtmlServer(textTrim)}`);
-
-      return sendJSON(res, 200, { ok: true, messages: supportThreadMessages(ctx.owner, customerId) });
-    });
-    return;
-  }
-
-  function adminSupportThreadMessages(ownerId) {
-    return loadAdminSupportMessages()
-      .filter(m => String(m.ownerId) === String(ownerId))
-      .sort((a, b) => new Date(a.at) - new Date(b.at));
-  }
-
-  if (req.method === 'POST' && req.url === '/api/owner-admin-support-send') {
-    readBody(req, async (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, text } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi adminga yoza oladi.' });
-      const owner = ownerCtx.owner;
-
-      const textTrim = String(text || '').trim().slice(0, 1000);
-      if (!textTrim) return sendJSON(res, 200, { ok: false, reason: 'Xabar matni bo\'sh bo\'lmasligi kerak.' });
-
-      const msgs = loadAdminSupportMessages();
-      msgs.push({
-        id: crypto.randomBytes(4).toString('hex'),
-        ownerId: owner.id,
-        from: 'owner',
-        text: textTrim,
-        at: new Date().toISOString(),
-        readByOwner: true,
-        readByAdmin: false
+    if (o.paymentProofApprovedAt) {
+      notifications.push({
+        id: `${o.id}-payok`, type: 'order', icon: 'card',
+        title: 'To\'lovingiz tasdiqlandi',
+        text: itemsText,
+        time: o.paymentProofApprovedAt
       });
-      saveAdminSupportMessages(msgs);
+    }
 
-      const alertText = `🆘 <b>Egadan xabar</b>\nOshxona: <b>${escapeHtmlServer((owner.profile && owner.profile.name) || owner.id)}</b> (ID: <code>${owner.id}</code>)\n\n${escapeHtmlServer(textTrim)}`;
-      for (const adminId of allAdminIds()) {
-        sendMessage(adminId, alertText);
-      }
-
-      return sendJSON(res, 200, { ok: true, messages: adminSupportThreadMessages(owner.id) });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/owner-admin-support-thread') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi ko\'ra oladi.' });
-      const owner = ownerCtx.owner;
-
-      const msgs = loadAdminSupportMessages();
-      let changed = false;
-      msgs.forEach(m => {
-        if (String(m.ownerId) === owner.id && m.from === 'admin' && !m.readByOwner) {
-          m.readByOwner = true;
-          changed = true;
-        }
+    if (o.paymentProofRejectedAt) {
+      notifications.push({
+        id: `${o.id}-payrej`, type: 'order', icon: 'x-circle',
+        title: 'To\'lov tasdiqlanmadi',
+        text: 'Iltimos, to\'g\'ri chekni qayta yuboring yoki oshxona bilan bog\'laning.',
+        time: o.paymentProofRejectedAt
       });
-      if (changed) saveAdminSupportMessages(msgs);
+    }
+  });
 
-      return sendJSON(res, 200, { ok: true, messages: adminSupportThreadMessages(owner.id) });
+  (owner.promotions || []).filter(p => p.active).forEach(p => {
+    notifications.push({
+      id: `promo-${p.id}`, type: 'promo', icon: 'star',
+      title: `Yangi aksiya: ${p.title}`,
+      text: `${p.discountPercent}% chegirma${p.minTotal ? ` (${fmtNum(p.minTotal)} so'mdan buyurtmalarga)` : ''}`,
+      time: p.createdAt
     });
-    return;
+  });
+
+  notifications.sort((a, b) => new Date(b.time) - new Date(a.time));
+  return sendOk(res, { notifications: notifications.slice(0, 50) });
+});
+
+function supportThreadMessages(owner, customerId) {
+  return (owner.supportMessages || [])
+    .filter(m => String(m.customerId) === String(customerId))
+    .sort((a, b) => new Date(a.at) - new Date(b.at));
+}
+
+authed('/api/support-send', async (payload, res, { user, userId }) => {
+  const { ownerId, text } = payload;
+
+  const owners = loadOwners();
+  const owner = findOwner(owners, ownerId);
+  if (!owner || !isOwnerAccessValid(owner)) return sendFail(res, 'Bu oshxona hozircha mavjud emas.');
+  if (!ownerCanUseFeature(owner, 'support-chat')) return sendFeatureBlocked(res, 'support-chat');
+
+  const textTrim = String(text || '').trim().slice(0, 1000);
+  if (!textTrim) return sendFail(res, 'Xabar matni bo\'sh bo\'lmasligi kerak.');
+
+  if (!Array.isArray(owner.supportMessages)) owner.supportMessages = [];
+  const customer = findOrCreateCustomer(owner, userId, user);
+  const msg = {
+    id: crypto.randomBytes(4).toString('hex'),
+    customerId: userId,
+    from: 'customer',
+    text: textTrim,
+    at: new Date().toISOString(),
+    readByCustomer: true,
+    readByStaff: false
+  };
+  owner.supportMessages.push(msg);
+  saveOwners(owners);
+
+  const staffTargets = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'egasi') || staffHasRole(s, 'kassir')).map(s => s.id))];
+  const profile = findProfile(userId);
+  const alertText = `🆘 <b>Yordam so'rovi</b>\n${orderCustomerContactLabel({ customerName: customerDisplayName(userId, user), customerPhone: (profile && profile.phone) || null })}\n\n${escapeHtmlServer(textTrim)}`;
+  for (const targetId of new Set(staffTargets.map(String))) {
+    sendMessage(targetId, alertText);
   }
 
-  if (req.method === 'POST' && req.url === '/api/admin-support-inbox') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin ko\'ra oladi' });
+  return sendOk(res, { messages: supportThreadMessages(owner, userId) });
+});
 
-      const owners = loadOwners();
-      const msgs = loadAdminSupportMessages();
-      const byOwner = new Map();
-      for (const m of msgs) {
-        const list = byOwner.get(m.ownerId) || [];
-        list.push(m);
-        byOwner.set(m.ownerId, list);
-      }
-      const threads = [];
-      for (const [ownerId, list] of byOwner.entries()) {
-        list.sort((a, b) => new Date(a.at) - new Date(b.at));
-        const last = list[list.length - 1];
-        const owner = findOwner(owners, ownerId);
-        threads.push({
-          ownerId,
-          ownerName: (owner && owner.profile && owner.profile.name) || `ID: ${ownerId}`,
-          lastText: last.text,
-          lastAt: last.at,
-          lastFrom: last.from,
-          unreadCount: list.filter(m => m.from === 'owner' && !m.readByAdmin).length
-        });
-      }
-      threads.sort((a, b) => new Date(b.lastAt) - new Date(a.lastAt));
+authed('/api/support-thread', (payload, res, { userId }) => {
+  const { ownerId } = payload;
 
-      return sendJSON(res, 200, { ok: true, threads });
+  const owners = loadOwners();
+  const owner = findOwner(owners, ownerId);
+  if (!owner) return sendFail(res, 'Bu oshxona hozircha mavjud emas.');
+  if (!ownerCanUseFeature(owner, 'support-chat')) return sendFeatureBlocked(res, 'support-chat');
+
+  let changed = false;
+  (owner.supportMessages || []).forEach(m => {
+    if (String(m.customerId) === userId && m.from === 'staff' && !m.readByCustomer) {
+      m.readByCustomer = true;
+      changed = true;
+    }
+  });
+  if (changed) saveOwners(owners);
+
+  return sendOk(res, { messages: supportThreadMessages(owner, userId) });
+});
+
+authed('/api/support-inbox', (payload, res, { userId }) => {
+  const owners = loadOwners();
+  const ctx = resolveOwnerContext(owners, userId);
+  if (!ctx || !ctxHasAnyRole(ctx, ['egasi', 'kassir'])) {
+    return sendFail(res, 'Bu bo\'limga faqat egasi/kassir kira oladi');
+  }
+  if (!ownerCanUseFeature(ctx.owner, 'support-chat')) return sendFeatureBlocked(res, 'support-chat');
+
+  const byCustomer = new Map();
+  for (const m of (ctx.owner.supportMessages || [])) {
+    const list = byCustomer.get(m.customerId) || [];
+    list.push(m);
+    byCustomer.set(m.customerId, list);
+  }
+  const threads = [];
+  for (const [customerId, msgs] of byCustomer.entries()) {
+    msgs.sort((a, b) => new Date(a.at) - new Date(b.at));
+    const last = msgs[msgs.length - 1];
+    const customer = findCustomer(ctx.owner, customerId);
+    threads.push({
+      customerId,
+      customerName: (customer && customer.firstName) || `ID: ${customerId}`,
+      lastText: last.text,
+      lastAt: last.at,
+      lastFrom: last.from,
+      unreadCount: msgs.filter(m => m.from === 'customer' && !m.readByStaff).length
     });
-    return;
+  }
+  threads.sort((a, b) => new Date(b.lastAt) - new Date(a.lastAt));
+
+  return sendOk(res, { threads });
+});
+
+authed('/api/support-thread-staff', (payload, res, { userId }) => {
+  const { customerId } = payload;
+
+  const owners = loadOwners();
+  const ctx = resolveOwnerContext(owners, userId);
+  if (!ctx || !ctxHasAnyRole(ctx, ['egasi', 'kassir'])) {
+    return sendFail(res, 'Bu bo\'limga faqat egasi/kassir kira oladi');
+  }
+  if (!ownerCanUseFeature(ctx.owner, 'support-chat')) return sendFeatureBlocked(res, 'support-chat');
+  if (!customerId) return sendFail(res, 'Mijoz tanlanmagan.');
+
+  let changed = false;
+  (ctx.owner.supportMessages || []).forEach(m => {
+    if (String(m.customerId) === String(customerId) && m.from === 'customer' && !m.readByStaff) {
+      m.readByStaff = true;
+      changed = true;
+    }
+  });
+  if (changed) saveOwners(owners);
+
+  return sendOk(res, { messages: supportThreadMessages(ctx.owner, customerId) });
+});
+
+authed('/api/support-reply', async (payload, res, { userId }) => {
+  const { customerId, text } = payload;
+
+  const owners = loadOwners();
+  const ctx = resolveOwnerContext(owners, userId);
+  if (!ctx || !ctxHasAnyRole(ctx, ['egasi', 'kassir'])) {
+    return sendFail(res, 'Bu bo\'limga faqat egasi/kassir kira oladi');
+  }
+  if (!ownerCanUseFeature(ctx.owner, 'support-chat')) return sendFeatureBlocked(res, 'support-chat');
+  if (!customerId) return sendFail(res, 'Mijoz tanlanmagan.');
+
+  const textTrim = String(text || '').trim().slice(0, 1000);
+  if (!textTrim) return sendFail(res, 'Xabar matni bo\'sh bo\'lmasligi kerak.');
+
+  if (!Array.isArray(ctx.owner.supportMessages)) ctx.owner.supportMessages = [];
+  const msg = {
+    id: crypto.randomBytes(4).toString('hex'),
+    customerId: String(customerId),
+    from: 'staff',
+    text: textTrim,
+    at: new Date().toISOString(),
+    readByCustomer: false,
+    readByStaff: true
+  };
+  ctx.owner.supportMessages.push(msg);
+  saveOwners(owners);
+
+  await sendMessage(customerId, `💬 <b>Oshxonadan javob</b>\n${escapeHtmlServer(textTrim)}`);
+
+  return sendOk(res, { messages: supportThreadMessages(ctx.owner, customerId) });
+});
+
+function adminSupportThreadMessages(ownerId) {
+  return loadAdminSupportMessages()
+    .filter(m => String(m.ownerId) === String(ownerId))
+    .sort((a, b) => new Date(a.at) - new Date(b.at));
+}
+
+authed('/api/owner-admin-support-send', async (payload, res, { userId }) => {
+  const { text } = payload;
+
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return sendFail(res, 'Faqat oshxona egasi adminga yoza oladi.');
+  const owner = ownerCtx.owner;
+
+  const textTrim = String(text || '').trim().slice(0, 1000);
+  if (!textTrim) return sendFail(res, 'Xabar matni bo\'sh bo\'lmasligi kerak.');
+
+  const msgs = loadAdminSupportMessages();
+  msgs.push({
+    id: crypto.randomBytes(4).toString('hex'),
+    ownerId: owner.id,
+    from: 'owner',
+    text: textTrim,
+    at: new Date().toISOString(),
+    readByOwner: true,
+    readByAdmin: false
+  });
+  saveAdminSupportMessages(msgs);
+
+  const alertText = `🆘 <b>Egadan xabar</b>\nOshxona: <b>${escapeHtmlServer((owner.profile && owner.profile.name) || owner.id)}</b> (ID: <code>${owner.id}</code>)\n\n${escapeHtmlServer(textTrim)}`;
+  for (const adminId of allAdminIds()) {
+    sendMessage(adminId, alertText);
   }
 
-  if (req.method === 'POST' && req.url === '/api/admin-support-thread') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, ownerId } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin ko\'ra oladi' });
-      if (!ownerId) return sendJSON(res, 200, { ok: false, reason: 'Oshxona tanlanmagan.' });
+  return sendOk(res, { messages: adminSupportThreadMessages(owner.id) });
+});
 
-      const msgs = loadAdminSupportMessages();
-      let changed = false;
-      msgs.forEach(m => {
-        if (String(m.ownerId) === String(ownerId) && m.from === 'owner' && !m.readByAdmin) {
-          m.readByAdmin = true;
-          changed = true;
-        }
-      });
-      if (changed) saveAdminSupportMessages(msgs);
+authed('/api/owner-admin-support-thread', (payload, res, { userId }) => {
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return sendFail(res, 'Faqat oshxona egasi ko\'ra oladi.');
+  const owner = ownerCtx.owner;
 
-      return sendJSON(res, 200, { ok: true, messages: adminSupportThreadMessages(ownerId) });
+  const msgs = loadAdminSupportMessages();
+  let changed = false;
+  msgs.forEach(m => {
+    if (String(m.ownerId) === owner.id && m.from === 'admin' && !m.readByOwner) {
+      m.readByOwner = true;
+      changed = true;
+    }
+  });
+  if (changed) saveAdminSupportMessages(msgs);
+
+  return sendOk(res, { messages: adminSupportThreadMessages(owner.id) });
+});
+
+authed('/api/admin-support-inbox', (payload, res, { userId }) => {
+  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin ko\'ra oladi');
+
+  const owners = loadOwners();
+  const msgs = loadAdminSupportMessages();
+  const byOwner = new Map();
+  for (const m of msgs) {
+    const list = byOwner.get(m.ownerId) || [];
+    list.push(m);
+    byOwner.set(m.ownerId, list);
+  }
+  const threads = [];
+  for (const [ownerId, list] of byOwner.entries()) {
+    list.sort((a, b) => new Date(a.at) - new Date(b.at));
+    const last = list[list.length - 1];
+    const owner = findOwner(owners, ownerId);
+    threads.push({
+      ownerId,
+      ownerName: (owner && owner.profile && owner.profile.name) || `ID: ${ownerId}`,
+      lastText: last.text,
+      lastAt: last.at,
+      lastFrom: last.from,
+      unreadCount: list.filter(m => m.from === 'owner' && !m.readByAdmin).length
     });
-    return;
+  }
+  threads.sort((a, b) => new Date(b.lastAt) - new Date(a.lastAt));
+
+  return sendOk(res, { threads });
+});
+
+authed('/api/admin-support-thread', (payload, res, { userId }) => {
+  const { ownerId } = payload;
+  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin ko\'ra oladi');
+  if (!ownerId) return sendFail(res, 'Oshxona tanlanmagan.');
+
+  const msgs = loadAdminSupportMessages();
+  let changed = false;
+  msgs.forEach(m => {
+    if (String(m.ownerId) === String(ownerId) && m.from === 'owner' && !m.readByAdmin) {
+      m.readByAdmin = true;
+      changed = true;
+    }
+  });
+  if (changed) saveAdminSupportMessages(msgs);
+
+  return sendOk(res, { messages: adminSupportThreadMessages(ownerId) });
+});
+
+authed('/api/admin-support-reply', async (payload, res, { userId }) => {
+  const { ownerId, text } = payload;
+  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin javob bera oladi');
+  if (!ownerId) return sendFail(res, 'Oshxona tanlanmagan.');
+
+  const textTrim = String(text || '').trim().slice(0, 1000);
+  if (!textTrim) return sendFail(res, 'Xabar matni bo\'sh bo\'lmasligi kerak.');
+
+  const msgs = loadAdminSupportMessages();
+  msgs.push({
+    id: crypto.randomBytes(4).toString('hex'),
+    ownerId: String(ownerId),
+    from: 'admin',
+    text: textTrim,
+    at: new Date().toISOString(),
+    readByOwner: false,
+    readByAdmin: true
+  });
+  saveAdminSupportMessages(msgs);
+
+  await sendMessage(ownerId, `💬 <b>Admindan xabar</b>\n${escapeHtmlServer(textTrim)}`);
+
+  return sendOk(res, { messages: adminSupportThreadMessages(ownerId) });
+});
+
+authed('/api/customer-order', async (payload, res, { user, userId }) => {
+  const { ownerId, items, orderType, paymentType, promoId, usePoints, location, addressNote, extraPhone, comment, requestId, branchId } = payload;
+
+  const owners = loadOwners();
+  const owner = findOwner(owners, ownerId);
+  if (!owner || !isOwnerAccessValid(owner)) return sendFail(res, 'Bu oshxona hozircha mavjud emas.');
+  if (!ownerCanUseFeature(owner, 'customer-menu')) return sendFeatureBlocked(res, 'customer-menu');
+
+  // 3-bosqich: mijoz tanlagan filialning mustaqil menyusi/skladi asosida
+  // buyurtma tekshiriladi va shakllantiriladi (branchId bo'lmasa — markaziy).
+  const menuPool = resolveMenuPool(owner, branchId);
+  if (branchId && !menuPool) return sendFail(res, 'Bunday filial topilmadi.');
+  const stockPool = resolveStockPool(owner, branchId) || owner;
+  const orderBranch = branchId ? findBranch(owner, branchId) : null;
+
+  if (!isRegisteredUser(userId)) {
+    return sendJSON(res, 200, {
+      ok: false,
+      reason: 'Buyurtma berishdan oldin ism, familiya va telefon raqamingizni kiritib ro\'yxatdan o\'ting.'
+    });
   }
 
-  if (req.method === 'POST' && req.url === '/api/admin-support-reply') {
-    readBody(req, async (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, ownerId, text } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin javob bera oladi' });
-      if (!ownerId) return sendJSON(res, 200, { ok: false, reason: 'Oshxona tanlanmagan.' });
+  const cachedResponse = getCachedOrderResponse(owner.id, userId, requestId);
+  if (cachedResponse) return sendJSON(res, 200, cachedResponse);
 
-      const textTrim = String(text || '').trim().slice(0, 1000);
-      if (!textTrim) return sendJSON(res, 200, { ok: false, reason: 'Xabar matni bo\'sh bo\'lmasligi kerak.' });
-
-      const msgs = loadAdminSupportMessages();
-      msgs.push({
-        id: crypto.randomBytes(4).toString('hex'),
-        ownerId: String(ownerId),
-        from: 'admin',
-        text: textTrim,
-        at: new Date().toISOString(),
-        readByOwner: false,
-        readByAdmin: true
-      });
-      saveAdminSupportMessages(msgs);
-
-      await sendMessage(ownerId, `💬 <b>Admindan xabar</b>\n${escapeHtmlServer(textTrim)}`);
-
-      return sendJSON(res, 200, { ok: true, messages: adminSupportThreadMessages(ownerId) });
-    });
-    return;
+  if (!Array.isArray(items) || !items.length) {
+    return sendFail(res, 'Savat bo\'sh. Kamida bitta taom tanlang.');
+  }
+  if (!Object.prototype.hasOwnProperty.call(CUSTOMER_ORDER_TYPES, orderType)) {
+    return sendFail(res, 'Buyurtma turini tanlang.');
+  }
+  if (!Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, paymentType)) {
+    return sendFail(res, 'To\'lov turini tanlang.');
+  }
+  if (orderType === 'dostavka' && paymentType === 'naqd') {
+    return sendFail(res, 'Bu turdagi naqd to\'lov dostavka buyurtmalarida mavjud emas. "Naqd" (dostavka orqali) yoki Karta tanlang.');
   }
 
-  if (req.method === 'POST' && req.url === '/api/customer-order') {
-    readBody(req, async (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, ownerId, items, orderType, paymentType, promoId, usePoints, location, addressNote, extraPhone, comment, requestId, branchId } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+  if (orderType !== 'dostavka' && paymentType === 'dostavka_orqali') {
+    return sendFail(res, '"Naqd" to\'lovi (dostavkada) faqat Dostavka buyurtmalarida mavjud.');
+  }
 
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const owner = findOwner(owners, ownerId);
-      if (!owner || !isOwnerAccessValid(owner)) return sendJSON(res, 200, { ok: false, reason: 'Bu oshxona hozircha mavjud emas.' });
-      if (!ownerCanUseFeature(owner, 'customer-menu')) return sendJSON(res, 200, featureBlockedResult('customer-menu'));
+  if (orderType === 'dostavka' && paymentType === 'dostavka_orqali' && customerIsCardOnlyRestricted(owner, userId)) {
+    return sendFail(res, 'Avvalgi buyurtma(lar)ingizda kuryer sizga bog\'lana olmagani sababli, endi faqat Karta orqali oldindan to\'lov bilan buyurtma bera olasiz.');
+  }
 
-      // 3-bosqich: mijoz tanlagan filialning mustaqil menyusi/skladi asosida
-      // buyurtma tekshiriladi va shakllantiriladi (branchId bo'lmasa — markaziy).
-      const menuPool = resolveMenuPool(owner, branchId);
-      if (branchId && !menuPool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi.' });
-      const stockPool = resolveStockPool(owner, branchId) || owner;
-      const orderBranch = branchId ? findBranch(owner, branchId) : null;
+  let deliveryLocation = null;
+  if (orderType === 'dostavka') {
+    if (location && typeof location.lat === 'number' && typeof location.lng === 'number' &&
+        Math.abs(location.lat) <= 90 && Math.abs(location.lng) <= 180) {
+      deliveryLocation = { lat: location.lat, lng: location.lng };
+    }
+    if (!deliveryLocation) {
+      return sendFail(res, 'Dostavka uchun joylashuvingizni (location) yuborishingiz shart. Manzil izohi yetarli emas.');
+    }
+    if (!isWithinDeliveryZone(deliveryLocation)) {
+      return sendFail(res, `Kechirasiz, bu manzil xizmat zonasidan tashqarida (dostavka radiusi ${DELIVERY_ZONE_RADIUS_KM} km). Iltimos, xizmat zonamiz ichidagi manzilni tanlang.`);
+    }
+    const extraPhoneTrimmed = String(extraPhone || '').trim();
+    if (!isPlausiblePhone(extraPhoneTrimmed)) {
+      return sendFail(res, 'Telefon raqamini O\'zbekiston formatida kiriting (masalan: +998901234567).');
+    }
+  }
+  const addressNoteFinal = orderType === 'dostavka' ? String(addressNote || '').trim().slice(0, 300) : null;
+  const extraPhoneFinal = orderType === 'dostavka' ? String(extraPhone || '').trim().slice(0, 30) : null;
+  const commentFinal = String(comment || '').trim().slice(0, 300) || null;
 
-      if (!isRegisteredUser(userId)) {
-        return sendJSON(res, 200, {
-          ok: false,
-          reason: 'Buyurtma berishdan oldin ism, familiya va telefon raqamingizni kiritib ro\'yxatdan o\'ting.'
-        });
-      }
+  const menu = (menuPool.menu || []).filter(m => m.available !== false);
+  const combosAvailable = (owner.combos || []).filter(c => c.available !== false);
+  const orderItems = [];
+  for (const it of items) {
+    const qty = parseInt(it.qty, 10);
+    if (!Number.isInteger(qty) || qty <= 0) return sendFail(res, 'Miqdor noto\'g\'ri.');
+    if (it.isCombo) {
+      const combo = combosAvailable.find(c => c.id === it.id);
+      if (!combo) return sendFail(res, 'Menyuda mavjud bo\'lmagan combo tanlangan.');
+      orderItems.push({ id: combo.id, name: combo.name, price: combo.price, qty, isCombo: true, category: combo.category || null });
+      continue;
+    }
+    const menuItem = menu.find(m => m.id === it.id);
+    if (!menuItem) return sendFail(res, 'Menyuda mavjud bo\'lmagan taom tanlangan.');
+    const priceOpt = resolveMenuItemPriceOption(menuItem, it.priceId);
+    if (!priceOpt.ok) return sendFail(res, priceOpt.reason);
+    orderItems.push({ id: menuItem.id, name: priceOpt.label ? `${menuItem.name} (${priceOpt.label})` : menuItem.name, price: priceOpt.price, priceId: priceOpt.priceId, qty, directStockId: menuItem.directStockId || null, category: menuItem.category || null });
+  }
+  const subtotal = orderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
 
-      const cachedResponse = getCachedOrderResponse(owner.id, userId, requestId);
-      if (cachedResponse) return sendJSON(res, 200, cachedResponse);
+  const { promo, discountAmount: manualDiscountAmount } = applyPromoDiscount(owner, promoId, subtotal);
+  const buy4get1 = computeBuy4Get1FreePromo(orderItems);
+  const discountAmount = manualDiscountAmount + buy4get1.discountAmount;
+  let total = Math.max(0, subtotal - discountAmount);
 
-      if (!Array.isArray(items) || !items.length) {
-        return sendJSON(res, 200, { ok: false, reason: 'Savat bo\'sh. Kamida bitta taom tanlang.' });
-      }
-      if (!Object.prototype.hasOwnProperty.call(CUSTOMER_ORDER_TYPES, orderType)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Buyurtma turini tanlang.' });
-      }
-      if (!Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, paymentType)) {
-        return sendJSON(res, 200, { ok: false, reason: 'To\'lov turini tanlang.' });
-      }
-      if (orderType === 'dostavka' && paymentType === 'naqd') {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu turdagi naqd to\'lov dostavka buyurtmalarida mavjud emas. "Naqd" (dostavka orqali) yoki Karta tanlang.' });
-      }
+  const customer = findOrCreateCustomer(owner, userId, user);
+  let pointsUsed = 0;
+  if (usePoints) {
+    const requested = Math.max(0, Math.floor(Number(usePoints) || 0));
+    pointsUsed = Math.min(requested, customer.bonusPoints, total);
+    total -= pointsUsed;
+  }
 
-      if (orderType !== 'dostavka' && paymentType === 'dostavka_orqali') {
-        return sendJSON(res, 200, { ok: false, reason: '"Naqd" to\'lovi (dostavkada) faqat Dostavka buyurtmalarida mavjud.' });
-      }
+  if (!owner.stock) owner.stock = [];
 
-      if (orderType === 'dostavka' && paymentType === 'dostavka_orqali' && customerIsCardOnlyRestricted(owner, userId)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Avvalgi buyurtma(lar)ingizda kuryer sizga bog\'lana olmagani sababli, endi faqat Karta orqali oldindan to\'lov bilan buyurtma bera olasiz.' });
-      }
+  const stockCheck = checkStockAvailabilityPooled(owner, orderItems, menu, stockPool);
+  if (!stockCheck.ok) {
+    return sendFail(res, stockCheck.reason);
+  }
 
-      let deliveryLocation = null;
-      if (orderType === 'dostavka') {
-        if (location && typeof location.lat === 'number' && typeof location.lng === 'number' &&
-            Math.abs(location.lat) <= 90 && Math.abs(location.lng) <= 180) {
-          deliveryLocation = { lat: location.lat, lng: location.lng };
-        }
-        if (!deliveryLocation) {
-          return sendJSON(res, 200, { ok: false, reason: 'Dostavka uchun joylashuvingizni (location) yuborishingiz shart. Manzil izohi yetarli emas.' });
-        }
-        if (!isWithinDeliveryZone(deliveryLocation)) {
-          return sendJSON(res, 200, { ok: false, reason: `Kechirasiz, bu manzil xizmat zonasidan tashqarida (dostavka radiusi ${DELIVERY_ZONE_RADIUS_KM} km). Iltimos, xizmat zonamiz ichidagi manzilni tanlang.` });
-        }
-        const extraPhoneTrimmed = String(extraPhone || '').trim();
-        if (!isPlausiblePhone(extraPhoneTrimmed)) {
-          return sendJSON(res, 200, { ok: false, reason: 'Telefon raqamini O\'zbekiston formatida kiriting (masalan: +998901234567).' });
-        }
-      }
-      const addressNoteFinal = orderType === 'dostavka' ? String(addressNote || '').trim().slice(0, 300) : null;
-      const extraPhoneFinal = orderType === 'dostavka' ? String(extraPhone || '').trim().slice(0, 30) : null;
-      const commentFinal = String(comment || '').trim().slice(0, 300) || null;
-
-      const menu = (menuPool.menu || []).filter(m => m.available !== false);
-      const combosAvailable = (owner.combos || []).filter(c => c.available !== false);
-      const orderItems = [];
-      for (const it of items) {
-        const qty = parseInt(it.qty, 10);
-        if (!Number.isInteger(qty) || qty <= 0) return sendJSON(res, 200, { ok: false, reason: 'Miqdor noto\'g\'ri.' });
-        if (it.isCombo) {
-          const combo = combosAvailable.find(c => c.id === it.id);
-          if (!combo) return sendJSON(res, 200, { ok: false, reason: 'Menyuda mavjud bo\'lmagan combo tanlangan.' });
-          orderItems.push({ id: combo.id, name: combo.name, price: combo.price, qty, isCombo: true, category: combo.category || null });
-          continue;
-        }
-        const menuItem = menu.find(m => m.id === it.id);
-        if (!menuItem) return sendJSON(res, 200, { ok: false, reason: 'Menyuda mavjud bo\'lmagan taom tanlangan.' });
-        const priceOpt = resolveMenuItemPriceOption(menuItem, it.priceId);
-        if (!priceOpt.ok) return sendJSON(res, 200, { ok: false, reason: priceOpt.reason });
-        orderItems.push({ id: menuItem.id, name: priceOpt.label ? `${menuItem.name} (${priceOpt.label})` : menuItem.name, price: priceOpt.price, priceId: priceOpt.priceId, qty, directStockId: menuItem.directStockId || null, category: menuItem.category || null });
-      }
-      const subtotal = orderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
-
-      const { promo, discountAmount: manualDiscountAmount } = applyPromoDiscount(owner, promoId, subtotal);
-      const buy4get1 = computeBuy4Get1FreePromo(orderItems);
-      const discountAmount = manualDiscountAmount + buy4get1.discountAmount;
-      let total = Math.max(0, subtotal - discountAmount);
-
-      const customer = findOrCreateCustomer(owner, userId, check.user);
-      let pointsUsed = 0;
-      if (usePoints) {
-        const requested = Math.max(0, Math.floor(Number(usePoints) || 0));
-        pointsUsed = Math.min(requested, customer.bonusPoints, total);
-        total -= pointsUsed;
-      }
-
-      if (!owner.stock) owner.stock = [];
-
-      const stockCheck = checkStockAvailabilityPooled(owner, orderItems, menu, stockPool);
-      if (!stockCheck.ok) {
-        return sendJSON(res, 200, { ok: false, reason: stockCheck.reason });
-      }
-
-      for (const it of orderItems) {
-        if (it.isCombo) {
-          const combo = findCombo(owner, it.id);
-          if (combo) {
-            for (const need of comboStockNeeds(owner, combo, it.qty)) {
-              const stockItem = findStockItem(owner, need.stockId);
-              if (!stockItem) continue;
-              stockItem.qty = Math.max(0, Math.round((stockItem.qty - need.qty) * 1000) / 1000);
-              addStockMovement(owner, {
-                stockId: stockItem.id, stockName: stockItem.name, type: 'chiqim',
-                qty: need.qty, unit: stockItem.unit,
-                note: `Combo: ${combo.name} (${need.viaName}) x${it.qty}`,
-                userId
-              });
-              checkLowStockAlert(owner, stockItem, userId);
-            }
-          }
-          continue;
-        }
-        const menuItem = menu.find(m => m.id === it.id);
-
-        if (menuItem && menuItem.directStockId) {
-          const stockItem = findStockItem(stockPool, menuItem.directStockId);
-          if (stockItem) {
-            const consumeQty = it.qty;
-            stockItem.qty = Math.max(0, Math.round((stockItem.qty - consumeQty) * 1000) / 1000);
-            addStockMovement(stockPool, {
-              stockId: stockItem.id, stockName: stockItem.name, type: 'chiqim',
-              qty: consumeQty, unit: stockItem.unit,
-              note: `To'g'ridan sotildi: ${menuItem.name} x${it.qty}`,
-              userId
-            });
-            checkLowStockAlert(owner, stockItem, userId, branchId || null);
-          }
-          continue;
-        }
-        const recipe = (menuItem && Array.isArray(menuItem.recipe)) ? menuItem.recipe : [];
-        for (const ing of recipe) {
-          const stockItem = findStockItem(stockPool, ing.stockId);
+  for (const it of orderItems) {
+    if (it.isCombo) {
+      const combo = findCombo(owner, it.id);
+      if (combo) {
+        for (const need of comboStockNeeds(owner, combo, it.qty)) {
+          const stockItem = findStockItem(owner, need.stockId);
           if (!stockItem) continue;
-          const consumeQty = Math.round(ing.qty * it.qty * 1000) / 1000;
-          stockItem.qty = Math.max(0, Math.round((stockItem.qty - consumeQty) * 1000) / 1000);
-          addStockMovement(stockPool, {
+          stockItem.qty = Math.max(0, Math.round((stockItem.qty - need.qty) * 1000) / 1000);
+          addStockMovement(owner, {
             stockId: stockItem.id, stockName: stockItem.name, type: 'chiqim',
-            qty: consumeQty, unit: stockItem.unit,
-            note: `Mijoz buyurtmasi: ${menuItem.name} x${it.qty}`,
+            qty: need.qty, unit: stockItem.unit,
+            note: `Combo: ${combo.name} (${need.viaName}) x${it.qty}`,
             userId
           });
-          checkLowStockAlert(owner, stockItem, userId, branchId || null);
+          checkLowStockAlert(owner, stockItem, userId);
         }
       }
+      continue;
+    }
+    const menuItem = menu.find(m => m.id === it.id);
 
-      let pointsEarned = 0;
-      if (owner.bonusSettings && owner.bonusSettings.enabled) {
-        pointsEarned = Math.floor(total * (owner.bonusSettings.earnPercent || 0) / 100);
-      }
-      customer.bonusPoints = Math.max(0, customer.bonusPoints - pointsUsed + pointsEarned);
-      customer.ordersCount = (customer.ordersCount || 0) + 1;
-      customer.totalSpent = (customer.totalSpent || 0) + total;
-
-      if (!customer.itemFrequency || typeof customer.itemFrequency !== 'object') customer.itemFrequency = {};
-      for (const it of orderItems) {
-        if (!it.id) continue;
-        customer.itemFrequency[it.id] = (customer.itemFrequency[it.id] || 0) + (it.qty || 1);
-      }
-      customer.lastOrderedAt = new Date().toISOString();
-
-      if (!owner.orders) owner.orders = [];
-      const order = {
-        id: crypto.randomBytes(4).toString('hex'),
-        orderNumber: getNextOrderNumber(owner),
-        items: orderItems,
-        subtotal,
-        promoId: promo ? promo.id : null,
-        promoTitle: promo ? promo.title : null,
-        discountAmount,
-        autoPromoNote: buy4get1.noteHtml,
-        pointsUsed,
-        pointsEarned,
-        total,
-        orderType,
-        location: deliveryLocation,
-        addressNote: addressNoteFinal,
-        extraPhone: extraPhoneFinal,
-        comment: commentFinal,
-        paymentType,
-        status: 'yangi',
-
-        paymentProofStatus: (paymentType === 'karta') ? 'kutilmoqda' : null,
-        paymentConfirmMethod: paymentType === 'karta' ? 'skrinshot' : null,
-        paymentProofFileId: null,
-
-        branchId: orderBranch ? orderBranch.id : null,
-        customerId: userId,
-        customerName: customerDisplayName(userId, check.user),
-        customerPhone: (findProfile(userId) || {}).phone || null,
-        source: 'customer',
-        createdAt: new Date().toISOString(),
-        createdBy: userId
-      };
-      owner.orders.push(order);
-      logStaffAction(owner, { userId, role: 'mijoz', action: 'buyurtma_yaratdi', orderId: order.id, note: `Mijoz buyurtmasi — ${fmtNum(total)} so'm` });
-      saveOwners(owners);
-
-      if (paymentType === 'karta') {
-
-        const payCard = owner.customerPaymentCard || {};
-        const cardLine = payCard.cardNumber
-          ? `\n\n💳 To'lov: <code>${escapeHtmlServer(payCard.cardNumber)}</code>` +
-            (payCard.cardHolder ? ` (${escapeHtmlServer(payCard.cardHolder)})` : '')
-          : '\n\n⚠️ Oshxona hali to\'lov kartasini kiritmagan — to\'lov uchun kassaga murojaat qiling.';
-        await sendMessage(userId,
-          '💳 Buyurtmangiz qabul qilindi, lekin hali <b>TASDIQLANMAGAN</b>.' + cardLine + '\n\n' +
-          'Iltimos, to\'lov chekining (skrinshotning) RASMINI shu botga yuboring - ' +
-          'kassir yoki oshxona egasi tekshirib tasdiqlagach, buyurtmangiz oshxonaga yuboriladi.');
-      } else {
-        const itemsText = orderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
-        const commentLine = order.comment ? `\n💬 Izoh: ${escapeHtmlServer(order.comment)}` : '';
-        const branchLine = orderBranch ? `\n🏬 Filial: ${escapeHtmlServer(orderBranch.name)}` : '';
-        const autoPromoLine = order.autoPromoNote ? `\n${order.autoPromoNote}` : '';
-        const notifyText = `🆕 <b>Yangi mijoz buyurtmasi</b> (${ORDER_TYPES[orderType]})\n` +
-          `${orderCustomerContactLabel(order)}\n${itemsText}\n\nJami: ${fmtNum(total)} so'm\nTo'lov: ${PAYMENT_TYPES[paymentType]}${commentLine}${branchLine}${autoPromoLine}`;
-        const notifyTargets = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'oshpaz') || staffHasRole(s, 'kassir')).map(s => s.id))];
-        await notifyStaffList(owner, notifyTargets, notifyText, `Buyurtma #${order.id} (mijoz)`, 'newOrder');
-        notifyKitchenGroup(owner, order, orderCustomerContactLabel(order));
-        saveOwners(owners);
-      }
-
-      const successResponse = {
-        ok: true, orderId: order.id, total, discountAmount, pointsUsed, pointsEarned,
-        bonusBalance: customer.bonusPoints, paymentPending: !!order.paymentProofStatus,
-        paymentConfirmMethod: order.paymentConfirmMethod
-      };
-      setCachedOrderResponse(owner.id, userId, requestId, successResponse);
-      return sendJSON(res, 200, successResponse);
-    });
-    return;
-  }
-
-  function checkStockAvailability(owner, orderItems, menu) {
-    const needed = new Map();
-    for (const it of orderItems) {
-      if (it.isCombo) {
-        const combo = findCombo(owner, it.id);
-        if (!combo) continue;
-        for (const need of comboStockNeeds(owner, combo, it.qty)) {
-          needed.set(need.stockId, Math.round(((needed.get(need.stockId) || 0) + need.qty) * 1000) / 1000);
-        }
-        continue;
-      }
-      const menuItem = menu.find(m => m.id === it.id);
-
-      if (menuItem && menuItem.directStockId) {
+    if (menuItem && menuItem.directStockId) {
+      const stockItem = findStockItem(stockPool, menuItem.directStockId);
+      if (stockItem) {
         const consumeQty = it.qty;
-        needed.set(menuItem.directStockId, Math.round(((needed.get(menuItem.directStockId) || 0) + consumeQty) * 1000) / 1000);
-        continue;
+        stockItem.qty = Math.max(0, Math.round((stockItem.qty - consumeQty) * 1000) / 1000);
+        addStockMovement(stockPool, {
+          stockId: stockItem.id, stockName: stockItem.name, type: 'chiqim',
+          qty: consumeQty, unit: stockItem.unit,
+          note: `To'g'ridan sotildi: ${menuItem.name} x${it.qty}`,
+          userId
+        });
+        checkLowStockAlert(owner, stockItem, userId, branchId || null);
       }
-      const recipe = (menuItem && Array.isArray(menuItem.recipe)) ? menuItem.recipe : [];
-      for (const ing of recipe) {
-        const consumeQty = Math.round(ing.qty * it.qty * 1000) / 1000;
-        needed.set(ing.stockId, Math.round(((needed.get(ing.stockId) || 0) + consumeQty) * 1000) / 1000);
-      }
+      continue;
     }
-    for (const [stockId, requiredQty] of needed) {
-      const stockItem = findStockItem(owner, stockId);
+    const recipe = (menuItem && Array.isArray(menuItem.recipe)) ? menuItem.recipe : [];
+    for (const ing of recipe) {
+      const stockItem = findStockItem(stockPool, ing.stockId);
       if (!stockItem) continue;
-      if (stockItem.qty < requiredQty) {
-        return {
-          ok: false,
-          reason: `Omborda "${stockItem.name}" yetarli emas (kerak: ${requiredQty} ${stockItem.unit}, mavjud: ${stockItem.qty} ${stockItem.unit}).`,
-          stockName: stockItem.name
-        };
-      }
+      const consumeQty = Math.round(ing.qty * it.qty * 1000) / 1000;
+      stockItem.qty = Math.max(0, Math.round((stockItem.qty - consumeQty) * 1000) / 1000);
+      addStockMovement(stockPool, {
+        stockId: stockItem.id, stockName: stockItem.name, type: 'chiqim',
+        qty: consumeQty, unit: stockItem.unit,
+        note: `Mijoz buyurtmasi: ${menuItem.name} x${it.qty}`,
+        userId
+      });
+      checkLowStockAlert(owner, stockItem, userId, branchId || null);
     }
-    return { ok: true };
   }
 
-  // 3-bosqich: mijoz filial tanlab buyurtma berganda, taomning tarkibiy
-  // qismlari (directStockId/recipe) o'sha FILIALNING skladidan hisoblanishi
-  // kerak (chunki filial menyusi mustaqil bo'lgani kabi, uning skladi ham
-  // mustaqil — /api/stock-* endpointlari buni allaqachon shunday boshqaradi).
-  // Combo'lar esa hali ham markaziy ("owner") darajasida qoladi, chunki
-  // combo tizimi filiallarga bog'lanmagan.
-  function checkStockAvailabilityPooled(owner, orderItems, menu, stockPool) {
+  let pointsEarned = 0;
+  if (owner.bonusSettings && owner.bonusSettings.enabled) {
+    pointsEarned = Math.floor(total * (owner.bonusSettings.earnPercent || 0) / 100);
+  }
+  customer.bonusPoints = Math.max(0, customer.bonusPoints - pointsUsed + pointsEarned);
+  customer.ordersCount = (customer.ordersCount || 0) + 1;
+  customer.totalSpent = (customer.totalSpent || 0) + total;
+
+  if (!customer.itemFrequency || typeof customer.itemFrequency !== 'object') customer.itemFrequency = {};
+  for (const it of orderItems) {
+    if (!it.id) continue;
+    customer.itemFrequency[it.id] = (customer.itemFrequency[it.id] || 0) + (it.qty || 1);
+  }
+  customer.lastOrderedAt = new Date().toISOString();
+
+  if (!owner.orders) owner.orders = [];
+  const order = {
+    id: crypto.randomBytes(4).toString('hex'),
+    orderNumber: getNextOrderNumber(owner),
+    items: orderItems,
+    subtotal,
+    promoId: promo ? promo.id : null,
+    promoTitle: promo ? promo.title : null,
+    discountAmount,
+    autoPromoNote: buy4get1.noteHtml,
+    pointsUsed,
+    pointsEarned,
+    total,
+    orderType,
+    location: deliveryLocation,
+    addressNote: addressNoteFinal,
+    extraPhone: extraPhoneFinal,
+    comment: commentFinal,
+    paymentType,
+    status: 'yangi',
+
+    paymentProofStatus: (paymentType === 'karta') ? 'kutilmoqda' : null,
+    paymentConfirmMethod: paymentType === 'karta' ? 'skrinshot' : null,
+    paymentProofFileId: null,
+
+    branchId: orderBranch ? orderBranch.id : null,
+    customerId: userId,
+    customerName: customerDisplayName(userId, user),
+    customerPhone: (findProfile(userId) || {}).phone || null,
+    source: 'customer',
+    createdAt: new Date().toISOString(),
+    createdBy: userId
+  };
+  owner.orders.push(order);
+  logStaffAction(owner, { userId, role: 'mijoz', action: 'buyurtma_yaratdi', orderId: order.id, note: `Mijoz buyurtmasi — ${fmtNum(total)} so'm` });
+  saveOwners(owners);
+
+  if (paymentType === 'karta') {
+
+    const payCard = owner.customerPaymentCard || {};
+    const cardLine = payCard.cardNumber
+      ? `\n\n💳 To'lov: <code>${escapeHtmlServer(payCard.cardNumber)}</code>` +
+        (payCard.cardHolder ? ` (${escapeHtmlServer(payCard.cardHolder)})` : '')
+      : '\n\n⚠️ Oshxona hali to\'lov kartasini kiritmagan — to\'lov uchun kassaga murojaat qiling.';
+    await sendMessage(userId,
+      '💳 Buyurtmangiz qabul qilindi, lekin hali <b>TASDIQLANMAGAN</b>.' + cardLine + '\n\n' +
+      'Iltimos, to\'lov chekining (skrinshotning) RASMINI shu botga yuboring - ' +
+      'kassir yoki oshxona egasi tekshirib tasdiqlagach, buyurtmangiz oshxonaga yuboriladi.');
+  } else {
+    const itemsText = orderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
+    const commentLine = order.comment ? `\n💬 Izoh: ${escapeHtmlServer(order.comment)}` : '';
+    const branchLine = orderBranch ? `\n🏬 Filial: ${escapeHtmlServer(orderBranch.name)}` : '';
+    const autoPromoLine = order.autoPromoNote ? `\n${order.autoPromoNote}` : '';
+    const notifyText = `🆕 <b>Yangi mijoz buyurtmasi</b> (${ORDER_TYPES[orderType]})\n` +
+      `${orderCustomerContactLabel(order)}\n${itemsText}\n\nJami: ${fmtNum(total)} so'm\nTo'lov: ${PAYMENT_TYPES[paymentType]}${commentLine}${branchLine}${autoPromoLine}`;
+    const notifyTargets = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'oshpaz') || staffHasRole(s, 'kassir')).map(s => s.id))];
+    await notifyStaffList(owner, notifyTargets, notifyText, `Buyurtma #${order.id} (mijoz)`, 'newOrder');
+    notifyKitchenGroup(owner, order, orderCustomerContactLabel(order));
+    saveOwners(owners);
+  }
+
+  const successResponse = {
+    ok: true, orderId: order.id, total, discountAmount, pointsUsed, pointsEarned,
+    bonusBalance: customer.bonusPoints, paymentPending: !!order.paymentProofStatus,
+    paymentConfirmMethod: order.paymentConfirmMethod
+  };
+  setCachedOrderResponse(owner.id, userId, requestId, successResponse);
+  return sendJSON(res, 200, successResponse);
+});
+
+function checkStockAvailability(owner, orderItems, menu) {
+  const needed = new Map();
+  for (const it of orderItems) {
+    if (it.isCombo) {
+      const combo = findCombo(owner, it.id);
+      if (!combo) continue;
+      for (const need of comboStockNeeds(owner, combo, it.qty)) {
+        needed.set(need.stockId, Math.round(((needed.get(need.stockId) || 0) + need.qty) * 1000) / 1000);
+      }
+      continue;
+    }
+    const menuItem = menu.find(m => m.id === it.id);
+
+    if (menuItem && menuItem.directStockId) {
+      const consumeQty = it.qty;
+      needed.set(menuItem.directStockId, Math.round(((needed.get(menuItem.directStockId) || 0) + consumeQty) * 1000) / 1000);
+      continue;
+    }
+    const recipe = (menuItem && Array.isArray(menuItem.recipe)) ? menuItem.recipe : [];
+    for (const ing of recipe) {
+      const consumeQty = Math.round(ing.qty * it.qty * 1000) / 1000;
+      needed.set(ing.stockId, Math.round(((needed.get(ing.stockId) || 0) + consumeQty) * 1000) / 1000);
+    }
+  }
+  for (const [stockId, requiredQty] of needed) {
+    const stockItem = findStockItem(owner, stockId);
+    if (!stockItem) continue;
+    if (stockItem.qty < requiredQty) {
+      return {
+        ok: false,
+        reason: `Omborda "${stockItem.name}" yetarli emas (kerak: ${requiredQty} ${stockItem.unit}, mavjud: ${stockItem.qty} ${stockItem.unit}).`,
+        stockName: stockItem.name
+      };
+    }
+  }
+  return { ok: true };
+}
+
+// 3-bosqich: mijoz filial tanlab buyurtma berganda, taomning tarkibiy
+// qismlari (directStockId/recipe) o'sha FILIALNING skladidan hisoblanishi
+// kerak (chunki filial menyusi mustaqil bo'lgani kabi, uning skladi ham
+// mustaqil — /api/stock-* endpointlari buni allaqachon shunday boshqaradi).
+// Combo'lar esa hali ham markaziy ("owner") darajasida qoladi, chunki
+// combo tizimi filiallarga bog'lanmagan.
+function checkStockAvailabilityPooled(owner, orderItems, menu, stockPool) {
+  const neededCombo = new Map();
+  const neededPool = new Map();
+  for (const it of orderItems) {
+    if (it.isCombo) {
+      const combo = findCombo(owner, it.id);
+      if (!combo) continue;
+      for (const need of comboStockNeeds(owner, combo, it.qty)) {
+        neededCombo.set(need.stockId, Math.round(((neededCombo.get(need.stockId) || 0) + need.qty) * 1000) / 1000);
+      }
+      continue;
+    }
+    const menuItem = menu.find(m => m.id === it.id);
+    if (menuItem && menuItem.directStockId) {
+      const consumeQty = it.qty;
+      neededPool.set(menuItem.directStockId, Math.round(((neededPool.get(menuItem.directStockId) || 0) + consumeQty) * 1000) / 1000);
+      continue;
+    }
+    const recipe = (menuItem && Array.isArray(menuItem.recipe)) ? menuItem.recipe : [];
+    for (const ing of recipe) {
+      const consumeQty = Math.round(ing.qty * it.qty * 1000) / 1000;
+      neededPool.set(ing.stockId, Math.round(((neededPool.get(ing.stockId) || 0) + consumeQty) * 1000) / 1000);
+    }
+  }
+  for (const [stockId, requiredQty] of neededCombo) {
+    const stockItem = findStockItem(owner, stockId);
+    if (!stockItem) continue;
+    if (stockItem.qty < requiredQty) {
+      return {
+        ok: false,
+        reason: `Omborda "${stockItem.name}" yetarli emas (kerak: ${requiredQty} ${stockItem.unit}, mavjud: ${stockItem.qty} ${stockItem.unit}).`,
+        stockName: stockItem.name
+      };
+    }
+  }
+  for (const [stockId, requiredQty] of neededPool) {
+    const stockItem = findStockItem(stockPool, stockId);
+    if (!stockItem) continue;
+    if (stockItem.qty < requiredQty) {
+      return {
+        ok: false,
+        reason: `Omborda "${stockItem.name}" yetarli emas (kerak: ${requiredQty} ${stockItem.unit}, mavjud: ${stockItem.qty} ${stockItem.unit}).`,
+        stockName: stockItem.name
+      };
+    }
+  }
+  return { ok: true };
+}
+
+const ORDER_STATUS_TRANSITIONS = {
+  yangi: ['tayyorlanmoqda'],
+  tayyorlanmoqda: ['tayyor'],
+  tayyor: []
+};
+
+function orderNeedsKitchen(order) {
+  const items = (order && order.items) || [];
+  if (!items.length) return true;
+  return items.some(it => !it.directStockId);
+}
+
+function canSetOrderStatus(ctx, order, newStatus) {
+  if (!Object.prototype.hasOwnProperty.call(ORDER_STATUSES, newStatus)) return false;
+
+  // To'lov (karta skrinshoti yoki stoldagi naqd) hali tasdiqlanmagan bo'lsa -
+  // buyurtma holatini HECH KIM (egasi ham) o'zgartira olmasligi kerak,
+  // aks holda mijoz to'lamasdan turib taom tayyorlana boshlaydi.
+  if (order && order.paymentProofStatus === 'kutilmoqda') return false;
+
+  if (ctxHasRole(ctx, 'egasi')) return true;
+
+  const currentStatus = order ? order.status : 'yangi';
+  let allowedNext = ORDER_STATUS_TRANSITIONS[currentStatus] || [];
+
+  if (currentStatus === 'yangi' && !orderNeedsKitchen(order)) {
+    allowedNext = allowedNext.concat('tayyor');
+  }
+  if (!allowedNext.includes(newStatus)) return false;
+
+  if (ctxHasRole(ctx, 'oshpaz') && (newStatus === 'tayyorlanmoqda' || newStatus === 'tayyor')) return true;
+  if (ctxHasRole(ctx, 'kassir') && newStatus === 'tayyor') return true;
+  return false;
+}
+
+authed('/api/create-order', async (payload, res, { user, userId }) => {
+  const { items, orderType, paymentType, requestId, comment } = payload;
+
+  const owners = loadOwners();
+  const ctx = resolveOwnerContext(owners, userId);
+  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
+  if (!ctxHasAnyRole(ctx, ['kassir', 'egasi'])) {
+    return sendFail(res, 'Faqat kassir buyurtma yaratishi mumkin');
+  }
+
+  const cachedResponse = getCachedOrderResponse(ctx.owner.id, userId, requestId);
+  if (cachedResponse) return sendJSON(res, 200, cachedResponse);
+
+  if (!Array.isArray(items) || !items.length) {
+    return sendFail(res, 'Savat bo\'sh. Kamida bitta taom tanlang.');
+  }
+  if (!Object.prototype.hasOwnProperty.call(ORDER_TYPES, orderType)) {
+    return sendFail(res, 'Buyurtma turini tanlang.');
+  }
+  if (!Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, paymentType)) {
+    return sendFail(res, 'To\'lov turini tanlang.');
+  }
+  if (orderType === 'dostavka' && paymentType === 'naqd') {
+    return sendFail(res, 'Bu turdagi naqd to\'lov dostavka buyurtmalarida mavjud emas. "Naqd" (dostavka orqali) yoki Karta tanlang.');
+  }
+
+  if (orderType !== 'dostavka' && paymentType === 'dostavka_orqali') {
+    return sendFail(res, '"Naqd" to\'lovi (dostavkada) faqat Dostavka buyurtmalarida mavjud.');
+  }
+
+  // 4-bosqich: kassir/ega o'zi biriktirilgan (yoki tanlagan) filialning
+  // mustaqil menyusi va skladi asosida buyurtma yaratadi. Combo'lar
+  // hamon markaziy darajada qoladi (filiallarga bog'lanmagan).
+  const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
+  const menuPool = resolveMenuPool(ctx.owner, branchId);
+  if (branchId && !menuPool) return sendFail(res, 'Bunday filial topilmadi.');
+  const stockPool = resolveStockPool(ctx.owner, branchId) || ctx.owner;
+
+  const menu = menuPool.menu || [];
+  const combosAvailable = ctx.owner.combos || [];
+  const orderItems = [];
+  for (const it of items) {
+    const qty = parseInt(it.qty, 10);
+    if (!Number.isInteger(qty) || qty <= 0) return sendFail(res, 'Miqdor noto\'g\'ri.');
+    if (it.isCombo) {
+      const combo = combosAvailable.find(c => c.id === it.id);
+      if (!combo) return sendFail(res, 'Menyuda mavjud bo\'lmagan combo tanlangan.');
+      orderItems.push({ id: combo.id, name: combo.name, price: combo.price, qty, isCombo: true, category: combo.category || null });
+      continue;
+    }
+    const menuItem = menu.find(m => m.id === it.id);
+    if (!menuItem) return sendFail(res, 'Menyuda mavjud bo\'lmagan taom tanlangan.');
+    const priceOpt = resolveMenuItemPriceOption(menuItem, it.priceId);
+    if (!priceOpt.ok) return sendFail(res, priceOpt.reason);
+    orderItems.push({ id: menuItem.id, name: priceOpt.label ? `${menuItem.name} (${priceOpt.label})` : menuItem.name, price: priceOpt.price, priceId: priceOpt.priceId, qty, directStockId: menuItem.directStockId || null, category: menuItem.category || null });
+  }
+  const subtotal = orderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
+  const buy4get1 = computeBuy4Get1FreePromo(orderItems);
+  const total = Math.max(0, subtotal - buy4get1.discountAmount);
+
+  if (!ctx.owner.stock) ctx.owner.stock = [];
+
+  const stockCheck = checkStockAvailabilityPooled(ctx.owner, orderItems, menu, stockPool);
+  if (!stockCheck.ok) {
+    return sendFail(res, stockCheck.reason);
+  }
+
+  for (const it of orderItems) {
+    if (it.isCombo) {
+      const combo = findCombo(ctx.owner, it.id);
+      if (combo) {
+        for (const need of comboStockNeeds(ctx.owner, combo, it.qty)) {
+          const stockItem = findStockItem(ctx.owner, need.stockId);
+          if (!stockItem) continue;
+          stockItem.qty = Math.max(0, Math.round((stockItem.qty - need.qty) * 1000) / 1000);
+          addStockMovement(ctx.owner, {
+            stockId: stockItem.id, stockName: stockItem.name, type: 'chiqim',
+            qty: need.qty, unit: stockItem.unit,
+            note: `Combo: ${combo.name} (${need.viaName}) x${it.qty}`,
+            userId
+          });
+          checkLowStockAlert(ctx.owner, stockItem, userId);
+        }
+      }
+      continue;
+    }
+    const menuItem = menu.find(m => m.id === it.id);
+
+    if (menuItem && menuItem.directStockId) {
+      const stockItem = findStockItem(stockPool, menuItem.directStockId);
+      if (stockItem) {
+        const consumeQty = it.qty;
+        stockItem.qty = Math.max(0, Math.round((stockItem.qty - consumeQty) * 1000) / 1000);
+        addStockMovement(stockPool, {
+          stockId: stockItem.id, stockName: stockItem.name, type: 'chiqim',
+          qty: consumeQty, unit: stockItem.unit,
+          note: `To'g'ridan sotildi: ${menuItem.name} x${it.qty}`,
+          userId
+        });
+        checkLowStockAlert(ctx.owner, stockItem, userId, branchId);
+      }
+      continue;
+    }
+    const recipe = (menuItem && Array.isArray(menuItem.recipe)) ? menuItem.recipe : [];
+    for (const ing of recipe) {
+      const stockItem = findStockItem(stockPool, ing.stockId);
+      if (!stockItem) continue;
+      const consumeQty = Math.round(ing.qty * it.qty * 1000) / 1000;
+      stockItem.qty = Math.max(0, Math.round((stockItem.qty - consumeQty) * 1000) / 1000);
+      addStockMovement(stockPool, {
+        stockId: stockItem.id, stockName: stockItem.name, type: 'chiqim',
+        qty: consumeQty, unit: stockItem.unit,
+        note: `Buyurtma: ${menuItem.name} x${it.qty}`,
+        userId
+      });
+      checkLowStockAlert(ctx.owner, stockItem, userId, branchId);
+    }
+  }
+
+  if (!ctx.owner.orders) ctx.owner.orders = [];
+  const commentFinal = String(comment || '').trim().slice(0, 300) || null;
+  const order = {
+    id: crypto.randomBytes(4).toString('hex'),
+    orderNumber: getNextOrderNumber(ctx.owner),
+    items: orderItems,
+    subtotal,
+    discountAmount: buy4get1.discountAmount,
+    autoPromoNote: buy4get1.noteHtml,
+    total,
+    orderType,
+    paymentType,
+    comment: commentFinal,
+    status: 'yangi',
+    branchId,
+
+    createdAt: new Date().toISOString(),
+    createdBy: userId
+  };
+  ctx.owner.orders.push(order);
+  logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'buyurtma_yaratdi', orderId: order.id, note: `${ORDER_TYPES[orderType]} — ${fmtNum(total)} so'm` });
+  saveOwners(owners);
+
+  const itemsText = orderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
+  const commentLine = commentFinal ? `\n📝 Izoh: ${escapeHtmlServer(commentFinal)}` : '';
+  const autoPromoLine = order.autoPromoNote ? `\n${order.autoPromoNote}` : '';
+  const notifyText = `🆕 <b>Yangi buyurtma</b> (${ORDER_TYPES[orderType]})\n` +
+    `${itemsText}\n\nJami: ${fmtNum(total)} so'm\nTo'lov: ${PAYMENT_TYPES[paymentType]}${commentLine}${autoPromoLine}`;
+  const notifyTargets = [ctx.owner.id, ...((ctx.owner.staff || []).filter(s => staffHasRole(s, 'oshpaz')).map(s => s.id))];
+  await notifyStaffList(ctx.owner, notifyTargets, notifyText, `Buyurtma #${order.id} (kassir)`, 'newOrder');
+  notifyKitchenGroup(ctx.owner, order, `Yaratdi: ${escapeHtmlServer(displayName(user))} (kassir)`);
+  saveOwners(owners);
+
+  const successResponse = { ok: true, orderId: order.id, total };
+  setCachedOrderResponse(ctx.owner.id, userId, requestId, successResponse);
+  return sendJSON(res, 200, successResponse);
+});
+
+// Mavjud buyurtmani tahrirlash (kassir yoki egasi): mahsulot qo'shish/olib tashlash/
+// miqdorini o'zgartirish — mijoz qo'shimcha narsa xohlasa yangi buyurtma ochmasdan,
+// shu buyurtmani tahrirlab qo'yish uchun. Faqat hali oshxonaga "Tayyor" bo'lmagan
+// (yangi / tayyorlanmoqda) buyurtmalarni tahrirlash mumkin.
+authed('/api/edit-order', async (payload, res, { userId }) => {
+  const { orderId, items, orderType, paymentType, comment } = payload;
+
+  const owners = loadOwners();
+  const ctx = resolveOwnerContext(owners, userId);
+  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
+  if (!ctxHasAnyRole(ctx, ['kassir', 'egasi'])) {
+    return sendFail(res, 'Faqat kassir yoki ega buyurtmani tahrirlashi mumkin');
+  }
+  if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendFeatureBlocked(res, 'orders-manage');
+
+  const order = (ctx.owner.orders || []).find(o => o.id === orderId);
+  if (!order) return sendFail(res, 'Buyurtma topilmadi.');
+
+  if (order.paymentProofStatus === 'kutilmoqda') {
+    return sendFail(res, 'To\'lovi hali tasdiqlanmagan buyurtmani tahrirlab bo\'lmaydi.');
+  }
+  if (order.status === 'bekor_qilindi') {
+    return sendFail(res, 'Bekor qilingan buyurtmani tahrirlab bo\'lmaydi.');
+  }
+
+  if (!Array.isArray(items) || !items.length) {
+    return sendFail(res, 'Savat bo\'sh. Kamida bitta taom qoldiring.');
+  }
+
+  const finalOrderType = Object.prototype.hasOwnProperty.call(ORDER_TYPES, orderType) ? orderType : order.orderType;
+  const finalPaymentType = Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, paymentType) ? paymentType : order.paymentType;
+  if (finalOrderType === 'dostavka' && finalPaymentType === 'naqd') {
+    return sendFail(res, 'Bu turdagi naqd to\'lov dostavka buyurtmalarida mavjud emas. "Naqd" (dostavka orqali) yoki Karta tanlang.');
+  }
+  if (finalOrderType !== 'dostavka' && finalPaymentType === 'dostavka_orqali') {
+    return sendFail(res, '"Naqd" to\'lovi (dostavkada) faqat Dostavka buyurtmalarida mavjud.');
+  }
+
+  // 4-bosqich: buyurtma qaysi filialga tegishli bo'lsa (order.branchId),
+  // tahrirlash ham o'sha filialning mustaqil menyusi/skladi asosida
+  // amalga oshiriladi (combo'lar hamon markaziy darajada qoladi).
+  const branchId = order.branchId || null;
+  const menuPool = resolveMenuPool(ctx.owner, branchId) || ctx.owner;
+  const stockPool = resolveStockPool(ctx.owner, branchId) || ctx.owner;
+
+  const menu = menuPool.menu || [];
+  const combosAvailable = ctx.owner.combos || [];
+  const newOrderItems = [];
+  for (const it of items) {
+    const qty = parseInt(it.qty, 10);
+    if (!Number.isInteger(qty) || qty <= 0) return sendFail(res, 'Miqdor noto\'g\'ri.');
+    if (it.isCombo) {
+      const combo = combosAvailable.find(c => c.id === it.id);
+      if (!combo) return sendFail(res, 'Menyuda mavjud bo\'lmagan combo tanlangan.');
+      newOrderItems.push({ id: combo.id, name: combo.name, price: combo.price, qty, isCombo: true, category: combo.category || null });
+      continue;
+    }
+    const menuItem = menu.find(m => m.id === it.id);
+    if (!menuItem) return sendFail(res, 'Menyuda mavjud bo\'lmagan taom tanlangan.');
+    const priceOpt = resolveMenuItemPriceOption(menuItem, it.priceId);
+    if (!priceOpt.ok) return sendFail(res, priceOpt.reason);
+    newOrderItems.push({ id: menuItem.id, name: priceOpt.label ? `${menuItem.name} (${priceOpt.label})` : menuItem.name, price: priceOpt.price, priceId: priceOpt.priceId, qty, directStockId: menuItem.directStockId || null, category: menuItem.category || null });
+  }
+  const newSubtotal = newOrderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
+  const newBuy4get1 = computeBuy4Get1FreePromo(newOrderItems);
+  const newTotal = Math.max(0, newSubtotal - newBuy4get1.discountAmount);
+
+  // Buyurtma allaqachon "Tayyor" bo'lgan bo'lsa-yu, kassir shu tahrirlashda
+  // yangi mahsulot qo'shsa (yoki miqdorini oshirsa) — o'sha ORTIQCHA qismni
+  // aniqlab olamiz, keyinroq shuni alohida oshxona guruhiga yuboramiz.
+  const orderWasReady = order.status === 'tayyor';
+  const itemKey = (it) => `${it.isCombo ? 'combo:' : ''}${it.id}:${it.priceId || ''}`;
+  const oldQtyByKey = new Map();
+  (order.items || []).forEach(it => {
+    const k = itemKey(it);
+    oldQtyByKey.set(k, (oldQtyByKey.get(k) || 0) + it.qty);
+  });
+  const addedItems = [];
+  newOrderItems.forEach(it => {
+    const delta = it.qty - (oldQtyByKey.get(itemKey(it)) || 0);
+    if (delta > 0) addedItems.push({ name: it.name, qty: delta });
+  });
+
+  if (!ctx.owner.stock) ctx.owner.stock = [];
+
+  // Har bir mahsulot ro'yxati uchun kerakli ombor miqdorlarini hisoblaydi
+  // (create-order'dagi checkStockAvailabilityPooled bilan bir xil mantiq):
+  // combo'lar markaziy ombordan, oddiy taomlar esa filial (yoki markaziy)
+  // skladidan alohida hisoblanadi.
+  function stockNeedsForItems(orderItems) {
     const neededCombo = new Map();
     const neededPool = new Map();
     for (const it of orderItems) {
       if (it.isCombo) {
-        const combo = findCombo(owner, it.id);
+        const combo = findCombo(ctx.owner, it.id);
         if (!combo) continue;
-        for (const need of comboStockNeeds(owner, combo, it.qty)) {
+        for (const need of comboStockNeeds(ctx.owner, combo, it.qty)) {
           neededCombo.set(need.stockId, Math.round(((neededCombo.get(need.stockId) || 0) + need.qty) * 1000) / 1000);
         }
         continue;
       }
       const menuItem = menu.find(m => m.id === it.id);
       if (menuItem && menuItem.directStockId) {
-        const consumeQty = it.qty;
-        neededPool.set(menuItem.directStockId, Math.round(((neededPool.get(menuItem.directStockId) || 0) + consumeQty) * 1000) / 1000);
+        neededPool.set(menuItem.directStockId, Math.round(((neededPool.get(menuItem.directStockId) || 0) + it.qty) * 1000) / 1000);
         continue;
       }
       const recipe = (menuItem && Array.isArray(menuItem.recipe)) ? menuItem.recipe : [];
@@ -7483,4438 +7281,3388 @@ function handleRequest(req, res) {
         neededPool.set(ing.stockId, Math.round(((neededPool.get(ing.stockId) || 0) + consumeQty) * 1000) / 1000);
       }
     }
-    for (const [stockId, requiredQty] of neededCombo) {
-      const stockItem = findStockItem(owner, stockId);
-      if (!stockItem) continue;
-      if (stockItem.qty < requiredQty) {
-        return {
-          ok: false,
-          reason: `Omborda "${stockItem.name}" yetarli emas (kerak: ${requiredQty} ${stockItem.unit}, mavjud: ${stockItem.qty} ${stockItem.unit}).`,
-          stockName: stockItem.name
-        };
-      }
-    }
-    for (const [stockId, requiredQty] of neededPool) {
-      const stockItem = findStockItem(stockPool, stockId);
-      if (!stockItem) continue;
-      if (stockItem.qty < requiredQty) {
-        return {
-          ok: false,
-          reason: `Omborda "${stockItem.name}" yetarli emas (kerak: ${requiredQty} ${stockItem.unit}, mavjud: ${stockItem.qty} ${stockItem.unit}).`,
-          stockName: stockItem.name
-        };
-      }
-    }
-    return { ok: true };
+    return { neededCombo, neededPool };
   }
 
-  const ORDER_STATUS_TRANSITIONS = {
-    yangi: ['tayyorlanmoqda'],
-    tayyorlanmoqda: ['tayyor'],
-    tayyor: []
+  // Eski buyurtma allaqachon ombordan yechilgan edi — shuning uchun faqat
+  // ESKI va YANGI ehtiyoj o'rtasidagi FARQNI (delta) ombordan yechamiz yoki qaytaramiz.
+  const oldNeeds = stockNeedsForItems(order.items || []);
+  const newNeeds = stockNeedsForItems(newOrderItems);
+
+  function computeDeltas(oldMap, newMap) {
+    const ids = new Set([...oldMap.keys(), ...newMap.keys()]);
+    const deltas = new Map();
+    for (const id of ids) {
+      const delta = Math.round(((newMap.get(id) || 0) - (oldMap.get(id) || 0)) * 1000) / 1000;
+      if (delta !== 0) deltas.set(id, delta);
+    }
+    return deltas;
+  }
+
+  const comboDeltas = computeDeltas(oldNeeds.neededCombo, newNeeds.neededCombo);
+  const poolDeltas = computeDeltas(oldNeeds.neededPool, newNeeds.neededPool);
+
+  for (const [stockId, delta] of comboDeltas) {
+    if (delta <= 0) continue;
+    const stockItem = findStockItem(ctx.owner, stockId);
+    if (!stockItem) continue;
+    if (stockItem.qty < delta) {
+      return sendFail(res, `Omborda "${stockItem.name}" yetarli emas (kerak: ${delta} ${stockItem.unit}, mavjud: ${stockItem.qty} ${stockItem.unit}).`);
+    }
+  }
+  for (const [stockId, delta] of poolDeltas) {
+    if (delta <= 0) continue;
+    const stockItem = findStockItem(stockPool, stockId);
+    if (!stockItem) continue;
+    if (stockItem.qty < delta) {
+      return sendFail(res, `Omborda "${stockItem.name}" yetarli emas (kerak: ${delta} ${stockItem.unit}, mavjud: ${stockItem.qty} ${stockItem.unit}).`);
+    }
+  }
+
+  for (const [stockId, delta] of comboDeltas) {
+    const stockItem = findStockItem(ctx.owner, stockId);
+    if (!stockItem) continue;
+    stockItem.qty = Math.max(0, Math.round((stockItem.qty - delta) * 1000) / 1000);
+    addStockMovement(ctx.owner, {
+      stockId: stockItem.id, stockName: stockItem.name, type: delta > 0 ? 'chiqim' : 'kirim',
+      qty: Math.abs(delta), unit: stockItem.unit,
+      note: `Buyurtma tahrirlandi: #${order.orderNumber || order.id}`,
+      userId
+    });
+    checkLowStockAlert(ctx.owner, stockItem, userId);
+  }
+  for (const [stockId, delta] of poolDeltas) {
+    const stockItem = findStockItem(stockPool, stockId);
+    if (!stockItem) continue;
+    stockItem.qty = Math.max(0, Math.round((stockItem.qty - delta) * 1000) / 1000);
+    addStockMovement(stockPool, {
+      stockId: stockItem.id, stockName: stockItem.name, type: delta > 0 ? 'chiqim' : 'kirim',
+      qty: Math.abs(delta), unit: stockItem.unit,
+      note: `Buyurtma tahrirlandi: #${order.orderNumber || order.id}`,
+      userId
+    });
+    checkLowStockAlert(ctx.owner, stockItem, userId, branchId);
+  }
+
+  const oldItemsSummary = (order.items || []).map(it => `${it.name} x${it.qty}`).join(', ') || '—';
+  order.items = newOrderItems;
+  order.subtotal = newSubtotal;
+  order.discountAmount = newBuy4get1.discountAmount;
+  order.autoPromoNote = newBuy4get1.noteHtml;
+  order.total = newTotal;
+  order.orderType = finalOrderType;
+  order.paymentType = finalPaymentType;
+  if (Object.prototype.hasOwnProperty.call(payload, 'comment')) {
+    order.comment = String(comment || '').trim().slice(0, 300) || null;
+  }
+  order.editedAt = new Date().toISOString();
+  order.editedBy = userId;
+
+  logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'buyurtma_tahrirlandi', orderId: order.id, note: `Yangi: ${fmtNum(newTotal)} so'm (avvalgi: ${oldItemsSummary})` });
+  saveOwners(owners);
+
+  const itemsText = newOrderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
+  const editCommentLine = order.comment ? `\n📝 Izoh: ${escapeHtmlServer(order.comment)}` : '';
+  const editAutoPromoLine = order.autoPromoNote ? `\n${order.autoPromoNote}` : '';
+  const notifyText = `✏️ <b>Buyurtma tahrirlandi</b> (${ORDER_TYPES[finalOrderType]})\n${itemsText}\n\nJami: ${fmtNum(newTotal)} so'm\nTo'lov: ${PAYMENT_TYPES[finalPaymentType]}${editCommentLine}${editAutoPromoLine}`;
+  const notifyTargets = [ctx.owner.id, ...((ctx.owner.staff || []).filter(s => staffHasRole(s, 'oshpaz')).map(s => s.id))];
+  await notifyStaffList(ctx.owner, notifyTargets, notifyText, `Buyurtma #${order.id} tahrirlandi`, 'newOrder');
+  saveOwners(owners);
+
+  // Buyurtma "Tayyor" bo'lgach qo'shilgan mahsulotlar — alohida oshxona
+  // guruhiga, o'zining mustaqil "Tayyor" tugmasi bilan yuboriladi.
+  if (orderWasReady && addedItems.length) {
+    const addition = {
+      id: crypto.randomBytes(4).toString('hex'),
+      items: addedItems,
+      createdAt: new Date().toISOString(),
+      createdBy: userId,
+      ready: false,
+      readyBy: null,
+      readyAt: null
+    };
+    if (!order.additions) order.additions = [];
+    order.additions.push(addition);
+    saveOwners(owners);
+
+    const addGroups = resolveOrderGroupIds(ctx.owner, order);
+    if (addGroups.kitchenGroupId && ownerCanUseFeature(ctx.owner, 'kitchen-group')) {
+      const addItemsText = addedItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
+      const orderLabel = `#${order.orderNumber || order.id}`;
+      const addText = `➕ <b>Qo'shimcha buyurtma</b> (Buyurtma ${orderLabel})\n${addItemsText}`;
+      sendMessage(addGroups.kitchenGroupId, addText, {
+        inline_keyboard: [[
+          { text: '✅ Tayyor', callback_data: `kgaddready:${ctx.owner.id}:${order.id}:${addition.id}` }
+        ]]
+      }, addGroups.kitchenGroupThreadId).then(result => {
+        if (result && result.ok && result.result && result.result.message_id) {
+          const owners2 = loadOwners();
+          const o2 = findOwner(owners2, ctx.owner.id);
+          const ord2 = o2 && (o2.orders || []).find(x => x.id === order.id);
+          const add2 = ord2 && (ord2.additions || []).find(a => a.id === addition.id);
+          if (add2) {
+            add2.kitchenGroupMsgId = result.result.message_id;
+            saveOwners(owners2);
+          }
+        }
+      }).catch(err => {
+        console.error(`[kgaddready xabar xatosi] owner=${ctx.owner.id} order=${order.id}: ${(err && err.message) || err}`);
+      });
+    }
+  }
+
+  return sendOk(res, { order });
+});
+
+authed('/api/orders-list', (payload, res, { userId }) => {
+  const owners = pruneExpiredOwners();
+  const ctx = resolveOwnerContext(owners, userId);
+  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
+  if (!ctxHasAnyRole(ctx, ['egasi', 'kassir', 'oshpaz', 'dostavka'])) {
+    return sendFail(res, 'Bu bo\'limni ko\'rishga ruxsatingiz yo\'q');
+  }
+  if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendFeatureBlocked(res, 'orders-manage');
+
+  let orders = (ctx.owner.orders || [])
+    .slice()
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+  if (ctx.role === 'egasi') {
+    const branchId = Object.prototype.hasOwnProperty.call(payload, 'branchId') ? payload.branchId : undefined;
+    orders = orders.filter(o => matchesBranchFilter(o, branchId));
+  } else if (ctx.branchId) {
+    orders = orders.filter(o => (o.branchId || null) === ctx.branchId);
+  }
+
+  if (ctxHasRole(ctx, 'dostavka')) {
+    orders = orders.filter(o => o.orderType === 'dostavka' && o.status === 'tayyor' && !o.deliveredBy);
+  }
+
+  orders = orders.slice(0, 100);
+  return sendOk(res, { orders, role: ctx.role });
+});
+
+function filterOwnerOrderHistory(ctx, payload) {
+  const { dateFrom, dateTo, employeeId, paymentType, orderType } = payload;
+  let orders = (ctx.owner.orders || []).slice();
+
+  if (dateFrom) {
+    const from = new Date(dateFrom + 'T00:00:00');
+    if (!isNaN(from.getTime())) orders = orders.filter(o => new Date(o.createdAt) >= from);
+  }
+  if (dateTo) {
+    const to = new Date(dateTo + 'T23:59:59');
+    if (!isNaN(to.getTime())) orders = orders.filter(o => new Date(o.createdAt) <= to);
+  }
+  if (employeeId) {
+    orders = orders.filter(o => String(o.createdBy) === String(employeeId));
+  }
+  if (paymentType && Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, paymentType)) {
+    orders = orders.filter(o => o.paymentType === paymentType);
+  }
+  if (orderType && Object.prototype.hasOwnProperty.call(ORDER_TYPES, orderType)) {
+    orders = orders.filter(o => o.orderType === orderType);
+  }
+  orders.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+  const nameCache = new Map();
+  const staffNameById = (id) => {
+    if (!id) return null;
+    if (nameCache.has(id)) return nameCache.get(id);
+    let name;
+    if (String(id) === String(ctx.owner.id)) {
+      name = 'Egasi';
+    } else {
+      const staff = (ctx.owner.staff || []).find(s => String(s.id) === String(id));
+      name = staff ? staffDisplayName(staff) : `ID: ${id}`;
+    }
+    nameCache.set(id, name);
+    return name;
   };
 
-  function orderNeedsKitchen(order) {
-    const items = (order && order.items) || [];
-    if (!items.length) return true;
-    return items.some(it => !it.directStockId);
+  return { orders, staffNameById };
+}
+
+authed('/api/order-history', (payload, res, { userId }) => {
+  const owners = pruneExpiredOwners();
+  const ctx = resolveOwnerContext(owners, userId);
+  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
+  if (!isOwnerAccessValid(ctx.owner) || ctx.role !== 'egasi') {
+    return sendFail(res, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
   }
 
-  function canSetOrderStatus(ctx, order, newStatus) {
-    if (!Object.prototype.hasOwnProperty.call(ORDER_STATUSES, newStatus)) return false;
+  let page = parseInt(payload.page, 10);
+  if (!Number.isFinite(page) || page < 1) page = 1;
+  const PAGE_SIZE = 30;
 
-    // To'lov (karta skrinshoti yoki stoldagi naqd) hali tasdiqlanmagan bo'lsa -
-    // buyurtma holatini HECH KIM (egasi ham) o'zgartira olmasligi kerak,
-    // aks holda mijoz to'lamasdan turib taom tayyorlana boshlaydi.
-    if (order && order.paymentProofStatus === 'kutilmoqda') return false;
+  const { orders, staffNameById } = filterOwnerOrderHistory(ctx, payload);
 
-    if (ctxHasRole(ctx, 'egasi')) return true;
+  const totalCount = orders.length;
+  const totalSum = orders.reduce((sum, o) => sum + (o.total || 0), 0);
+  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
+  if (page > totalPages) page = totalPages;
+  const pageOrders = orders.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
 
-    const currentStatus = order ? order.status : 'yangi';
-    let allowedNext = ORDER_STATUS_TRANSITIONS[currentStatus] || [];
+  const resultOrders = pageOrders.map(o => ({
+    id: o.id,
+    items: o.items,
+    total: o.total,
+    orderType: o.orderType,
+    paymentType: o.paymentType,
+    status: o.status,
+    createdAt: o.createdAt,
+    createdBy: o.createdBy,
+    createdByName: staffNameById(o.createdBy)
+  }));
 
-    if (currentStatus === 'yangi' && !orderNeedsKitchen(order)) {
-      allowedNext = allowedNext.concat('tayyor');
-    }
-    if (!allowedNext.includes(newStatus)) return false;
+  const employees = [{ id: ctx.owner.id, name: 'Egasi' }];
+  (ctx.owner.staff || []).forEach(s => {
+    employees.push({ id: s.id, name: staffDisplayName(s) });
+  });
 
-    if (ctxHasRole(ctx, 'oshpaz') && (newStatus === 'tayyorlanmoqda' || newStatus === 'tayyor')) return true;
-    if (ctxHasRole(ctx, 'kassir') && newStatus === 'tayyor') return true;
-    return false;
+  return sendOk(res, {
+    orders: resultOrders,
+    page, totalPages, totalCount, totalSum,
+    pageSize: PAGE_SIZE,
+    employees
+  });
+});
+
+function pdfSanitizeText(s) {
+  return String(s == null ? '' : s).replace(/[\r\n\t]/g, ' ').split('').map(ch => {
+    const code = ch.charCodeAt(0);
+    return (code >= 0x20 && code <= 0x7E) || (code >= 0xA0 && code <= 0xFF) ? ch : '?';
+  }).join('');
+}
+function pdfEscapeText(s) {
+  return s.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+}
+function pdfCellText(value, width, fontSize) {
+  const avgCharWidth = fontSize * 0.56;
+  const maxChars = Math.max(1, Math.floor(width / avgCharWidth));
+  let t = pdfSanitizeText(value);
+  if (t.length > maxChars) t = t.slice(0, Math.max(0, maxChars - 2)) + '..';
+  return pdfEscapeText(t);
+}
+
+function buildSimplePdfReport(title, generatedAtLabel, headers, colWidths, rows) {
+  const pageWidth = 595, pageHeight = 842;
+  const marginX = 40, topY = 802, bottomMargin = 40;
+  const titleFontSize = 13, headerFontSize = 8, cellFontSize = 7.5, lineHeight = 13;
+  const headerY = topY - 26;
+  const firstRowY = headerY - lineHeight - 2;
+  const rowsPerPage = Math.max(5, Math.floor((firstRowY - bottomMargin) / lineHeight));
+
+  const pages = [];
+  for (let i = 0; i < rows.length; i += rowsPerPage) pages.push(rows.slice(i, i + rowsPerPage));
+  if (!pages.length) pages.push([]);
+
+  function colX(idx) {
+    let x = marginX;
+    for (let i = 0; i < idx; i++) x += colWidths[i];
+    return x;
   }
 
-  if (req.method === 'POST' && req.url === '/api/create-order') {
-    readBody(req, async (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, items, orderType, paymentType, requestId, comment } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
-      if (!ctxHasAnyRole(ctx, ['kassir', 'egasi'])) {
-        return sendJSON(res, 200, { ok: false, reason: 'Faqat kassir buyurtma yaratishi mumkin' });
-      }
-
-      const cachedResponse = getCachedOrderResponse(ctx.owner.id, userId, requestId);
-      if (cachedResponse) return sendJSON(res, 200, cachedResponse);
-
-      if (!Array.isArray(items) || !items.length) {
-        return sendJSON(res, 200, { ok: false, reason: 'Savat bo\'sh. Kamida bitta taom tanlang.' });
-      }
-      if (!Object.prototype.hasOwnProperty.call(ORDER_TYPES, orderType)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Buyurtma turini tanlang.' });
-      }
-      if (!Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, paymentType)) {
-        return sendJSON(res, 200, { ok: false, reason: 'To\'lov turini tanlang.' });
-      }
-      if (orderType === 'dostavka' && paymentType === 'naqd') {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu turdagi naqd to\'lov dostavka buyurtmalarida mavjud emas. "Naqd" (dostavka orqali) yoki Karta tanlang.' });
-      }
-
-      if (orderType !== 'dostavka' && paymentType === 'dostavka_orqali') {
-        return sendJSON(res, 200, { ok: false, reason: '"Naqd" to\'lovi (dostavkada) faqat Dostavka buyurtmalarida mavjud.' });
-      }
-
-      // 4-bosqich: kassir/ega o'zi biriktirilgan (yoki tanlagan) filialning
-      // mustaqil menyusi va skladi asosida buyurtma yaratadi. Combo'lar
-      // hamon markaziy darajada qoladi (filiallarga bog'lanmagan).
-      const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
-      const menuPool = resolveMenuPool(ctx.owner, branchId);
-      if (branchId && !menuPool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi.' });
-      const stockPool = resolveStockPool(ctx.owner, branchId) || ctx.owner;
-
-      const menu = menuPool.menu || [];
-      const combosAvailable = ctx.owner.combos || [];
-      const orderItems = [];
-      for (const it of items) {
-        const qty = parseInt(it.qty, 10);
-        if (!Number.isInteger(qty) || qty <= 0) return sendJSON(res, 200, { ok: false, reason: 'Miqdor noto\'g\'ri.' });
-        if (it.isCombo) {
-          const combo = combosAvailable.find(c => c.id === it.id);
-          if (!combo) return sendJSON(res, 200, { ok: false, reason: 'Menyuda mavjud bo\'lmagan combo tanlangan.' });
-          orderItems.push({ id: combo.id, name: combo.name, price: combo.price, qty, isCombo: true, category: combo.category || null });
-          continue;
-        }
-        const menuItem = menu.find(m => m.id === it.id);
-        if (!menuItem) return sendJSON(res, 200, { ok: false, reason: 'Menyuda mavjud bo\'lmagan taom tanlangan.' });
-        const priceOpt = resolveMenuItemPriceOption(menuItem, it.priceId);
-        if (!priceOpt.ok) return sendJSON(res, 200, { ok: false, reason: priceOpt.reason });
-        orderItems.push({ id: menuItem.id, name: priceOpt.label ? `${menuItem.name} (${priceOpt.label})` : menuItem.name, price: priceOpt.price, priceId: priceOpt.priceId, qty, directStockId: menuItem.directStockId || null, category: menuItem.category || null });
-      }
-      const subtotal = orderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
-      const buy4get1 = computeBuy4Get1FreePromo(orderItems);
-      const total = Math.max(0, subtotal - buy4get1.discountAmount);
-
-      if (!ctx.owner.stock) ctx.owner.stock = [];
-
-      const stockCheck = checkStockAvailabilityPooled(ctx.owner, orderItems, menu, stockPool);
-      if (!stockCheck.ok) {
-        return sendJSON(res, 200, { ok: false, reason: stockCheck.reason });
-      }
-
-      for (const it of orderItems) {
-        if (it.isCombo) {
-          const combo = findCombo(ctx.owner, it.id);
-          if (combo) {
-            for (const need of comboStockNeeds(ctx.owner, combo, it.qty)) {
-              const stockItem = findStockItem(ctx.owner, need.stockId);
-              if (!stockItem) continue;
-              stockItem.qty = Math.max(0, Math.round((stockItem.qty - need.qty) * 1000) / 1000);
-              addStockMovement(ctx.owner, {
-                stockId: stockItem.id, stockName: stockItem.name, type: 'chiqim',
-                qty: need.qty, unit: stockItem.unit,
-                note: `Combo: ${combo.name} (${need.viaName}) x${it.qty}`,
-                userId
-              });
-              checkLowStockAlert(ctx.owner, stockItem, userId);
-            }
-          }
-          continue;
-        }
-        const menuItem = menu.find(m => m.id === it.id);
-
-        if (menuItem && menuItem.directStockId) {
-          const stockItem = findStockItem(stockPool, menuItem.directStockId);
-          if (stockItem) {
-            const consumeQty = it.qty;
-            stockItem.qty = Math.max(0, Math.round((stockItem.qty - consumeQty) * 1000) / 1000);
-            addStockMovement(stockPool, {
-              stockId: stockItem.id, stockName: stockItem.name, type: 'chiqim',
-              qty: consumeQty, unit: stockItem.unit,
-              note: `To'g'ridan sotildi: ${menuItem.name} x${it.qty}`,
-              userId
-            });
-            checkLowStockAlert(ctx.owner, stockItem, userId, branchId);
-          }
-          continue;
-        }
-        const recipe = (menuItem && Array.isArray(menuItem.recipe)) ? menuItem.recipe : [];
-        for (const ing of recipe) {
-          const stockItem = findStockItem(stockPool, ing.stockId);
-          if (!stockItem) continue;
-          const consumeQty = Math.round(ing.qty * it.qty * 1000) / 1000;
-          stockItem.qty = Math.max(0, Math.round((stockItem.qty - consumeQty) * 1000) / 1000);
-          addStockMovement(stockPool, {
-            stockId: stockItem.id, stockName: stockItem.name, type: 'chiqim',
-            qty: consumeQty, unit: stockItem.unit,
-            note: `Buyurtma: ${menuItem.name} x${it.qty}`,
-            userId
-          });
-          checkLowStockAlert(ctx.owner, stockItem, userId, branchId);
-        }
-      }
-
-      if (!ctx.owner.orders) ctx.owner.orders = [];
-      const commentFinal = String(comment || '').trim().slice(0, 300) || null;
-      const order = {
-        id: crypto.randomBytes(4).toString('hex'),
-        orderNumber: getNextOrderNumber(ctx.owner),
-        items: orderItems,
-        subtotal,
-        discountAmount: buy4get1.discountAmount,
-        autoPromoNote: buy4get1.noteHtml,
-        total,
-        orderType,
-        paymentType,
-        comment: commentFinal,
-        status: 'yangi',
-        branchId,
-
-        createdAt: new Date().toISOString(),
-        createdBy: userId
-      };
-      ctx.owner.orders.push(order);
-      logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'buyurtma_yaratdi', orderId: order.id, note: `${ORDER_TYPES[orderType]} — ${fmtNum(total)} so'm` });
-      saveOwners(owners);
-
-      const itemsText = orderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
-      const commentLine = commentFinal ? `\n📝 Izoh: ${escapeHtmlServer(commentFinal)}` : '';
-      const autoPromoLine = order.autoPromoNote ? `\n${order.autoPromoNote}` : '';
-      const notifyText = `🆕 <b>Yangi buyurtma</b> (${ORDER_TYPES[orderType]})\n` +
-        `${itemsText}\n\nJami: ${fmtNum(total)} so'm\nTo'lov: ${PAYMENT_TYPES[paymentType]}${commentLine}${autoPromoLine}`;
-      const notifyTargets = [ctx.owner.id, ...((ctx.owner.staff || []).filter(s => staffHasRole(s, 'oshpaz')).map(s => s.id))];
-      await notifyStaffList(ctx.owner, notifyTargets, notifyText, `Buyurtma #${order.id} (kassir)`, 'newOrder');
-      notifyKitchenGroup(ctx.owner, order, `Yaratdi: ${escapeHtmlServer(displayName(check.user))} (kassir)`);
-      saveOwners(owners);
-
-      const successResponse = { ok: true, orderId: order.id, total };
-      setCachedOrderResponse(ctx.owner.id, userId, requestId, successResponse);
-      return sendJSON(res, 200, successResponse);
+  const pageStreams = pages.map((pageRows, pIdx) => {
+    let s = 'BT\n';
+    s += `/F1 ${titleFontSize} Tf\n1 0 0 1 ${marginX} ${topY} Tm\n(${pdfEscapeText(pdfSanitizeText(title))}) Tj\n`;
+    s += `/F1 7 Tf\n1 0 0 1 ${pageWidth - marginX - 130} ${topY} Tm\n(${pdfEscapeText(pdfSanitizeText(generatedAtLabel))}) Tj\n`;
+    s += `/F1 ${headerFontSize} Tf\n`;
+    headers.forEach((h, i) => {
+      s += `1 0 0 1 ${colX(i)} ${headerY} Tm\n(${pdfCellText(h, colWidths[i], headerFontSize)}) Tj\n`;
     });
-    return;
-  }
-
-  // Mavjud buyurtmani tahrirlash (kassir yoki egasi): mahsulot qo'shish/olib tashlash/
-  // miqdorini o'zgartirish — mijoz qo'shimcha narsa xohlasa yangi buyurtma ochmasdan,
-  // shu buyurtmani tahrirlab qo'yish uchun. Faqat hali oshxonaga "Tayyor" bo'lmagan
-  // (yangi / tayyorlanmoqda) buyurtmalarni tahrirlash mumkin.
-  if (req.method === 'POST' && req.url === '/api/edit-order') {
-    readBody(req, async (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, orderId, items, orderType, paymentType, comment } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
-      if (!ctxHasAnyRole(ctx, ['kassir', 'egasi'])) {
-        return sendJSON(res, 200, { ok: false, reason: 'Faqat kassir yoki ega buyurtmani tahrirlashi mumkin' });
-      }
-      if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendJSON(res, 200, featureBlockedResult('orders-manage'));
-
-      const order = (ctx.owner.orders || []).find(o => o.id === orderId);
-      if (!order) return sendJSON(res, 200, { ok: false, reason: 'Buyurtma topilmadi.' });
-
-      if (order.paymentProofStatus === 'kutilmoqda') {
-        return sendJSON(res, 200, { ok: false, reason: 'To\'lovi hali tasdiqlanmagan buyurtmani tahrirlab bo\'lmaydi.' });
-      }
-      if (order.status === 'bekor_qilindi') {
-        return sendJSON(res, 200, { ok: false, reason: 'Bekor qilingan buyurtmani tahrirlab bo\'lmaydi.' });
-      }
-
-      if (!Array.isArray(items) || !items.length) {
-        return sendJSON(res, 200, { ok: false, reason: 'Savat bo\'sh. Kamida bitta taom qoldiring.' });
-      }
-
-      const finalOrderType = Object.prototype.hasOwnProperty.call(ORDER_TYPES, orderType) ? orderType : order.orderType;
-      const finalPaymentType = Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, paymentType) ? paymentType : order.paymentType;
-      if (finalOrderType === 'dostavka' && finalPaymentType === 'naqd') {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu turdagi naqd to\'lov dostavka buyurtmalarida mavjud emas. "Naqd" (dostavka orqali) yoki Karta tanlang.' });
-      }
-      if (finalOrderType !== 'dostavka' && finalPaymentType === 'dostavka_orqali') {
-        return sendJSON(res, 200, { ok: false, reason: '"Naqd" to\'lovi (dostavkada) faqat Dostavka buyurtmalarida mavjud.' });
-      }
-
-      // 4-bosqich: buyurtma qaysi filialga tegishli bo'lsa (order.branchId),
-      // tahrirlash ham o'sha filialning mustaqil menyusi/skladi asosida
-      // amalga oshiriladi (combo'lar hamon markaziy darajada qoladi).
-      const branchId = order.branchId || null;
-      const menuPool = resolveMenuPool(ctx.owner, branchId) || ctx.owner;
-      const stockPool = resolveStockPool(ctx.owner, branchId) || ctx.owner;
-
-      const menu = menuPool.menu || [];
-      const combosAvailable = ctx.owner.combos || [];
-      const newOrderItems = [];
-      for (const it of items) {
-        const qty = parseInt(it.qty, 10);
-        if (!Number.isInteger(qty) || qty <= 0) return sendJSON(res, 200, { ok: false, reason: 'Miqdor noto\'g\'ri.' });
-        if (it.isCombo) {
-          const combo = combosAvailable.find(c => c.id === it.id);
-          if (!combo) return sendJSON(res, 200, { ok: false, reason: 'Menyuda mavjud bo\'lmagan combo tanlangan.' });
-          newOrderItems.push({ id: combo.id, name: combo.name, price: combo.price, qty, isCombo: true, category: combo.category || null });
-          continue;
-        }
-        const menuItem = menu.find(m => m.id === it.id);
-        if (!menuItem) return sendJSON(res, 200, { ok: false, reason: 'Menyuda mavjud bo\'lmagan taom tanlangan.' });
-        const priceOpt = resolveMenuItemPriceOption(menuItem, it.priceId);
-        if (!priceOpt.ok) return sendJSON(res, 200, { ok: false, reason: priceOpt.reason });
-        newOrderItems.push({ id: menuItem.id, name: priceOpt.label ? `${menuItem.name} (${priceOpt.label})` : menuItem.name, price: priceOpt.price, priceId: priceOpt.priceId, qty, directStockId: menuItem.directStockId || null, category: menuItem.category || null });
-      }
-      const newSubtotal = newOrderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
-      const newBuy4get1 = computeBuy4Get1FreePromo(newOrderItems);
-      const newTotal = Math.max(0, newSubtotal - newBuy4get1.discountAmount);
-
-      // Buyurtma allaqachon "Tayyor" bo'lgan bo'lsa-yu, kassir shu tahrirlashda
-      // yangi mahsulot qo'shsa (yoki miqdorini oshirsa) — o'sha ORTIQCHA qismni
-      // aniqlab olamiz, keyinroq shuni alohida oshxona guruhiga yuboramiz.
-      const orderWasReady = order.status === 'tayyor';
-      const itemKey = (it) => `${it.isCombo ? 'combo:' : ''}${it.id}:${it.priceId || ''}`;
-      const oldQtyByKey = new Map();
-      (order.items || []).forEach(it => {
-        const k = itemKey(it);
-        oldQtyByKey.set(k, (oldQtyByKey.get(k) || 0) + it.qty);
+    s += `/F1 ${cellFontSize} Tf\n`;
+    pageRows.forEach((row, ri) => {
+      const y = firstRowY - ri * lineHeight;
+      row.forEach((val, ci) => {
+        s += `1 0 0 1 ${colX(ci)} ${y} Tm\n(${pdfCellText(val, colWidths[ci], cellFontSize)}) Tj\n`;
       });
-      const addedItems = [];
-      newOrderItems.forEach(it => {
-        const delta = it.qty - (oldQtyByKey.get(itemKey(it)) || 0);
-        if (delta > 0) addedItems.push({ name: it.name, qty: delta });
-      });
-
-      if (!ctx.owner.stock) ctx.owner.stock = [];
-
-      // Har bir mahsulot ro'yxati uchun kerakli ombor miqdorlarini hisoblaydi
-      // (create-order'dagi checkStockAvailabilityPooled bilan bir xil mantiq):
-      // combo'lar markaziy ombordan, oddiy taomlar esa filial (yoki markaziy)
-      // skladidan alohida hisoblanadi.
-      function stockNeedsForItems(orderItems) {
-        const neededCombo = new Map();
-        const neededPool = new Map();
-        for (const it of orderItems) {
-          if (it.isCombo) {
-            const combo = findCombo(ctx.owner, it.id);
-            if (!combo) continue;
-            for (const need of comboStockNeeds(ctx.owner, combo, it.qty)) {
-              neededCombo.set(need.stockId, Math.round(((neededCombo.get(need.stockId) || 0) + need.qty) * 1000) / 1000);
-            }
-            continue;
-          }
-          const menuItem = menu.find(m => m.id === it.id);
-          if (menuItem && menuItem.directStockId) {
-            neededPool.set(menuItem.directStockId, Math.round(((neededPool.get(menuItem.directStockId) || 0) + it.qty) * 1000) / 1000);
-            continue;
-          }
-          const recipe = (menuItem && Array.isArray(menuItem.recipe)) ? menuItem.recipe : [];
-          for (const ing of recipe) {
-            const consumeQty = Math.round(ing.qty * it.qty * 1000) / 1000;
-            neededPool.set(ing.stockId, Math.round(((neededPool.get(ing.stockId) || 0) + consumeQty) * 1000) / 1000);
-          }
-        }
-        return { neededCombo, neededPool };
-      }
-
-      // Eski buyurtma allaqachon ombordan yechilgan edi — shuning uchun faqat
-      // ESKI va YANGI ehtiyoj o'rtasidagi FARQNI (delta) ombordan yechamiz yoki qaytaramiz.
-      const oldNeeds = stockNeedsForItems(order.items || []);
-      const newNeeds = stockNeedsForItems(newOrderItems);
-
-      function computeDeltas(oldMap, newMap) {
-        const ids = new Set([...oldMap.keys(), ...newMap.keys()]);
-        const deltas = new Map();
-        for (const id of ids) {
-          const delta = Math.round(((newMap.get(id) || 0) - (oldMap.get(id) || 0)) * 1000) / 1000;
-          if (delta !== 0) deltas.set(id, delta);
-        }
-        return deltas;
-      }
-
-      const comboDeltas = computeDeltas(oldNeeds.neededCombo, newNeeds.neededCombo);
-      const poolDeltas = computeDeltas(oldNeeds.neededPool, newNeeds.neededPool);
-
-      for (const [stockId, delta] of comboDeltas) {
-        if (delta <= 0) continue;
-        const stockItem = findStockItem(ctx.owner, stockId);
-        if (!stockItem) continue;
-        if (stockItem.qty < delta) {
-          return sendJSON(res, 200, { ok: false, reason: `Omborda "${stockItem.name}" yetarli emas (kerak: ${delta} ${stockItem.unit}, mavjud: ${stockItem.qty} ${stockItem.unit}).` });
-        }
-      }
-      for (const [stockId, delta] of poolDeltas) {
-        if (delta <= 0) continue;
-        const stockItem = findStockItem(stockPool, stockId);
-        if (!stockItem) continue;
-        if (stockItem.qty < delta) {
-          return sendJSON(res, 200, { ok: false, reason: `Omborda "${stockItem.name}" yetarli emas (kerak: ${delta} ${stockItem.unit}, mavjud: ${stockItem.qty} ${stockItem.unit}).` });
-        }
-      }
-
-      for (const [stockId, delta] of comboDeltas) {
-        const stockItem = findStockItem(ctx.owner, stockId);
-        if (!stockItem) continue;
-        stockItem.qty = Math.max(0, Math.round((stockItem.qty - delta) * 1000) / 1000);
-        addStockMovement(ctx.owner, {
-          stockId: stockItem.id, stockName: stockItem.name, type: delta > 0 ? 'chiqim' : 'kirim',
-          qty: Math.abs(delta), unit: stockItem.unit,
-          note: `Buyurtma tahrirlandi: #${order.orderNumber || order.id}`,
-          userId
-        });
-        checkLowStockAlert(ctx.owner, stockItem, userId);
-      }
-      for (const [stockId, delta] of poolDeltas) {
-        const stockItem = findStockItem(stockPool, stockId);
-        if (!stockItem) continue;
-        stockItem.qty = Math.max(0, Math.round((stockItem.qty - delta) * 1000) / 1000);
-        addStockMovement(stockPool, {
-          stockId: stockItem.id, stockName: stockItem.name, type: delta > 0 ? 'chiqim' : 'kirim',
-          qty: Math.abs(delta), unit: stockItem.unit,
-          note: `Buyurtma tahrirlandi: #${order.orderNumber || order.id}`,
-          userId
-        });
-        checkLowStockAlert(ctx.owner, stockItem, userId, branchId);
-      }
-
-      const oldItemsSummary = (order.items || []).map(it => `${it.name} x${it.qty}`).join(', ') || '—';
-      order.items = newOrderItems;
-      order.subtotal = newSubtotal;
-      order.discountAmount = newBuy4get1.discountAmount;
-      order.autoPromoNote = newBuy4get1.noteHtml;
-      order.total = newTotal;
-      order.orderType = finalOrderType;
-      order.paymentType = finalPaymentType;
-      if (Object.prototype.hasOwnProperty.call(payload, 'comment')) {
-        order.comment = String(comment || '').trim().slice(0, 300) || null;
-      }
-      order.editedAt = new Date().toISOString();
-      order.editedBy = userId;
-
-      logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'buyurtma_tahrirlandi', orderId: order.id, note: `Yangi: ${fmtNum(newTotal)} so'm (avvalgi: ${oldItemsSummary})` });
-      saveOwners(owners);
-
-      const itemsText = newOrderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
-      const editCommentLine = order.comment ? `\n📝 Izoh: ${escapeHtmlServer(order.comment)}` : '';
-      const editAutoPromoLine = order.autoPromoNote ? `\n${order.autoPromoNote}` : '';
-      const notifyText = `✏️ <b>Buyurtma tahrirlandi</b> (${ORDER_TYPES[finalOrderType]})\n${itemsText}\n\nJami: ${fmtNum(newTotal)} so'm\nTo'lov: ${PAYMENT_TYPES[finalPaymentType]}${editCommentLine}${editAutoPromoLine}`;
-      const notifyTargets = [ctx.owner.id, ...((ctx.owner.staff || []).filter(s => staffHasRole(s, 'oshpaz')).map(s => s.id))];
-      await notifyStaffList(ctx.owner, notifyTargets, notifyText, `Buyurtma #${order.id} tahrirlandi`, 'newOrder');
-      saveOwners(owners);
-
-      // Buyurtma "Tayyor" bo'lgach qo'shilgan mahsulotlar — alohida oshxona
-      // guruhiga, o'zining mustaqil "Tayyor" tugmasi bilan yuboriladi.
-      if (orderWasReady && addedItems.length) {
-        const addition = {
-          id: crypto.randomBytes(4).toString('hex'),
-          items: addedItems,
-          createdAt: new Date().toISOString(),
-          createdBy: userId,
-          ready: false,
-          readyBy: null,
-          readyAt: null
-        };
-        if (!order.additions) order.additions = [];
-        order.additions.push(addition);
-        saveOwners(owners);
-
-        const addGroups = resolveOrderGroupIds(ctx.owner, order);
-        if (addGroups.kitchenGroupId && ownerCanUseFeature(ctx.owner, 'kitchen-group')) {
-          const addItemsText = addedItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
-          const orderLabel = `#${order.orderNumber || order.id}`;
-          const addText = `➕ <b>Qo'shimcha buyurtma</b> (Buyurtma ${orderLabel})\n${addItemsText}`;
-          sendMessage(addGroups.kitchenGroupId, addText, {
-            inline_keyboard: [[
-              { text: '✅ Tayyor', callback_data: `kgaddready:${ctx.owner.id}:${order.id}:${addition.id}` }
-            ]]
-          }, addGroups.kitchenGroupThreadId).then(result => {
-            if (result && result.ok && result.result && result.result.message_id) {
-              const owners2 = loadOwners();
-              const o2 = findOwner(owners2, ctx.owner.id);
-              const ord2 = o2 && (o2.orders || []).find(x => x.id === order.id);
-              const add2 = ord2 && (ord2.additions || []).find(a => a.id === addition.id);
-              if (add2) {
-                add2.kitchenGroupMsgId = result.result.message_id;
-                saveOwners(owners2);
-              }
-            }
-          }).catch(err => {
-            console.error(`[kgaddready xabar xatosi] owner=${ctx.owner.id} order=${order.id}: ${(err && err.message) || err}`);
-          });
-        }
-      }
-
-      return sendJSON(res, 200, { ok: true, order });
     });
-    return;
+    s += `/F1 6.5 Tf\n1 0 0 1 ${marginX} ${bottomMargin - 15} Tm\n(${pdfEscapeText(String(pIdx + 1) + ' / ' + pages.length)}) Tj\n`;
+    s += 'ET';
+    return s;
+  });
+
+  const objects = [];
+  const pageCount = pageStreams.length;
+  const firstPageObjNum = 4;
+  const pageObjNums = [], contentObjNums = [];
+  for (let i = 0; i < pageCount; i++) {
+    pageObjNums.push(firstPageObjNum + i * 2);
+    contentObjNums.push(firstPageObjNum + i * 2 + 1);
+  }
+  objects[1] = `1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n`;
+  objects[2] = `2 0 obj\n<< /Type /Pages /Kids [${pageObjNums.map(n => n + ' 0 R').join(' ')}] /Count ${pageCount} >>\nendobj\n`;
+  objects[3] = `3 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>\nendobj\n`;
+  for (let i = 0; i < pageCount; i++) {
+    const pObjNum = pageObjNums[i], cObjNum = contentObjNums[i];
+    objects[pObjNum] = `${pObjNum} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] /Resources << /Font << /F1 3 0 R >> >> /Contents ${cObjNum} 0 R >>\nendobj\n`;
+    const streamBody = pageStreams[i];
+    const byteLen = Buffer.byteLength(streamBody, 'latin1');
+    objects[cObjNum] = `${cObjNum} 0 obj\n<< /Length ${byteLen} >>\nstream\n${streamBody}\nendstream\nendobj\n`;
+  }
+  const maxObjNum = 3 + pageCount * 2;
+  let pdf = '%PDF-1.4\n';
+  const offsets = new Array(maxObjNum + 1).fill(0);
+  for (let n = 1; n <= maxObjNum; n++) {
+    offsets[n] = Buffer.byteLength(pdf, 'latin1');
+    pdf += objects[n];
+  }
+  const xrefStart = Buffer.byteLength(pdf, 'latin1');
+  pdf += `xref\n0 ${maxObjNum + 1}\n0000000000 65535 f \n`;
+  for (let n = 1; n <= maxObjNum; n++) {
+    pdf += `${String(offsets[n]).padStart(10, '0')} 00000 n \n`;
+  }
+  pdf += `trailer\n<< /Size ${maxObjNum + 1} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`;
+  return Buffer.from(pdf, 'latin1');
+}
+
+function csvEscapeCell(value) {
+  const s = String(value == null ? '' : value);
+  return /[";\n,]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+authed('/api/order-history-export', (payload, res, { userId }) => {
+  const owners = pruneExpiredOwners();
+  const ctx = resolveOwnerContext(owners, userId);
+  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
+  if (!isOwnerAccessValid(ctx.owner) || ctx.role !== 'egasi') {
+    return sendFail(res, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
+  }
+  if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendFeatureBlocked(res, 'orders-manage');
+
+  const format = payload.format === 'pdf' ? 'pdf' : 'csv';
+  const { orders, staffNameById } = filterOwnerOrderHistory(ctx, payload);
+  const exportOrders = orders.slice(0, 2000);
+  const totalSum = orders.reduce((sum, o) => sum + (o.total || 0), 0);
+  const nowLabel = new Date().toLocaleString('uz-UZ', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+  const restaurantName = (ctx.owner.name || 'Oshxona');
+
+  const rows = exportOrders.map(o => {
+    const d = new Date(o.createdAt);
+    const sana = d.toLocaleString('uz-UZ', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const itemsText = (o.items || []).map(it => `${it.name} x${it.qty}`).join(', ');
+    return [
+      sana,
+      ORDER_TYPES[o.orderType] || o.orderType,
+      PAYMENT_TYPES[o.paymentType] || o.paymentType,
+      ORDER_STATUSES[o.status] || o.status,
+      itemsText,
+      String(o.total || 0),
+      staffNameById(o.createdBy) || ''
+    ];
+  });
+
+  if (format === 'csv') {
+    const headers = ['Sana', 'Turi', "To'lov", 'Holat', 'Taomlar', 'Summa', 'Xodim'];
+    let csv = headers.map(csvEscapeCell).join(',') + '\r\n';
+    csv += rows.map(r => r.map(csvEscapeCell).join(',')).join('\r\n');
+    csv += `\r\n\r\n${csvEscapeCell('Jami: ' + rows.length + ' ta buyurtma, ' + totalSum + ' so\'m')}\r\n`;
+    const filename = `buyurtmalar_${new Date().toISOString().slice(0, 10)}.csv`;
+
+    const content = '\uFEFF' + csv;
+    return sendOk(res, { format: 'csv', filename, mime: 'text/csv;charset=utf-8', content });
   }
 
-  if (req.method === 'POST' && req.url === '/api/orders-list') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+  const headers = ['Sana', 'Turi', "To'lov", 'Holat', 'Summa', 'Xodim'];
+  const colWidths = [95, 65, 65, 70, 75, 145];
+  const pdfRows = rows.map(r => [r[0], r[1], r[2], r[3], r[5] + " so'm", r[6]]);
+  const pdfBuffer = buildSimplePdfReport(
+    `${restaurantName} — Buyurtmalar tarixi (${rows.length} ta, ${totalSum} so'm)`,
+    nowLabel, headers, colWidths, pdfRows
+  );
+  const filename = `buyurtmalar_${new Date().toISOString().slice(0, 10)}.pdf`;
+  return sendOk(res, { format: 'pdf', filename, mime: 'application/pdf', contentBase64: pdfBuffer.toString('base64') });
+});
 
-      const userId = String(check.user && check.user.id);
-      const owners = pruneExpiredOwners();
-      const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
-      if (!ctxHasAnyRole(ctx, ['egasi', 'kassir', 'oshpaz', 'dostavka'])) {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'limni ko\'rishga ruxsatingiz yo\'q' });
-      }
-      if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendJSON(res, 200, featureBlockedResult('orders-manage'));
+authed('/api/my-stats', (payload, res, { userId }) => {
+  const { period } = payload;
 
-      let orders = (ctx.owner.orders || [])
-        .slice()
-        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-
-      if (ctx.role === 'egasi') {
-        const branchId = Object.prototype.hasOwnProperty.call(payload, 'branchId') ? payload.branchId : undefined;
-        orders = orders.filter(o => matchesBranchFilter(o, branchId));
-      } else if (ctx.branchId) {
-        orders = orders.filter(o => (o.branchId || null) === ctx.branchId);
-      }
-
-      if (ctxHasRole(ctx, 'dostavka')) {
-        orders = orders.filter(o => o.orderType === 'dostavka' && o.status === 'tayyor' && !o.deliveredBy);
-      }
-
-      orders = orders.slice(0, 100);
-      return sendJSON(res, 200, { ok: true, orders, role: ctx.role });
-    });
-    return;
+  const owners = pruneExpiredOwners();
+  const ctx = resolveOwnerContext(owners, userId);
+  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
+  if (!ctxHasAnyRole(ctx, ['kassir', 'oshpaz', 'dostavka', 'sklad'])) {
+    return sendFail(res, 'Bu bo\'lim faqat xodimlarga ko\'rinadi');
   }
 
-  function filterOwnerOrderHistory(ctx, payload) {
-    const { dateFrom, dateTo, employeeId, paymentType, orderType } = payload;
-    let orders = (ctx.owner.orders || []).slice();
+  const fromDate = resolvePeriodStart(period);
+  const orders = ctx.owner.orders || [];
+  const stats = { period: period || 'today' };
 
-    if (dateFrom) {
-      const from = new Date(dateFrom + 'T00:00:00');
-      if (!isNaN(from.getTime())) orders = orders.filter(o => new Date(o.createdAt) >= from);
-    }
-    if (dateTo) {
-      const to = new Date(dateTo + 'T23:59:59');
-      if (!isNaN(to.getTime())) orders = orders.filter(o => new Date(o.createdAt) <= to);
-    }
-    if (employeeId) {
-      orders = orders.filter(o => String(o.createdBy) === String(employeeId));
-    }
-    if (paymentType && Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, paymentType)) {
-      orders = orders.filter(o => o.paymentType === paymentType);
-    }
-    if (orderType && Object.prototype.hasOwnProperty.call(ORDER_TYPES, orderType)) {
-      orders = orders.filter(o => o.orderType === orderType);
-    }
-    orders.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-
-    const nameCache = new Map();
-    const staffNameById = (id) => {
-      if (!id) return null;
-      if (nameCache.has(id)) return nameCache.get(id);
-      let name;
-      if (String(id) === String(ctx.owner.id)) {
-        name = 'Egasi';
-      } else {
-        const staff = (ctx.owner.staff || []).find(s => String(s.id) === String(id));
-        name = staff ? staffDisplayName(staff) : `ID: ${id}`;
-      }
-      nameCache.set(id, name);
-      return name;
+  if (ctxHasRole(ctx, 'kassir')) {
+    const mine = orders.filter(o => String(o.createdBy) === userId && new Date(o.createdAt) >= fromDate);
+    stats.kassir = {
+      orderCount: mine.length,
+      totalAmount: mine.reduce((sum, o) => sum + (o.total || 0), 0)
     };
+  }
+  if (ctxHasRole(ctx, 'oshpaz')) {
 
-    return { orders, staffNameById };
+    const mine = orders.filter(o => o.status === 'tayyor' && String(o.updatedBy) === userId && o.readyAt && new Date(o.readyAt) >= fromDate);
+    stats.oshpaz = {
+      orderCount: mine.length
+    };
+  }
+  if (ctxHasRole(ctx, 'dostavka')) {
+    const mine = orders.filter(o => o.orderType === 'dostavka' && String(o.deliveredBy) === userId && new Date(o.deliveredAt || o.createdAt) >= fromDate);
+    const totalAmount = mine.reduce((sum, o) => sum + (o.total || 0), 0);
+    const commissionPercent = Number.isFinite(ctx.owner.courierCommissionPercent) ? ctx.owner.courierCommissionPercent : 10;
+    stats.dostavka = {
+      orderCount: mine.length,
+      totalAmount,
+      commission: Math.round(totalAmount * commissionPercent / 100)
+    };
+  }
+  if (ctxHasRole(ctx, 'sklad')) {
+    const movements = (ctx.owner.stockMovements || []).filter(m => String(m.userId) === userId && new Date(m.createdAt) >= fromDate);
+    stats.sklad = {
+      movementCount: movements.length,
+      kirimCount: movements.filter(m => m.type === 'kirim').length,
+      chiqimCount: movements.filter(m => m.type === 'chiqim').length
+    };
   }
 
-  if (req.method === 'POST' && req.url === '/api/order-history') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+  return sendOk(res, { stats });
+});
 
-      const userId = String(check.user && check.user.id);
-      const owners = pruneExpiredOwners();
-      const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
-      if (!isOwnerAccessValid(ctx.owner) || ctx.role !== 'egasi') {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
-      }
+authed('/api/shift-status', (payload, res, { userId }) => {
+  const owners = pruneExpiredOwners();
+  const ctx = resolveOwnerContext(owners, userId);
+  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
+  if (!ctxHasAnyRole(ctx, ['kassir', 'oshpaz', 'egasi'])) {
+    return sendFail(res, 'Bu bo\'lim faqat kassir, oshpaz va egasi uchun');
+  }
+  const target = ctx.role === 'egasi' ? ctx.owner : (ctx.owner.staff || []).find(s => String(s.id) === userId);
+  if (!target) return sendFail(res, 'Xodim topilmadi');
 
-      let page = parseInt(payload.page, 10);
-      if (!Number.isFinite(page) || page < 1) page = 1;
-      const PAGE_SIZE = 30;
+  return sendOk(res, { active: !!target.shiftActive, startedAt: target.shiftStartedAt || null });
+});
 
-      const { orders, staffNameById } = filterOwnerOrderHistory(ctx, payload);
+authed('/api/shift-toggle', (payload, res, { userId }) => {
+  const owners = loadOwners();
+  const ctx = resolveOwnerContext(owners, userId);
+  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
+  if (!ctxHasAnyRole(ctx, ['kassir', 'oshpaz', 'egasi'])) {
+    return sendFail(res, 'Bu bo\'lim faqat kassir, oshpaz va egasi uchun');
+  }
+  const target = ctx.role === 'egasi' ? ctx.owner : (ctx.owner.staff || []).find(s => String(s.id) === userId);
+  if (!target) return sendFail(res, 'Xodim topilmadi');
+  if (!ownerCanUseFeature(ctx.owner, 'shift-toggle')) return sendFeatureBlocked(res, 'shift-toggle');
 
-      const totalCount = orders.length;
-      const totalSum = orders.reduce((sum, o) => sum + (o.total || 0), 0);
-      const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
-      if (page > totalPages) page = totalPages;
-      const pageOrders = orders.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-
-      const resultOrders = pageOrders.map(o => ({
-        id: o.id,
-        items: o.items,
-        total: o.total,
-        orderType: o.orderType,
-        paymentType: o.paymentType,
-        status: o.status,
-        createdAt: o.createdAt,
-        createdBy: o.createdBy,
-        createdByName: staffNameById(o.createdBy)
-      }));
-
-      const employees = [{ id: ctx.owner.id, name: 'Egasi' }];
-      (ctx.owner.staff || []).forEach(s => {
-        employees.push({ id: s.id, name: staffDisplayName(s) });
-      });
-
-      return sendJSON(res, 200, {
-        ok: true,
-        orders: resultOrders,
-        page, totalPages, totalCount, totalSum,
-        pageSize: PAGE_SIZE,
-        employees
-      });
+  const now = new Date().toISOString();
+  if (target.shiftActive) {
+    if (!ctx.owner.shiftHistory) ctx.owner.shiftHistory = [];
+    ctx.owner.shiftHistory.unshift({
+      id: crypto.randomBytes(4).toString('hex'),
+      userId,
+      role: ctx.role,
+      startedAt: target.shiftStartedAt || now,
+      endedAt: now
     });
-    return;
+    if (ctx.owner.shiftHistory.length > 1000) ctx.owner.shiftHistory.length = 1000;
+    target.shiftActive = false;
+    target.shiftStartedAt = null;
+    logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'smena_tugatdi', note: 'Ish smenasini tugatdi' });
+  } else {
+    target.shiftActive = true;
+    target.shiftStartedAt = now;
+    logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'smena_boshladi', note: 'Ish smenasini boshladi' });
+  }
+  saveOwners(owners);
+
+  return sendOk(res, { active: !!target.shiftActive, startedAt: target.shiftStartedAt || null });
+});
+
+authed('/api/update-order-status', async (payload, res, { userId }) => {
+  const { orderId, status } = payload;
+
+  const owners = loadOwners();
+  const ctx = resolveOwnerContext(owners, userId);
+  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
+  if (!ctxHasAnyRole(ctx, ['egasi', 'kassir', 'oshpaz'])) {
+    return sendFail(res, 'Bu amalga ruxsatingiz yo\'q');
+  }
+  if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendFeatureBlocked(res, 'orders-manage');
+
+  if (!Object.prototype.hasOwnProperty.call(ORDER_STATUSES, status)) {
+    return sendFail(res, 'Noto\'g\'ri holat.');
   }
 
-  function pdfSanitizeText(s) {
-    return String(s == null ? '' : s).replace(/[\r\n\t]/g, ' ').split('').map(ch => {
-      const code = ch.charCodeAt(0);
-      return (code >= 0x20 && code <= 0x7E) || (code >= 0xA0 && code <= 0xFF) ? ch : '?';
-    }).join('');
+  const order = (ctx.owner.orders || []).find(o => o.id === orderId);
+  if (!order) return sendFail(res, 'Buyurtma topilmadi.');
+  if (order.status === status) {
+    return sendOk(res, { order });
   }
-  function pdfEscapeText(s) {
-    return s.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
-  }
-  function pdfCellText(value, width, fontSize) {
-    const avgCharWidth = fontSize * 0.56;
-    const maxChars = Math.max(1, Math.floor(width / avgCharWidth));
-    let t = pdfSanitizeText(value);
-    if (t.length > maxChars) t = t.slice(0, Math.max(0, maxChars - 2)) + '..';
-    return pdfEscapeText(t);
+  if (!canSetOrderStatus(ctx, order, status)) {
+    const reason = order.paymentProofStatus === 'kutilmoqda'
+      ? 'Mijozning to\'lovi hali tasdiqlanmagan - avval to\'lovni tasdiqlang, shundan keyin buyurtma holatini o\'zgartirish mumkin.'
+      : 'Bu buyurtma hozirgi holatidan bunday o\'tishni qabul qilmaydi (masalan, "Tayyorlanmoqda" bosqichisiz "Tayyor" deb belgilab bo\'lmaydi).';
+    return sendJSON(res, 200, { ok: false, reason });
   }
 
-  function buildSimplePdfReport(title, generatedAtLabel, headers, colWidths, rows) {
-    const pageWidth = 595, pageHeight = 842;
-    const marginX = 40, topY = 802, bottomMargin = 40;
-    const titleFontSize = 13, headerFontSize = 8, cellFontSize = 7.5, lineHeight = 13;
-    const headerY = topY - 26;
-    const firstRowY = headerY - lineHeight - 2;
-    const rowsPerPage = Math.max(5, Math.floor((firstRowY - bottomMargin) / lineHeight));
+  order.status = status;
+  order.updatedAt = new Date().toISOString();
+  order.updatedBy = userId;
+  if (status === 'tayyorlanmoqda' && !order.startedAt) order.startedAt = order.updatedAt;
+  if (status === 'tayyor' && !order.readyAt) order.readyAt = order.updatedAt;
 
-    const pages = [];
-    for (let i = 0; i < rows.length; i += rowsPerPage) pages.push(rows.slice(i, i + rowsPerPage));
-    if (!pages.length) pages.push([]);
+  logStaffAction(ctx.owner, { userId, role: ctx.role, action: `holat_${status}`, orderId: order.id, note: `Buyurtma ${ORDER_STATUSES[status]} deb belgilandi` });
+  saveOwners(owners);
 
-    function colX(idx) {
-      let x = marginX;
-      for (let i = 0; i < idx; i++) x += colWidths[i];
-      return x;
+  syncGroupMessagesForOrder(ctx.owner, order);
+  if (status === 'tayyor') notifyDeliveryGroupOrderReady(ctx.owner, order);
+
+  if (status === 'tayyor') {
+    const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
+    const orderLabel = `${ORDER_TYPES[order.orderType] || order.orderType}`;
+    const readyText = `✅ <b>Buyurtma tayyor</b> (${orderLabel})\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm`;
+
+    const staffList = ctx.owner.staff || [];
+    const targetRoles = order.orderType === 'dostavka' ? ['kassir', 'dostavka'] : ['kassir'];
+    const targetIds = staffList.filter(s => targetRoles.includes(s.role)).map(s => s.id);
+    for (const targetId of new Set(targetIds)) {
+      if (String(targetId) === userId) continue;
+      sendMessage(targetId, readyText);
     }
+  }
 
-    const pageStreams = pages.map((pageRows, pIdx) => {
-      let s = 'BT\n';
-      s += `/F1 ${titleFontSize} Tf\n1 0 0 1 ${marginX} ${topY} Tm\n(${pdfEscapeText(pdfSanitizeText(title))}) Tj\n`;
-      s += `/F1 7 Tf\n1 0 0 1 ${pageWidth - marginX - 130} ${topY} Tm\n(${pdfEscapeText(pdfSanitizeText(generatedAtLabel))}) Tj\n`;
-      s += `/F1 ${headerFontSize} Tf\n`;
-      headers.forEach((h, i) => {
-        s += `1 0 0 1 ${colX(i)} ${headerY} Tm\n(${pdfCellText(h, colWidths[i], headerFontSize)}) Tj\n`;
+  return sendOk(res, { order });
+});
+
+authed('/api/staff-mark-received', (payload, res, { userId }) => {
+  const { orderId } = payload;
+
+  const owners = loadOwners();
+  const ctx = resolveOwnerContext(owners, userId);
+  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
+  if (!ctxHasAnyRole(ctx, ['egasi', 'kassir'])) {
+    return sendFail(res, 'Bu amalga ruxsatingiz yo\'q');
+  }
+  if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendFeatureBlocked(res, 'orders-manage');
+
+  const order = (ctx.owner.orders || []).find(o => o.id === orderId);
+  if (!order) return sendFail(res, 'Buyurtma topilmadi.');
+  if (order.orderType === 'dostavka') return sendFail(res, 'Dostavka buyurtmalarini kuryer belgilaydi.');
+  if (order.status !== 'tayyor') return sendFail(res, 'Buyurtma hali tayyor emas.');
+  if (order.customerReceivedAt) return sendFail(res, 'Bu buyurtma allaqachon olingan deb belgilangan.');
+
+  order.customerReceivedAt = new Date().toISOString();
+  order.customerReceivedBy = userId;
+  logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'mijoz_oldi', orderId: order.id, note: `${fmtNum(order.total)} so'm — mijoz oldi deb belgilandi` });
+  saveOwners(owners);
+
+  // Dostavka buyurtmalarida (/api/deliver-order) qilingani kabi — mijoz
+  // buyurtmasini olgach, xizmatni yulduzcha bilan baholashi so'raladi.
+  sendOrderRatingRequest(ctx.owner, order);
+
+  return sendOk(res, { order });
+});
+
+authed('/api/deliver-order', (payload, res, { userId }) => {
+  const { orderId } = payload;
+
+  const owners = loadOwners();
+  const ctx = resolveOwnerContext(owners, userId);
+  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
+  if (!ctxHasAnyRole(ctx, ['dostavka', 'egasi'])) {
+    return sendFail(res, 'Faqat kuryer bu amalni bajara oladi');
+  }
+  if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendFeatureBlocked(res, 'orders-manage');
+
+  const order = (ctx.owner.orders || []).find(o => o.id === orderId);
+  if (!order) return sendFail(res, 'Buyurtma topilmadi.');
+  if (order.orderType !== 'dostavka') {
+    return sendFail(res, 'Bu buyurtma dostavka turi emas.');
+  }
+  if (order.deliveredBy) {
+    return sendFail(res, 'Bu buyurtma allaqachon yetkazilgan deb belgilangan.');
+  }
+
+  order.deliveredBy = userId;
+  order.deliveredAt = new Date().toISOString();
+  logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'yetkazdi', orderId: order.id, note: `${fmtNum(order.total)} so'm — yetkazib berildi` });
+  saveOwners(owners);
+
+  sendOrderRatingRequest(ctx.owner, order);
+
+  return sendOk(res, { order });
+});
+
+authed('/api/reject-delivery-order', (payload, res, { userId }) => {
+  const { orderId, reason, returnedItems } = payload;
+
+  const owners = loadOwners();
+  const ctx = resolveOwnerContext(owners, userId);
+  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
+  if (!ctxHasAnyRole(ctx, ['dostavka', 'egasi'])) {
+    return sendFail(res, 'Faqat kuryer bu amalni bajara oladi');
+  }
+  if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendFeatureBlocked(res, 'orders-manage');
+
+  const order = (ctx.owner.orders || []).find(o => o.id === orderId);
+  if (!order) return sendFail(res, 'Buyurtma topilmadi.');
+  if (order.orderType !== 'dostavka') {
+    return sendFail(res, 'Bu buyurtma dostavka turi emas.');
+  }
+  if (order.deliveredBy) {
+    return sendFail(res, 'Bu buyurtma allaqachon yetkazilgan deb belgilangan.');
+  }
+  if (order.status === 'bekor_qilindi') {
+    return sendOk(res, { order });
+  }
+
+  const trimmedReason = String(reason || '').trim();
+  if (!trimmedReason) {
+    return sendFail(res, 'Bekor qilish sababini yozish majburiy.');
+  }
+
+  order.status = 'bekor_qilindi';
+  order.cancelReason = trimmedReason.slice(0, 200);
+  order.cancelledBy = userId;
+  order.cancelledAt = new Date().toISOString();
+
+  const returnedNotes = [];
+  if (Array.isArray(returnedItems)) {
+    for (const r of returnedItems) {
+      const idx = Number(r && r.index);
+      if (!Number.isInteger(idx) || idx < 0 || idx >= order.items.length) continue;
+      const orderItem = order.items[idx];
+      if (!orderItem || !orderItem.directStockId) continue;
+      const returnQty = Math.min(Math.max(0, Math.floor(Number(r.qty) || 0)), orderItem.qty);
+      if (returnQty <= 0) continue;
+      const stockItem = findStockItem(ctx.owner, orderItem.directStockId);
+      if (!stockItem) continue;
+      stockItem.qty = Math.round((stockItem.qty + returnQty) * 1000) / 1000;
+      addStockMovement(ctx.owner, {
+        stockId: stockItem.id, stockName: stockItem.name, type: 'kirim',
+        qty: returnQty, unit: stockItem.unit,
+        note: `Bekor qilingan buyurtma #${order.id} — ochilmagan, skladga qaytarildi: ${orderItem.name} x${returnQty}`,
+        userId
       });
-      s += `/F1 ${cellFontSize} Tf\n`;
-      pageRows.forEach((row, ri) => {
-        const y = firstRowY - ri * lineHeight;
-        row.forEach((val, ci) => {
-          s += `1 0 0 1 ${colX(ci)} ${y} Tm\n(${pdfCellText(val, colWidths[ci], cellFontSize)}) Tj\n`;
-        });
-      });
-      s += `/F1 6.5 Tf\n1 0 0 1 ${marginX} ${bottomMargin - 15} Tm\n(${pdfEscapeText(String(pIdx + 1) + ' / ' + pages.length)}) Tj\n`;
-      s += 'ET';
-      return s;
-    });
-
-    const objects = [];
-    const pageCount = pageStreams.length;
-    const firstPageObjNum = 4;
-    const pageObjNums = [], contentObjNums = [];
-    for (let i = 0; i < pageCount; i++) {
-      pageObjNums.push(firstPageObjNum + i * 2);
-      contentObjNums.push(firstPageObjNum + i * 2 + 1);
+      returnedNotes.push(`${orderItem.name} x${returnQty}`);
     }
-    objects[1] = `1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n`;
-    objects[2] = `2 0 obj\n<< /Type /Pages /Kids [${pageObjNums.map(n => n + ' 0 R').join(' ')}] /Count ${pageCount} >>\nendobj\n`;
-    objects[3] = `3 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>\nendobj\n`;
-    for (let i = 0; i < pageCount; i++) {
-      const pObjNum = pageObjNums[i], cObjNum = contentObjNums[i];
-      objects[pObjNum] = `${pObjNum} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] /Resources << /Font << /F1 3 0 R >> >> /Contents ${cObjNum} 0 R >>\nendobj\n`;
-      const streamBody = pageStreams[i];
-      const byteLen = Buffer.byteLength(streamBody, 'latin1');
-      objects[cObjNum] = `${cObjNum} 0 obj\n<< /Length ${byteLen} >>\nstream\n${streamBody}\nendstream\nendobj\n`;
+  }
+  if (returnedNotes.length) order.returnedToStock = returnedNotes;
+
+  logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'dostavka_bekor', orderId: order.id, note: order.cancelReason });
+  saveOwners(owners);
+
+  syncGroupMessagesForOrder(ctx.owner, order);
+
+  const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
+  const staffRecord = (ctx.owner.staff || []).find(s => String(s.id) === userId);
+  const courierLabel = staffDisplayName(staffRecord) || `ID: ${userId}`;
+  const returnedLine = returnedNotes.length
+    ? `\nSkladga qaytarildi: ${escapeHtmlServer(returnedNotes.join(', '))}`
+    : '';
+  const alertText = `❌ <b>Dostavka bekor qilindi</b>\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm\nSabab: ${escapeHtmlServer(order.cancelReason)}\nKuryer: ${escapeHtmlServer(courierLabel)}${returnedLine}`;
+  const staffList = ctx.owner.staff || [];
+  const targetIds = staffList.filter(s => ['egasi', 'kassir'].includes(s.role)).map(s => s.id);
+  for (const targetId of new Set([ctx.owner.id, ...targetIds])) {
+    if (String(targetId) === userId) continue;
+    sendMessage(targetId, alertText);
+  }
+
+  if (order.customerId) {
+    sendMessage(order.customerId, '❌ Kechirasiz, dostavka buyurtmangiz bekor qilindi (yetkazib berish amalga oshmadi). Savol bo\'lsa, oshxonaga murojaat qiling.');
+  }
+
+  return sendOk(res, { order });
+});
+
+authed('/api/undo-deliver-order', (payload, res, { userId }) => {
+  const { orderId } = payload;
+
+  const owners = loadOwners();
+  const ctx = resolveOwnerContext(owners, userId);
+  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
+  if (!ctxHasRole(ctx, 'egasi')) {
+    return sendFail(res, 'Faqat oshxona egasi bu amalni bajara oladi');
+  }
+  if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendFeatureBlocked(res, 'orders-manage');
+
+  const order = (ctx.owner.orders || []).find(o => o.id === orderId);
+  if (!order) return sendFail(res, 'Buyurtma topilmadi.');
+  if (!order.deliveredBy) {
+    return sendFail(res, 'Bu buyurtma "Yetkazildi" deb belgilanmagan.');
+  }
+
+  const previousDeliveredBy = order.deliveredBy;
+  order.deliveredBy = null;
+  order.deliveredAt = null;
+  logStaffAction(ctx.owner, {
+    userId, role: ctx.role, action: 'yetkazish_bekor',
+    orderId: order.id,
+    note: `"Yetkazildi" belgisi bekor qilindi (avval: ${previousDeliveredBy})`
+  });
+  saveOwners(owners);
+
+  return sendOk(res, { order });
+});
+
+authed('/api/stock-list', (payload, res, { userId }) => {
+  const owners = pruneExpiredOwners();
+  const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
+  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
+  if (!ctxHasAnyRole(ctx, ['egasi', 'sklad'])) {
+    return sendFail(res, 'Bu bo\'limni ko\'rishga ruxsatingiz yo\'q');
+  }
+
+  const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
+  const pool = resolveStockPool(ctx.owner, branchId);
+  if (!pool) return sendFail(res, 'Bunday filial topilmadi');
+
+  const stock = (pool.stock || []).slice().sort((a, b) => a.name.localeCompare(b.name, 'uz'));
+  return sendOk(res, { stock, units: STOCK_UNITS, branches: ctx.owner.branches || [], branchId });
+});
+
+authed('/api/stock-add', (payload, res, { userId }) => {
+  const { name, qty, unit, price, minQty } = payload;
+
+  const owners = loadOwners();
+  const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
+  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
+  if (!ctxHasAnyRole(ctx, ['egasi', 'sklad'])) {
+    return sendFail(res, 'Bu amalga ruxsatingiz yo\'q');
+  }
+  if (!ctx.isAdminActing && !ownerCanUseFeature(ctx.owner, 'stock-manage')) return sendFeatureBlocked(res, 'stock-manage');
+
+  const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
+  const pool = resolveStockPool(ctx.owner, branchId);
+  if (!pool) return sendFail(res, 'Bunday filial topilmadi');
+
+  const nameTrim = String(name || '').trim();
+  const qtyNum = Number(qty);
+  if (!nameTrim) return sendFail(res, 'Mahsulot nomini kiriting.');
+  if (!Object.prototype.hasOwnProperty.call(STOCK_UNITS, unit)) {
+    return sendFail(res, 'Birlikni tanlang (kg, g, l, ml, dona).');
+  }
+  if (!Number.isFinite(qtyNum) || qtyNum <= 0) {
+    return sendFail(res, 'Miqdorni to\'g\'ri kiriting.');
+  }
+
+  if (price === undefined || price === null || price === '') {
+    return sendFail(res, 'Narxni kiriting — u avtomatik xarajat yozish uchun kerak.');
+  }
+  const priceNum = Number(price);
+  if (!Number.isFinite(priceNum) || priceNum <= 0) {
+    return sendFail(res, 'Narx musbat son bo\'lishi kerak.');
+  }
+  let minQtyNum = null;
+  if (minQty !== undefined && minQty !== null && minQty !== '') {
+    minQtyNum = Number(minQty);
+    if (!Number.isFinite(minQtyNum) || minQtyNum < 0) return sendFail(res, 'Kam qolish chegarasi musbat son bo\'lishi kerak.');
+  }
+
+  if (!pool.stock) pool.stock = [];
+  let item = pool.stock.find(s => s.name.toLowerCase() === nameTrim.toLowerCase() && s.unit === unit);
+
+  if (item) {
+    item.qty = Math.round((item.qty + qtyNum) * 1000) / 1000;
+    if (priceNum) item.price = priceNum;
+    if (minQtyNum !== null) item.minQty = minQtyNum;
+  } else {
+    item = {
+      id: crypto.randomBytes(4).toString('hex'),
+      name: nameTrim,
+      qty: qtyNum,
+      unit,
+      price: priceNum,
+      minQty: minQtyNum,
+      lowStockAlertSent: false,
+      addedAt: new Date().toISOString()
+    };
+    pool.stock.push(item);
+  }
+
+  addStockMovement(pool, {
+    stockId: item.id, stockName: item.name, type: 'kirim',
+    qty: qtyNum, unit, note: 'Qo\'lda kiritildi', userId
+  });
+  checkLowStockAlert(ctx.owner, item, userId, branchId);
+  logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'sklad_kirim', note: `${item.name}: +${qtyNum} ${unit}` });
+
+  if (!ctx.owner.expenses) ctx.owner.expenses = [];
+  ctx.owner.expenses.unshift({
+    id: crypto.randomBytes(4).toString('hex'),
+    amount: Math.round(qtyNum * priceNum * 100) / 100,
+    category: 'sklad_xarid',
+    note: `${item.name} — ${qtyNum} ${unit}`,
+    createdAt: new Date().toISOString(),
+    createdBy: userId,
+    source: 'stock',
+    stockId: item.id
+  });
+  if (ctx.owner.expenses.length > 500) ctx.owner.expenses.length = 500;
+
+  saveOwners(owners);
+
+  return sendOk(res, { item });
+});
+
+authed('/api/stock-remove', (payload, res, { userId }) => {
+  const { id, branchId } = payload;
+
+  const owners = loadOwners();
+  const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
+  if (!ctx) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'chira oladi');
+  const owner = ctx.owner;
+  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
+
+  const pool = resolveStockPool(owner, branchId || null);
+  if (!pool) return sendFail(res, 'Bunday filial topilmadi');
+
+  pool.stock = (pool.stock || []).filter(s => s.id !== id);
+
+  if (!branchId) {
+    (owner.menu || []).forEach(m => {
+      if (Array.isArray(m.recipe)) m.recipe = m.recipe.filter(r => r.stockId !== id);
+    });
+  }
+  saveOwners(owners);
+
+  return sendOk(res);
+});
+
+// Buzilgan/isrof bo'lgan sklad mahsulotini spisaniya qilish (masalan: katlet
+// kuysa, non qotib qolsa yoki yirtilsa) — miqdor ombordan ayiriladi, sababi
+// harakatlar tarixiga yoziladi va yo'qotish summasi Moliyaga xarajat sifatida tushadi.
+authed('/api/stock-writeoff', (payload, res, { userId }) => {
+  const { id, qty, reason, note, branchId } = payload;
+
+  const owners = loadOwners();
+  const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
+  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
+  if (!ctxHasAnyRole(ctx, ['egasi', 'sklad'])) {
+    return sendFail(res, 'Bu amalga ruxsatingiz yo\'q');
+  }
+  if (!ctx.isAdminActing && !ownerCanUseFeature(ctx.owner, 'stock-manage')) return sendFeatureBlocked(res, 'stock-manage');
+
+  const resolvedBranchId = ctx.role === 'egasi' ? (branchId || null) : ctx.branchId;
+  const pool = resolveStockPool(ctx.owner, resolvedBranchId);
+  if (!pool) return sendFail(res, 'Bunday filial topilmadi');
+
+  if (!id) return sendFail(res, 'Mahsulot tanlanmagan.');
+  const item = findStockItem(pool, id);
+  if (!item) return sendFail(res, 'Bunday mahsulot omborda topilmadi.');
+
+  const qtyNum = Number(qty);
+  if (!Number.isFinite(qtyNum) || qtyNum <= 0) {
+    return sendFail(res, 'Miqdorni to\'g\'ri kiriting.');
+  }
+  if (qtyNum > item.qty) {
+    return sendFail(res, `Omborda yetarli emas (bor: ${item.qty} ${item.unit}).`);
+  }
+  if (!Object.prototype.hasOwnProperty.call(WRITEOFF_REASONS, reason)) {
+    return sendFail(res, 'Spisaniya sababini tanlang.');
+  }
+  const noteTrim = String(note || '').trim().slice(0, 200);
+  if (reason === 'boshqa' && !noteTrim) {
+    return sendFail(res, '"Boshqa sabab" tanlansa, izoh yozish shart.');
+  }
+
+  item.qty = Math.max(0, Math.round((item.qty - qtyNum) * 1000) / 1000);
+  const reasonLabel = WRITEOFF_REASONS[reason];
+  const movementNote = `Spisaniya: ${reasonLabel}${noteTrim ? ' — ' + noteTrim : ''}`;
+
+  addStockMovement(pool, {
+    stockId: item.id, stockName: item.name, type: 'chiqim',
+    qty: qtyNum, unit: item.unit, note: movementNote, userId
+  });
+  checkLowStockAlert(ctx.owner, item, userId, resolvedBranchId);
+  logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'sklad_spisaniya', note: `${item.name}: -${qtyNum} ${item.unit} (${reasonLabel})` });
+
+  const lossAmount = Math.round(qtyNum * (item.price || 0) * 100) / 100;
+  if (lossAmount > 0) {
+    if (!ctx.owner.expenses) ctx.owner.expenses = [];
+    ctx.owner.expenses.unshift({
+      id: crypto.randomBytes(4).toString('hex'),
+      amount: lossAmount,
+      category: 'spisaniya',
+      note: `${item.name} — ${qtyNum} ${item.unit} (${reasonLabel}${noteTrim ? ': ' + noteTrim : ''})`,
+      createdAt: new Date().toISOString(),
+      createdBy: userId,
+      source: 'stock',
+      stockId: item.id
+    });
+    if (ctx.owner.expenses.length > 500) ctx.owner.expenses.length = 500;
+  }
+
+  saveOwners(owners);
+  return sendOk(res, { item, lossAmount });
+});
+
+authed('/api/stock-movements', (payload, res, { userId }) => {
+  const owners = pruneExpiredOwners();
+  const ctx = resolveOwnerContext(owners, userId);
+  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
+  if (!ctxHasAnyRole(ctx, ['egasi', 'sklad'])) {
+    return sendFail(res, 'Bu bo\'limni ko\'rishga ruxsatingiz yo\'q');
+  }
+
+  const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
+  const pool = resolveStockPool(ctx.owner, branchId);
+  if (!pool) return sendFail(res, 'Bunday filial topilmadi');
+
+  const movements = (pool.stockMovements || []).slice(0, 200);
+  return sendOk(res, { movements });
+});
+
+authed('/api/stock-transfer', (payload, res, { userId }) => {
+  const { stockId, branchId, qty } = payload;
+
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi transfer qila oladi');
+  const owner = ownerCtx.owner;
+
+  if (!branchId) return sendFail(res, 'Qaysi filialga o\'tkazishni tanlang.');
+  const branch = findBranch(owner, branchId);
+  if (!branch) return sendFail(res, 'Bunday filial topilmadi.');
+
+  const centralItem = findStockItem(owner, stockId);
+  if (!centralItem) return sendFail(res, 'Markaziy skladda bunday mahsulot topilmadi.');
+
+  const qtyNum = Number(qty);
+  if (!Number.isFinite(qtyNum) || qtyNum <= 0) {
+    return sendFail(res, 'Miqdorni to\'g\'ri kiriting.');
+  }
+  if (qtyNum > centralItem.qty) {
+    return sendFail(res, `Markaziy skladda yetarli emas (bor: ${centralItem.qty} ${centralItem.unit}).`);
+  }
+
+  centralItem.qty = Math.round((centralItem.qty - qtyNum) * 1000) / 1000;
+  addStockMovement(owner, {
+    stockId: centralItem.id, stockName: centralItem.name, type: 'chiqim',
+    qty: qtyNum, unit: centralItem.unit,
+    note: `Filialga o'tkazildi: ${branch.name}`, userId
+  });
+  checkLowStockAlert(owner, centralItem, userId, null);
+
+  if (!branch.stock) branch.stock = [];
+  let branchItem = branch.stock.find(s => s.name.toLowerCase() === centralItem.name.toLowerCase() && s.unit === centralItem.unit);
+  if (branchItem) {
+    branchItem.qty = Math.round((branchItem.qty + qtyNum) * 1000) / 1000;
+  } else {
+    branchItem = {
+      id: crypto.randomBytes(4).toString('hex'),
+      name: centralItem.name,
+      qty: qtyNum,
+      unit: centralItem.unit,
+      price: centralItem.price || 0,
+      minQty: null,
+      lowStockAlertSent: false,
+      addedAt: new Date().toISOString()
+    };
+    branch.stock.push(branchItem);
+  }
+  addStockMovement(branch, {
+    stockId: branchItem.id, stockName: branchItem.name, type: 'kirim',
+    qty: qtyNum, unit: branchItem.unit,
+    note: 'Markaziy skladdan transfer', userId
+  });
+  checkLowStockAlert(owner, branchItem, userId, branchId);
+
+  saveOwners(owners);
+  return sendOk(res, { centralItem, branchItem });
+});
+
+authed('/api/menu-set-recipe', (payload, res, { userId }) => {
+  const { menuId, recipe } = payload;
+
+  const owners = loadOwners();
+  const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
+  if (!ctx) return denyAccess(res, owners, userId, 'Faqat oshxona egasi retsept belgilay oladi');
+  const owner = ctx.owner;
+
+  const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
+  const pool = resolveMenuPool(owner, branchId);
+  if (!pool) return sendFail(res, 'Bunday filial topilmadi');
+  const stockPool = resolveStockPool(owner, branchId);
+
+  const menuItem = (pool.menu || []).find(m => m.id === menuId);
+  if (!menuItem) return sendFail(res, 'Taom topilmadi.');
+  if (!Array.isArray(recipe)) return sendFail(res, 'Noto\'g\'ri retsept formati.');
+
+  if (menuItem.directStockId && recipe.length) {
+    return sendFail(res, 'Bu taom "to\'g\'ridan skladdan" turida — unga alohida retsept qo\'shib bo\'lmaydi.');
+  }
+
+  const cleanRecipe = [];
+  for (const r of recipe) {
+    const stockItem = findStockItem(stockPool, r.stockId);
+    if (!stockItem) return sendFail(res, 'Retseptda mavjud bo\'lmagan sklad mahsuloti bor.');
+    const qtyNum = Number(r.qty);
+    if (!Number.isFinite(qtyNum) || qtyNum <= 0) return sendFail(res, 'Retsept miqdori musbat son bo\'lishi kerak.');
+    cleanRecipe.push({ stockId: r.stockId, qty: qtyNum });
+  }
+
+  menuItem.recipe = cleanRecipe;
+  saveOwners(owners);
+
+  return sendOk(res, { menuItem });
+});
+
+authed('/api/audit-submit', (payload, res, { userId }) => {
+  const { entries } = payload;
+
+  const owners = loadOwners();
+  const ctx = resolveOwnerContext(owners, userId);
+  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
+  if (!ctxHasAnyRole(ctx, ['egasi', 'sklad'])) {
+    return sendFail(res, 'Bu amalga ruxsatingiz yo\'q');
+  }
+  if (!ownerCanUseFeature(ctx.owner, 'audit')) return sendFeatureBlocked(res, 'audit');
+  if (!Array.isArray(entries) || !entries.length) {
+    return sendFail(res, 'Audit uchun kamida bitta mahsulot kiriting.');
+  }
+
+  const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
+  const pool = resolveStockPool(ctx.owner, branchId);
+  if (!pool) return sendFail(res, 'Bunday filial topilmadi');
+
+  const auditEntries = [];
+  for (const e of entries) {
+    const stockItem = findStockItem(pool, e.stockId);
+    if (!stockItem) continue;
+    const actualNum = Number(e.actualQty);
+    if (!Number.isFinite(actualNum) || actualNum < 0) {
+      return sendFail(res, `${stockItem.name} uchun haqiqiy qoldiqni to\'g\'ri kiriting.`);
     }
-    const maxObjNum = 3 + pageCount * 2;
-    let pdf = '%PDF-1.4\n';
-    const offsets = new Array(maxObjNum + 1).fill(0);
-    for (let n = 1; n <= maxObjNum; n++) {
-      offsets[n] = Buffer.byteLength(pdf, 'latin1');
-      pdf += objects[n];
-    }
-    const xrefStart = Buffer.byteLength(pdf, 'latin1');
-    pdf += `xref\n0 ${maxObjNum + 1}\n0000000000 65535 f \n`;
-    for (let n = 1; n <= maxObjNum; n++) {
-      pdf += `${String(offsets[n]).padStart(10, '0')} 00000 n \n`;
-    }
-    pdf += `trailer\n<< /Size ${maxObjNum + 1} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`;
-    return Buffer.from(pdf, 'latin1');
-  }
-
-  function csvEscapeCell(value) {
-    const s = String(value == null ? '' : value);
-    return /[";\n,]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/order-history-export') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = pruneExpiredOwners();
-      const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
-      if (!isOwnerAccessValid(ctx.owner) || ctx.role !== 'egasi') {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi' });
-      }
-      if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendJSON(res, 200, featureBlockedResult('orders-manage'));
-
-      const format = payload.format === 'pdf' ? 'pdf' : 'csv';
-      const { orders, staffNameById } = filterOwnerOrderHistory(ctx, payload);
-      const exportOrders = orders.slice(0, 2000);
-      const totalSum = orders.reduce((sum, o) => sum + (o.total || 0), 0);
-      const nowLabel = new Date().toLocaleString('uz-UZ', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-      const restaurantName = (ctx.owner.name || 'Oshxona');
-
-      const rows = exportOrders.map(o => {
-        const d = new Date(o.createdAt);
-        const sana = d.toLocaleString('uz-UZ', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-        const itemsText = (o.items || []).map(it => `${it.name} x${it.qty}`).join(', ');
-        return [
-          sana,
-          ORDER_TYPES[o.orderType] || o.orderType,
-          PAYMENT_TYPES[o.paymentType] || o.paymentType,
-          ORDER_STATUSES[o.status] || o.status,
-          itemsText,
-          String(o.total || 0),
-          staffNameById(o.createdBy) || ''
-        ];
-      });
-
-      if (format === 'csv') {
-        const headers = ['Sana', 'Turi', "To'lov", 'Holat', 'Taomlar', 'Summa', 'Xodim'];
-        let csv = headers.map(csvEscapeCell).join(',') + '\r\n';
-        csv += rows.map(r => r.map(csvEscapeCell).join(',')).join('\r\n');
-        csv += `\r\n\r\n${csvEscapeCell('Jami: ' + rows.length + ' ta buyurtma, ' + totalSum + ' so\'m')}\r\n`;
-        const filename = `buyurtmalar_${new Date().toISOString().slice(0, 10)}.csv`;
-
-        const content = '\uFEFF' + csv;
-        return sendJSON(res, 200, { ok: true, format: 'csv', filename, mime: 'text/csv;charset=utf-8', content });
-      }
-
-      const headers = ['Sana', 'Turi', "To'lov", 'Holat', 'Summa', 'Xodim'];
-      const colWidths = [95, 65, 65, 70, 75, 145];
-      const pdfRows = rows.map(r => [r[0], r[1], r[2], r[3], r[5] + " so'm", r[6]]);
-      const pdfBuffer = buildSimplePdfReport(
-        `${restaurantName} — Buyurtmalar tarixi (${rows.length} ta, ${totalSum} so'm)`,
-        nowLabel, headers, colWidths, pdfRows
-      );
-      const filename = `buyurtmalar_${new Date().toISOString().slice(0, 10)}.pdf`;
-      return sendJSON(res, 200, { ok: true, format: 'pdf', filename, mime: 'application/pdf', contentBase64: pdfBuffer.toString('base64') });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/my-stats') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, period } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = pruneExpiredOwners();
-      const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
-      if (!ctxHasAnyRole(ctx, ['kassir', 'oshpaz', 'dostavka', 'sklad'])) {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat xodimlarga ko\'rinadi' });
-      }
-
-      const fromDate = resolvePeriodStart(period);
-      const orders = ctx.owner.orders || [];
-      const stats = { period: period || 'today' };
-
-      if (ctxHasRole(ctx, 'kassir')) {
-        const mine = orders.filter(o => String(o.createdBy) === userId && new Date(o.createdAt) >= fromDate);
-        stats.kassir = {
-          orderCount: mine.length,
-          totalAmount: mine.reduce((sum, o) => sum + (o.total || 0), 0)
-        };
-      }
-      if (ctxHasRole(ctx, 'oshpaz')) {
-
-        const mine = orders.filter(o => o.status === 'tayyor' && String(o.updatedBy) === userId && o.readyAt && new Date(o.readyAt) >= fromDate);
-        stats.oshpaz = {
-          orderCount: mine.length
-        };
-      }
-      if (ctxHasRole(ctx, 'dostavka')) {
-        const mine = orders.filter(o => o.orderType === 'dostavka' && String(o.deliveredBy) === userId && new Date(o.deliveredAt || o.createdAt) >= fromDate);
-        const totalAmount = mine.reduce((sum, o) => sum + (o.total || 0), 0);
-        const commissionPercent = Number.isFinite(ctx.owner.courierCommissionPercent) ? ctx.owner.courierCommissionPercent : 10;
-        stats.dostavka = {
-          orderCount: mine.length,
-          totalAmount,
-          commission: Math.round(totalAmount * commissionPercent / 100)
-        };
-      }
-      if (ctxHasRole(ctx, 'sklad')) {
-        const movements = (ctx.owner.stockMovements || []).filter(m => String(m.userId) === userId && new Date(m.createdAt) >= fromDate);
-        stats.sklad = {
-          movementCount: movements.length,
-          kirimCount: movements.filter(m => m.type === 'kirim').length,
-          chiqimCount: movements.filter(m => m.type === 'chiqim').length
-        };
-      }
-
-      return sendJSON(res, 200, { ok: true, stats });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/shift-status') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = pruneExpiredOwners();
-      const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
-      if (!ctxHasAnyRole(ctx, ['kassir', 'oshpaz', 'egasi'])) {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat kassir, oshpaz va egasi uchun' });
-      }
-      const target = ctx.role === 'egasi' ? ctx.owner : (ctx.owner.staff || []).find(s => String(s.id) === userId);
-      if (!target) return sendJSON(res, 200, { ok: false, reason: 'Xodim topilmadi' });
-
-      return sendJSON(res, 200, { ok: true, active: !!target.shiftActive, startedAt: target.shiftStartedAt || null });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/shift-toggle') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
-      if (!ctxHasAnyRole(ctx, ['kassir', 'oshpaz', 'egasi'])) {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'lim faqat kassir, oshpaz va egasi uchun' });
-      }
-      const target = ctx.role === 'egasi' ? ctx.owner : (ctx.owner.staff || []).find(s => String(s.id) === userId);
-      if (!target) return sendJSON(res, 200, { ok: false, reason: 'Xodim topilmadi' });
-      if (!ownerCanUseFeature(ctx.owner, 'shift-toggle')) return sendJSON(res, 200, featureBlockedResult('shift-toggle'));
-
-      const now = new Date().toISOString();
-      if (target.shiftActive) {
-        if (!ctx.owner.shiftHistory) ctx.owner.shiftHistory = [];
-        ctx.owner.shiftHistory.unshift({
-          id: crypto.randomBytes(4).toString('hex'),
-          userId,
-          role: ctx.role,
-          startedAt: target.shiftStartedAt || now,
-          endedAt: now
-        });
-        if (ctx.owner.shiftHistory.length > 1000) ctx.owner.shiftHistory.length = 1000;
-        target.shiftActive = false;
-        target.shiftStartedAt = null;
-        logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'smena_tugatdi', note: 'Ish smenasini tugatdi' });
-      } else {
-        target.shiftActive = true;
-        target.shiftStartedAt = now;
-        logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'smena_boshladi', note: 'Ish smenasini boshladi' });
-      }
-      saveOwners(owners);
-
-      return sendJSON(res, 200, { ok: true, active: !!target.shiftActive, startedAt: target.shiftStartedAt || null });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/update-order-status') {
-    readBody(req, async (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, orderId, status } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
-      if (!ctxHasAnyRole(ctx, ['egasi', 'kassir', 'oshpaz'])) {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu amalga ruxsatingiz yo\'q' });
-      }
-      if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendJSON(res, 200, featureBlockedResult('orders-manage'));
-
-      if (!Object.prototype.hasOwnProperty.call(ORDER_STATUSES, status)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Noto\'g\'ri holat.' });
-      }
-
-      const order = (ctx.owner.orders || []).find(o => o.id === orderId);
-      if (!order) return sendJSON(res, 200, { ok: false, reason: 'Buyurtma topilmadi.' });
-      if (order.status === status) {
-        return sendJSON(res, 200, { ok: true, order });
-      }
-      if (!canSetOrderStatus(ctx, order, status)) {
-        const reason = order.paymentProofStatus === 'kutilmoqda'
-          ? 'Mijozning to\'lovi hali tasdiqlanmagan - avval to\'lovni tasdiqlang, shundan keyin buyurtma holatini o\'zgartirish mumkin.'
-          : 'Bu buyurtma hozirgi holatidan bunday o\'tishni qabul qilmaydi (masalan, "Tayyorlanmoqda" bosqichisiz "Tayyor" deb belgilab bo\'lmaydi).';
-        return sendJSON(res, 200, { ok: false, reason });
-      }
-
-      order.status = status;
-      order.updatedAt = new Date().toISOString();
-      order.updatedBy = userId;
-      if (status === 'tayyorlanmoqda' && !order.startedAt) order.startedAt = order.updatedAt;
-      if (status === 'tayyor' && !order.readyAt) order.readyAt = order.updatedAt;
-
-      logStaffAction(ctx.owner, { userId, role: ctx.role, action: `holat_${status}`, orderId: order.id, note: `Buyurtma ${ORDER_STATUSES[status]} deb belgilandi` });
-      saveOwners(owners);
-
-      syncGroupMessagesForOrder(ctx.owner, order);
-      if (status === 'tayyor') notifyDeliveryGroupOrderReady(ctx.owner, order);
-
-      if (status === 'tayyor') {
-        const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
-        const orderLabel = `${ORDER_TYPES[order.orderType] || order.orderType}`;
-        const readyText = `✅ <b>Buyurtma tayyor</b> (${orderLabel})\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm`;
-
-        const staffList = ctx.owner.staff || [];
-        const targetRoles = order.orderType === 'dostavka' ? ['kassir', 'dostavka'] : ['kassir'];
-        const targetIds = staffList.filter(s => targetRoles.includes(s.role)).map(s => s.id);
-        for (const targetId of new Set(targetIds)) {
-          if (String(targetId) === userId) continue;
-          sendMessage(targetId, readyText);
-        }
-      }
-
-      return sendJSON(res, 200, { ok: true, order });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/staff-mark-received') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, orderId } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
-      if (!ctxHasAnyRole(ctx, ['egasi', 'kassir'])) {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu amalga ruxsatingiz yo\'q' });
-      }
-      if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendJSON(res, 200, featureBlockedResult('orders-manage'));
-
-      const order = (ctx.owner.orders || []).find(o => o.id === orderId);
-      if (!order) return sendJSON(res, 200, { ok: false, reason: 'Buyurtma topilmadi.' });
-      if (order.orderType === 'dostavka') return sendJSON(res, 200, { ok: false, reason: 'Dostavka buyurtmalarini kuryer belgilaydi.' });
-      if (order.status !== 'tayyor') return sendJSON(res, 200, { ok: false, reason: 'Buyurtma hali tayyor emas.' });
-      if (order.customerReceivedAt) return sendJSON(res, 200, { ok: false, reason: 'Bu buyurtma allaqachon olingan deb belgilangan.' });
-
-      order.customerReceivedAt = new Date().toISOString();
-      order.customerReceivedBy = userId;
-      logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'mijoz_oldi', orderId: order.id, note: `${fmtNum(order.total)} so'm — mijoz oldi deb belgilandi` });
-      saveOwners(owners);
-
-      // Dostavka buyurtmalarida (/api/deliver-order) qilingani kabi — mijoz
-      // buyurtmasini olgach, xizmatni yulduzcha bilan baholashi so'raladi.
-      sendOrderRatingRequest(ctx.owner, order);
-
-      return sendJSON(res, 200, { ok: true, order });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/deliver-order') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, orderId } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
-      if (!ctxHasAnyRole(ctx, ['dostavka', 'egasi'])) {
-        return sendJSON(res, 200, { ok: false, reason: 'Faqat kuryer bu amalni bajara oladi' });
-      }
-      if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendJSON(res, 200, featureBlockedResult('orders-manage'));
-
-      const order = (ctx.owner.orders || []).find(o => o.id === orderId);
-      if (!order) return sendJSON(res, 200, { ok: false, reason: 'Buyurtma topilmadi.' });
-      if (order.orderType !== 'dostavka') {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu buyurtma dostavka turi emas.' });
-      }
-      if (order.deliveredBy) {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu buyurtma allaqachon yetkazilgan deb belgilangan.' });
-      }
-
-      order.deliveredBy = userId;
-      order.deliveredAt = new Date().toISOString();
-      logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'yetkazdi', orderId: order.id, note: `${fmtNum(order.total)} so'm — yetkazib berildi` });
-      saveOwners(owners);
-
-      sendOrderRatingRequest(ctx.owner, order);
-
-      return sendJSON(res, 200, { ok: true, order });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/reject-delivery-order') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, orderId, reason, returnedItems } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
-      if (!ctxHasAnyRole(ctx, ['dostavka', 'egasi'])) {
-        return sendJSON(res, 200, { ok: false, reason: 'Faqat kuryer bu amalni bajara oladi' });
-      }
-      if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendJSON(res, 200, featureBlockedResult('orders-manage'));
-
-      const order = (ctx.owner.orders || []).find(o => o.id === orderId);
-      if (!order) return sendJSON(res, 200, { ok: false, reason: 'Buyurtma topilmadi.' });
-      if (order.orderType !== 'dostavka') {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu buyurtma dostavka turi emas.' });
-      }
-      if (order.deliveredBy) {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu buyurtma allaqachon yetkazilgan deb belgilangan.' });
-      }
-      if (order.status === 'bekor_qilindi') {
-        return sendJSON(res, 200, { ok: true, order });
-      }
-
-      const trimmedReason = String(reason || '').trim();
-      if (!trimmedReason) {
-        return sendJSON(res, 200, { ok: false, reason: 'Bekor qilish sababini yozish majburiy.' });
-      }
-
-      order.status = 'bekor_qilindi';
-      order.cancelReason = trimmedReason.slice(0, 200);
-      order.cancelledBy = userId;
-      order.cancelledAt = new Date().toISOString();
-
-      const returnedNotes = [];
-      if (Array.isArray(returnedItems)) {
-        for (const r of returnedItems) {
-          const idx = Number(r && r.index);
-          if (!Number.isInteger(idx) || idx < 0 || idx >= order.items.length) continue;
-          const orderItem = order.items[idx];
-          if (!orderItem || !orderItem.directStockId) continue;
-          const returnQty = Math.min(Math.max(0, Math.floor(Number(r.qty) || 0)), orderItem.qty);
-          if (returnQty <= 0) continue;
-          const stockItem = findStockItem(ctx.owner, orderItem.directStockId);
-          if (!stockItem) continue;
-          stockItem.qty = Math.round((stockItem.qty + returnQty) * 1000) / 1000;
-          addStockMovement(ctx.owner, {
-            stockId: stockItem.id, stockName: stockItem.name, type: 'kirim',
-            qty: returnQty, unit: stockItem.unit,
-            note: `Bekor qilingan buyurtma #${order.id} — ochilmagan, skladga qaytarildi: ${orderItem.name} x${returnQty}`,
-            userId
-          });
-          returnedNotes.push(`${orderItem.name} x${returnQty}`);
-        }
-      }
-      if (returnedNotes.length) order.returnedToStock = returnedNotes;
-
-      logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'dostavka_bekor', orderId: order.id, note: order.cancelReason });
-      saveOwners(owners);
-
-      syncGroupMessagesForOrder(ctx.owner, order);
-
-      const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
-      const staffRecord = (ctx.owner.staff || []).find(s => String(s.id) === userId);
-      const courierLabel = staffDisplayName(staffRecord) || `ID: ${userId}`;
-      const returnedLine = returnedNotes.length
-        ? `\nSkladga qaytarildi: ${escapeHtmlServer(returnedNotes.join(', '))}`
-        : '';
-      const alertText = `❌ <b>Dostavka bekor qilindi</b>\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm\nSabab: ${escapeHtmlServer(order.cancelReason)}\nKuryer: ${escapeHtmlServer(courierLabel)}${returnedLine}`;
-      const staffList = ctx.owner.staff || [];
-      const targetIds = staffList.filter(s => ['egasi', 'kassir'].includes(s.role)).map(s => s.id);
-      for (const targetId of new Set([ctx.owner.id, ...targetIds])) {
-        if (String(targetId) === userId) continue;
-        sendMessage(targetId, alertText);
-      }
-
-      if (order.customerId) {
-        sendMessage(order.customerId, '❌ Kechirasiz, dostavka buyurtmangiz bekor qilindi (yetkazib berish amalga oshmadi). Savol bo\'lsa, oshxonaga murojaat qiling.');
-      }
-
-      return sendJSON(res, 200, { ok: true, order });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/undo-deliver-order') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, orderId } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
-      if (!ctxHasRole(ctx, 'egasi')) {
-        return sendJSON(res, 200, { ok: false, reason: 'Faqat oshxona egasi bu amalni bajara oladi' });
-      }
-      if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendJSON(res, 200, featureBlockedResult('orders-manage'));
-
-      const order = (ctx.owner.orders || []).find(o => o.id === orderId);
-      if (!order) return sendJSON(res, 200, { ok: false, reason: 'Buyurtma topilmadi.' });
-      if (!order.deliveredBy) {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu buyurtma "Yetkazildi" deb belgilanmagan.' });
-      }
-
-      const previousDeliveredBy = order.deliveredBy;
-      order.deliveredBy = null;
-      order.deliveredAt = null;
-      logStaffAction(ctx.owner, {
-        userId, role: ctx.role, action: 'yetkazish_bekor',
-        orderId: order.id,
-        note: `"Yetkazildi" belgisi bekor qilindi (avval: ${previousDeliveredBy})`
-      });
-      saveOwners(owners);
-
-      return sendJSON(res, 200, { ok: true, order });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/stock-list') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = pruneExpiredOwners();
-      const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
-      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
-      if (!ctxHasAnyRole(ctx, ['egasi', 'sklad'])) {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'limni ko\'rishga ruxsatingiz yo\'q' });
-      }
-
-      const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
-      const pool = resolveStockPool(ctx.owner, branchId);
-      if (!pool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi' });
-
-      const stock = (pool.stock || []).slice().sort((a, b) => a.name.localeCompare(b.name, 'uz'));
-      return sendJSON(res, 200, { ok: true, stock, units: STOCK_UNITS, branches: ctx.owner.branches || [], branchId });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/stock-add') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, name, qty, unit, price, minQty } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
-      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
-      if (!ctxHasAnyRole(ctx, ['egasi', 'sklad'])) {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu amalga ruxsatingiz yo\'q' });
-      }
-      if (!ctx.isAdminActing && !ownerCanUseFeature(ctx.owner, 'stock-manage')) return sendJSON(res, 200, featureBlockedResult('stock-manage'));
-
-      const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
-      const pool = resolveStockPool(ctx.owner, branchId);
-      if (!pool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi' });
-
-      const nameTrim = String(name || '').trim();
-      const qtyNum = Number(qty);
-      if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Mahsulot nomini kiriting.' });
-      if (!Object.prototype.hasOwnProperty.call(STOCK_UNITS, unit)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Birlikni tanlang (kg, g, l, ml, dona).' });
-      }
-      if (!Number.isFinite(qtyNum) || qtyNum <= 0) {
-        return sendJSON(res, 200, { ok: false, reason: 'Miqdorni to\'g\'ri kiriting.' });
-      }
-
-      if (price === undefined || price === null || price === '') {
-        return sendJSON(res, 200, { ok: false, reason: 'Narxni kiriting — u avtomatik xarajat yozish uchun kerak.' });
-      }
-      const priceNum = Number(price);
-      if (!Number.isFinite(priceNum) || priceNum <= 0) {
-        return sendJSON(res, 200, { ok: false, reason: 'Narx musbat son bo\'lishi kerak.' });
-      }
-      let minQtyNum = null;
-      if (minQty !== undefined && minQty !== null && minQty !== '') {
-        minQtyNum = Number(minQty);
-        if (!Number.isFinite(minQtyNum) || minQtyNum < 0) return sendJSON(res, 200, { ok: false, reason: 'Kam qolish chegarasi musbat son bo\'lishi kerak.' });
-      }
-
-      if (!pool.stock) pool.stock = [];
-      let item = pool.stock.find(s => s.name.toLowerCase() === nameTrim.toLowerCase() && s.unit === unit);
-
-      if (item) {
-        item.qty = Math.round((item.qty + qtyNum) * 1000) / 1000;
-        if (priceNum) item.price = priceNum;
-        if (minQtyNum !== null) item.minQty = minQtyNum;
-      } else {
-        item = {
-          id: crypto.randomBytes(4).toString('hex'),
-          name: nameTrim,
-          qty: qtyNum,
-          unit,
-          price: priceNum,
-          minQty: minQtyNum,
-          lowStockAlertSent: false,
-          addedAt: new Date().toISOString()
-        };
-        pool.stock.push(item);
-      }
-
+    const systemQty = stockItem.qty;
+    const diff = Math.round((actualNum - systemQty) * 1000) / 1000;
+    auditEntries.push({ stockId: stockItem.id, name: stockItem.name, unit: stockItem.unit, systemQty, actualQty: actualNum, diff });
+
+    if (diff !== 0) {
       addStockMovement(pool, {
-        stockId: item.id, stockName: item.name, type: 'kirim',
-        qty: qtyNum, unit, note: 'Qo\'lda kiritildi', userId
+        stockId: stockItem.id, stockName: stockItem.name, type: 'audit_tuzatish',
+        qty: diff, unit: stockItem.unit,
+        note: diff > 0 ? 'Audit: ortiqcha topildi' : 'Audit: kamomad topildi',
+        userId
       });
-      checkLowStockAlert(ctx.owner, item, userId, branchId);
-      logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'sklad_kirim', note: `${item.name}: +${qtyNum} ${unit}` });
-
-      if (!ctx.owner.expenses) ctx.owner.expenses = [];
-      ctx.owner.expenses.unshift({
-        id: crypto.randomBytes(4).toString('hex'),
-        amount: Math.round(qtyNum * priceNum * 100) / 100,
-        category: 'sklad_xarid',
-        note: `${item.name} — ${qtyNum} ${unit}`,
-        createdAt: new Date().toISOString(),
-        createdBy: userId,
-        source: 'stock',
-        stockId: item.id
-      });
-      if (ctx.owner.expenses.length > 500) ctx.owner.expenses.length = 500;
-
-      saveOwners(owners);
-
-      return sendJSON(res, 200, { ok: true, item });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/stock-remove') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, id, branchId } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
-      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
-      const owner = ctx.owner;
-      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
-
-      const pool = resolveStockPool(owner, branchId || null);
-      if (!pool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi' });
-
-      pool.stock = (pool.stock || []).filter(s => s.id !== id);
-
-      if (!branchId) {
-        (owner.menu || []).forEach(m => {
-          if (Array.isArray(m.recipe)) m.recipe = m.recipe.filter(r => r.stockId !== id);
-        });
-      }
-      saveOwners(owners);
-
-      return sendJSON(res, 200, { ok: true });
-    });
-    return;
-  }
-
-  // Buzilgan/isrof bo'lgan sklad mahsulotini spisaniya qilish (masalan: katlet
-  // kuysa, non qotib qolsa yoki yirtilsa) — miqdor ombordan ayiriladi, sababi
-  // harakatlar tarixiga yoziladi va yo'qotish summasi Moliyaga xarajat sifatida tushadi.
-  if (req.method === 'POST' && req.url === '/api/stock-writeoff') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, id, qty, reason, note, branchId } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
-      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
-      if (!ctxHasAnyRole(ctx, ['egasi', 'sklad'])) {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu amalga ruxsatingiz yo\'q' });
-      }
-      if (!ctx.isAdminActing && !ownerCanUseFeature(ctx.owner, 'stock-manage')) return sendJSON(res, 200, featureBlockedResult('stock-manage'));
-
-      const resolvedBranchId = ctx.role === 'egasi' ? (branchId || null) : ctx.branchId;
-      const pool = resolveStockPool(ctx.owner, resolvedBranchId);
-      if (!pool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi' });
-
-      if (!id) return sendJSON(res, 200, { ok: false, reason: 'Mahsulot tanlanmagan.' });
-      const item = findStockItem(pool, id);
-      if (!item) return sendJSON(res, 200, { ok: false, reason: 'Bunday mahsulot omborda topilmadi.' });
-
-      const qtyNum = Number(qty);
-      if (!Number.isFinite(qtyNum) || qtyNum <= 0) {
-        return sendJSON(res, 200, { ok: false, reason: 'Miqdorni to\'g\'ri kiriting.' });
-      }
-      if (qtyNum > item.qty) {
-        return sendJSON(res, 200, { ok: false, reason: `Omborda yetarli emas (bor: ${item.qty} ${item.unit}).` });
-      }
-      if (!Object.prototype.hasOwnProperty.call(WRITEOFF_REASONS, reason)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Spisaniya sababini tanlang.' });
-      }
-      const noteTrim = String(note || '').trim().slice(0, 200);
-      if (reason === 'boshqa' && !noteTrim) {
-        return sendJSON(res, 200, { ok: false, reason: '"Boshqa sabab" tanlansa, izoh yozish shart.' });
-      }
-
-      item.qty = Math.max(0, Math.round((item.qty - qtyNum) * 1000) / 1000);
-      const reasonLabel = WRITEOFF_REASONS[reason];
-      const movementNote = `Spisaniya: ${reasonLabel}${noteTrim ? ' — ' + noteTrim : ''}`;
-
-      addStockMovement(pool, {
-        stockId: item.id, stockName: item.name, type: 'chiqim',
-        qty: qtyNum, unit: item.unit, note: movementNote, userId
-      });
-      checkLowStockAlert(ctx.owner, item, userId, resolvedBranchId);
-      logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'sklad_spisaniya', note: `${item.name}: -${qtyNum} ${item.unit} (${reasonLabel})` });
-
-      const lossAmount = Math.round(qtyNum * (item.price || 0) * 100) / 100;
-      if (lossAmount > 0) {
-        if (!ctx.owner.expenses) ctx.owner.expenses = [];
-        ctx.owner.expenses.unshift({
-          id: crypto.randomBytes(4).toString('hex'),
-          amount: lossAmount,
-          category: 'spisaniya',
-          note: `${item.name} — ${qtyNum} ${item.unit} (${reasonLabel}${noteTrim ? ': ' + noteTrim : ''})`,
-          createdAt: new Date().toISOString(),
-          createdBy: userId,
-          source: 'stock',
-          stockId: item.id
-        });
-        if (ctx.owner.expenses.length > 500) ctx.owner.expenses.length = 500;
-      }
-
-      saveOwners(owners);
-      return sendJSON(res, 200, { ok: true, item, lossAmount });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/stock-movements') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = pruneExpiredOwners();
-      const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
-      if (!ctxHasAnyRole(ctx, ['egasi', 'sklad'])) {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'limni ko\'rishga ruxsatingiz yo\'q' });
-      }
-
-      const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
-      const pool = resolveStockPool(ctx.owner, branchId);
-      if (!pool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi' });
-
-      const movements = (pool.stockMovements || []).slice(0, 200);
-      return sendJSON(res, 200, { ok: true, movements });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/stock-transfer') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, stockId, branchId, qty } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi transfer qila oladi'));
-      const owner = ownerCtx.owner;
-
-      if (!branchId) return sendJSON(res, 200, { ok: false, reason: 'Qaysi filialga o\'tkazishni tanlang.' });
-      const branch = findBranch(owner, branchId);
-      if (!branch) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi.' });
-
-      const centralItem = findStockItem(owner, stockId);
-      if (!centralItem) return sendJSON(res, 200, { ok: false, reason: 'Markaziy skladda bunday mahsulot topilmadi.' });
-
-      const qtyNum = Number(qty);
-      if (!Number.isFinite(qtyNum) || qtyNum <= 0) {
-        return sendJSON(res, 200, { ok: false, reason: 'Miqdorni to\'g\'ri kiriting.' });
-      }
-      if (qtyNum > centralItem.qty) {
-        return sendJSON(res, 200, { ok: false, reason: `Markaziy skladda yetarli emas (bor: ${centralItem.qty} ${centralItem.unit}).` });
-      }
-
-      centralItem.qty = Math.round((centralItem.qty - qtyNum) * 1000) / 1000;
-      addStockMovement(owner, {
-        stockId: centralItem.id, stockName: centralItem.name, type: 'chiqim',
-        qty: qtyNum, unit: centralItem.unit,
-        note: `Filialga o'tkazildi: ${branch.name}`, userId
-      });
-      checkLowStockAlert(owner, centralItem, userId, null);
-
-      if (!branch.stock) branch.stock = [];
-      let branchItem = branch.stock.find(s => s.name.toLowerCase() === centralItem.name.toLowerCase() && s.unit === centralItem.unit);
-      if (branchItem) {
-        branchItem.qty = Math.round((branchItem.qty + qtyNum) * 1000) / 1000;
-      } else {
-        branchItem = {
-          id: crypto.randomBytes(4).toString('hex'),
-          name: centralItem.name,
-          qty: qtyNum,
-          unit: centralItem.unit,
-          price: centralItem.price || 0,
-          minQty: null,
-          lowStockAlertSent: false,
-          addedAt: new Date().toISOString()
-        };
-        branch.stock.push(branchItem);
-      }
-      addStockMovement(branch, {
-        stockId: branchItem.id, stockName: branchItem.name, type: 'kirim',
-        qty: qtyNum, unit: branchItem.unit,
-        note: 'Markaziy skladdan transfer', userId
-      });
-      checkLowStockAlert(owner, branchItem, userId, branchId);
-
-      saveOwners(owners);
-      return sendJSON(res, 200, { ok: true, centralItem, branchItem });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/menu-set-recipe') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, menuId, recipe } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
-      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi retsept belgilay oladi'));
-      const owner = ctx.owner;
-
-      const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
-      const pool = resolveMenuPool(owner, branchId);
-      if (!pool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi' });
-      const stockPool = resolveStockPool(owner, branchId);
-
-      const menuItem = (pool.menu || []).find(m => m.id === menuId);
-      if (!menuItem) return sendJSON(res, 200, { ok: false, reason: 'Taom topilmadi.' });
-      if (!Array.isArray(recipe)) return sendJSON(res, 200, { ok: false, reason: 'Noto\'g\'ri retsept formati.' });
-
-      if (menuItem.directStockId && recipe.length) {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu taom "to\'g\'ridan skladdan" turida — unga alohida retsept qo\'shib bo\'lmaydi.' });
-      }
-
-      const cleanRecipe = [];
-      for (const r of recipe) {
-        const stockItem = findStockItem(stockPool, r.stockId);
-        if (!stockItem) return sendJSON(res, 200, { ok: false, reason: 'Retseptda mavjud bo\'lmagan sklad mahsuloti bor.' });
-        const qtyNum = Number(r.qty);
-        if (!Number.isFinite(qtyNum) || qtyNum <= 0) return sendJSON(res, 200, { ok: false, reason: 'Retsept miqdori musbat son bo\'lishi kerak.' });
-        cleanRecipe.push({ stockId: r.stockId, qty: qtyNum });
-      }
-
-      menuItem.recipe = cleanRecipe;
-      saveOwners(owners);
-
-      return sendJSON(res, 200, { ok: true, menuItem });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/audit-submit') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, entries } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
-      if (!ctxHasAnyRole(ctx, ['egasi', 'sklad'])) {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu amalga ruxsatingiz yo\'q' });
-      }
-      if (!ownerCanUseFeature(ctx.owner, 'audit')) return sendJSON(res, 200, featureBlockedResult('audit'));
-      if (!Array.isArray(entries) || !entries.length) {
-        return sendJSON(res, 200, { ok: false, reason: 'Audit uchun kamida bitta mahsulot kiriting.' });
-      }
-
-      const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
-      const pool = resolveStockPool(ctx.owner, branchId);
-      if (!pool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi' });
-
-      const auditEntries = [];
-      for (const e of entries) {
-        const stockItem = findStockItem(pool, e.stockId);
-        if (!stockItem) continue;
-        const actualNum = Number(e.actualQty);
-        if (!Number.isFinite(actualNum) || actualNum < 0) {
-          return sendJSON(res, 200, { ok: false, reason: `${stockItem.name} uchun haqiqiy qoldiqni to\'g\'ri kiriting.` });
-        }
-        const systemQty = stockItem.qty;
-        const diff = Math.round((actualNum - systemQty) * 1000) / 1000;
-        auditEntries.push({ stockId: stockItem.id, name: stockItem.name, unit: stockItem.unit, systemQty, actualQty: actualNum, diff });
-
-        if (diff !== 0) {
-          addStockMovement(pool, {
-            stockId: stockItem.id, stockName: stockItem.name, type: 'audit_tuzatish',
-            qty: diff, unit: stockItem.unit,
-            note: diff > 0 ? 'Audit: ortiqcha topildi' : 'Audit: kamomad topildi',
-            userId
-          });
-        }
-        stockItem.qty = actualNum;
-        checkLowStockAlert(ctx.owner, stockItem, userId, branchId);
-      }
-
-      if (!auditEntries.length) {
-        return sendJSON(res, 200, { ok: false, reason: 'Hech qanday mos mahsulot topilmadi.' });
-      }
-
-      if (!pool.audits) pool.audits = [];
-      const audit = {
-        id: crypto.randomBytes(4).toString('hex'),
-        date: new Date().toISOString().slice(0, 10),
-        branchId,
-        entries: auditEntries,
-        createdBy: userId,
-        createdAt: new Date().toISOString()
-      };
-      pool.audits.unshift(audit);
-      if (pool.audits.length > 60) pool.audits.length = 60;
-
-      const kamomadCount = auditEntries.filter(e => e.diff < 0).length;
-      const ortiqchaCount = auditEntries.filter(e => e.diff > 0).length;
-      logStaffAction(ctx.owner, {
-        userId, role: ctx.role, action: 'audit_topshirdi',
-        note: `${auditEntries.length} mahsulot tekshirildi${kamomadCount ? `, ${kamomadCount} ta kamomad` : ''}${ortiqchaCount ? `, ${ortiqchaCount} ta ortiqcha` : ''}`,
-        errorCount: kamomadCount
-      });
-
-      saveOwners(owners);
-      return sendJSON(res, 200, { ok: true, audit });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/audit-list') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = pruneExpiredOwners();
-      const ctx = resolveOwnerContext(owners, userId);
-      if (!ctx) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q'));
-      if (!ctxHasAnyRole(ctx, ['egasi', 'sklad'])) {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu bo\'limni ko\'rishga ruxsatingiz yo\'q' });
-      }
-      if (!ownerCanUseFeature(ctx.owner, 'audit')) return sendJSON(res, 200, featureBlockedResult('audit'));
-
-      const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
-      const pool = resolveStockPool(ctx.owner, branchId);
-      if (!pool) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi' });
-
-      return sendJSON(res, 200, { ok: true, audits: (pool.audits || []).slice(0, 30) });
-    });
-    return;
-  }
-
-  const TASHKENT_OFFSET_MS = 5 * 60 * 60 * 1000;
-
-  function tzDateKey(input) {
-    const d = (input instanceof Date) ? input : new Date(input);
-    return new Date(d.getTime() + TASHKENT_OFFSET_MS).toISOString().slice(0, 10);
-  }
-
-  function tzDayStartFromKey(dateKey) {
-    return new Date(new Date(dateKey + 'T00:00:00.000Z').getTime() - TASHKENT_OFFSET_MS);
-  }
-
-  function tzDayStart(input) {
-    return tzDayStartFromKey(tzDateKey(input));
-  }
-
-  function tzWeekStart(input) {
-    const d = (input instanceof Date) ? input : new Date(input);
-    const shifted = new Date(d.getTime() + TASHKENT_OFFSET_MS);
-    const day = shifted.getUTCDay();
-    const diffToMonday = (day === 0 ? -6 : 1) - day;
-    const mondayKey = new Date(shifted.getTime() + diffToMonday * 86400000).toISOString().slice(0, 10);
-    return tzDayStartFromKey(mondayKey);
-  }
-
-  function tzMonthStart(input) {
-    const d = (input instanceof Date) ? input : new Date(input);
-    const shifted = new Date(d.getTime() + TASHKENT_OFFSET_MS);
-    const monthKey = `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, '0')}-01`;
-    return tzDayStartFromKey(monthKey);
-  }
-
-  // branchId === undefined -> barcha joylashuvlar (markaziy + filiallar) birga.
-  // branchId === null -> faqat markaziy. branchId === '<id>' -> faqat shu filial.
-  function matchesBranchFilter(item, branchId) {
-    if (branchId === undefined) return true;
-    return (item.branchId || null) === (branchId || null);
-  }
-
-  function cashflowBucket(owner, fromDate, branchId) {
-    const orders = (owner.orders || []).filter(o => new Date(o.createdAt) >= fromDate && matchesBranchFilter(o, branchId));
-    const expenses = (owner.expenses || []).filter(e => new Date(e.createdAt) >= fromDate && matchesBranchFilter(e, branchId));
-
-    const dostavkaOrders = orders.filter(o => o.orderType === 'dostavka' && o.paymentType === 'dostavka_orqali');
-    const kassaOrders = orders.filter(o => !(o.orderType === 'dostavka' && o.paymentType === 'dostavka_orqali'));
-    const kassaIncome = kassaOrders.reduce((sum, o) => sum + orderIncomeAmount(o), 0);
-    const dostavkaIncome = dostavkaOrders.reduce((sum, o) => sum + orderIncomeAmount(o), 0);
-    const income = kassaIncome + dostavkaIncome;
-    const expense = expenses.reduce((sum, e) => sum + (e.amount || 0), 0);
-
-    const paymentBreakdown = {};
-    for (const key of Object.keys(PAYMENT_TYPES)) paymentBreakdown[key] = 0;
-    for (const o of orders) {
-      const pt = Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, o.paymentType) ? o.paymentType : 'naqd';
-      paymentBreakdown[pt] = (paymentBreakdown[pt] || 0) + orderIncomeAmount(o);
     }
-
-    const kassaBreakdown = {};
-    for (const key of Object.keys(PAYMENT_TYPES)) kassaBreakdown[key] = 0;
-    for (const o of kassaOrders) {
-      const pt = Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, o.paymentType) ? o.paymentType : 'naqd';
-      kassaBreakdown[pt] = (kassaBreakdown[pt] || 0) + orderIncomeAmount(o);
-    }
-
-    const byCategory = {};
-    for (const key of Object.keys(EXPENSE_CATEGORIES)) byCategory[key] = 0;
-    for (const e of expenses) {
-      const cat = Object.prototype.hasOwnProperty.call(EXPENSE_CATEGORIES, e.category) ? e.category : 'boshqa';
-      byCategory[cat] = (byCategory[cat] || 0) + (e.amount || 0);
-    }
-
-    return {
-      income, expense, net: income - expense, orderCount: orders.length, byCategory,
-      kassaIncome, dostavkaIncome, dostavkaOrderCount: dostavkaOrders.length, paymentBreakdown, kassaBreakdown
-    };
+    stockItem.qty = actualNum;
+    checkLowStockAlert(ctx.owner, stockItem, userId, branchId);
   }
 
-  function computeCashflow(owner, branchId) {
-    const now = new Date();
-    const todayStart = tzDayStart(now);
-    const weekStart = tzWeekStart(now);
-    const monthStart = tzMonthStart(now);
-
-    const orders = (owner.orders || []).filter(o => matchesBranchFilter(o, branchId));
-    const expenses = (owner.expenses || []).filter(e => matchesBranchFilter(e, branchId));
-    const dailySeries = [];
-
-    for (let i = 13; i >= 0; i--) {
-      const dayStart = new Date(todayStart.getTime() - i * 86400000);
-      const dayEnd = new Date(dayStart.getTime() + 86400000);
-      const key = tzDateKey(dayStart);
-      const dayIncome = orders.filter(o => { const t = new Date(o.createdAt); return t >= dayStart && t < dayEnd; }).reduce((s, o) => s + orderIncomeAmount(o), 0);
-      const dayExpense = expenses.filter(e => { const t = new Date(e.createdAt); return t >= dayStart && t < dayEnd; }).reduce((s, e) => s + (e.amount || 0), 0);
-      dailySeries.push({ date: key, income: dayIncome, expense: dayExpense, net: dayIncome - dayExpense });
-    }
-
-    return {
-      today: cashflowBucket(owner, todayStart, branchId),
-      week: cashflowBucket(owner, weekStart, branchId),
-      month: cashflowBucket(owner, monthStart, branchId),
-      dailySeries
-    };
+  if (!auditEntries.length) {
+    return sendFail(res, 'Hech qanday mos mahsulot topilmadi.');
   }
 
-  if (req.method === 'POST' && req.url === '/api/expense-add') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, amount, note, category, branchId } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+  if (!pool.audits) pool.audits = [];
+  const audit = {
+    id: crypto.randomBytes(4).toString('hex'),
+    date: new Date().toISOString().slice(0, 10),
+    branchId,
+    entries: auditEntries,
+    createdBy: userId,
+    createdAt: new Date().toISOString()
+  };
+  pool.audits.unshift(audit);
+  if (pool.audits.length > 60) pool.audits.length = 60;
 
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi xarajat kirita oladi'));
-      const owner = ownerCtx.owner;
-      if (!ownerCanUseFeature(owner, 'expense-manage')) return sendJSON(res, 200, featureBlockedResult('expense-manage'));
+  const kamomadCount = auditEntries.filter(e => e.diff < 0).length;
+  const ortiqchaCount = auditEntries.filter(e => e.diff > 0).length;
+  logStaffAction(ctx.owner, {
+    userId, role: ctx.role, action: 'audit_topshirdi',
+    note: `${auditEntries.length} mahsulot tekshirildi${kamomadCount ? `, ${kamomadCount} ta kamomad` : ''}${ortiqchaCount ? `, ${ortiqchaCount} ta ortiqcha` : ''}`,
+    errorCount: kamomadCount
+  });
 
-      const amountNum = Number(amount);
-      if (!Number.isFinite(amountNum) || amountNum <= 0) {
-        return sendJSON(res, 200, { ok: false, reason: 'Summani to\'g\'ri kiriting.' });
-      }
-      const categoryKey = Object.prototype.hasOwnProperty.call(EXPENSE_CATEGORIES, category) ? category : 'boshqa';
-      const noteStr = String(note || '').trim().slice(0, 200);
-      let branchIdVal = null;
-      if (branchId) {
-        if (!findBranch(owner, branchId)) return sendJSON(res, 200, { ok: false, reason: 'Bunday filial topilmadi.' });
-        branchIdVal = branchId;
-      }
+  saveOwners(owners);
+  return sendOk(res, { audit });
+});
 
-      if (!owner.expenses) owner.expenses = [];
-      const expense = {
-        id: crypto.randomBytes(4).toString('hex'),
-        amount: amountNum,
-        category: categoryKey,
-        note: noteStr,
-        branchId: branchIdVal,
-        createdAt: new Date().toISOString(),
-        createdBy: userId
-      };
-      owner.expenses.unshift(expense);
-      if (owner.expenses.length > 500) owner.expenses.length = 500;
-      saveOwners(owners);
 
-      return sendJSON(res, 200, { ok: true, expense });
-    });
-    return;
+const TASHKENT_OFFSET_MS = 5 * 60 * 60 * 1000;
+
+function tzDateKey(input) {
+  const d = (input instanceof Date) ? input : new Date(input);
+  return new Date(d.getTime() + TASHKENT_OFFSET_MS).toISOString().slice(0, 10);
+}
+
+function tzDayStartFromKey(dateKey) {
+  return new Date(new Date(dateKey + 'T00:00:00.000Z').getTime() - TASHKENT_OFFSET_MS);
+}
+
+function tzDayStart(input) {
+  return tzDayStartFromKey(tzDateKey(input));
+}
+
+function tzWeekStart(input) {
+  const d = (input instanceof Date) ? input : new Date(input);
+  const shifted = new Date(d.getTime() + TASHKENT_OFFSET_MS);
+  const day = shifted.getUTCDay();
+  const diffToMonday = (day === 0 ? -6 : 1) - day;
+  const mondayKey = new Date(shifted.getTime() + diffToMonday * 86400000).toISOString().slice(0, 10);
+  return tzDayStartFromKey(mondayKey);
+}
+
+function tzMonthStart(input) {
+  const d = (input instanceof Date) ? input : new Date(input);
+  const shifted = new Date(d.getTime() + TASHKENT_OFFSET_MS);
+  const monthKey = `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, '0')}-01`;
+  return tzDayStartFromKey(monthKey);
+}
+
+// branchId === undefined -> barcha joylashuvlar (markaziy + filiallar) birga.
+// branchId === null -> faqat markaziy. branchId === '<id>' -> faqat shu filial.
+function matchesBranchFilter(item, branchId) {
+  if (branchId === undefined) return true;
+  return (item.branchId || null) === (branchId || null);
+}
+
+function cashflowBucket(owner, fromDate, branchId) {
+  const orders = (owner.orders || []).filter(o => new Date(o.createdAt) >= fromDate && matchesBranchFilter(o, branchId));
+  const expenses = (owner.expenses || []).filter(e => new Date(e.createdAt) >= fromDate && matchesBranchFilter(e, branchId));
+
+  const dostavkaOrders = orders.filter(o => o.orderType === 'dostavka' && o.paymentType === 'dostavka_orqali');
+  const kassaOrders = orders.filter(o => !(o.orderType === 'dostavka' && o.paymentType === 'dostavka_orqali'));
+  const kassaIncome = kassaOrders.reduce((sum, o) => sum + orderIncomeAmount(o), 0);
+  const dostavkaIncome = dostavkaOrders.reduce((sum, o) => sum + orderIncomeAmount(o), 0);
+  const income = kassaIncome + dostavkaIncome;
+  const expense = expenses.reduce((sum, e) => sum + (e.amount || 0), 0);
+
+  const paymentBreakdown = {};
+  for (const key of Object.keys(PAYMENT_TYPES)) paymentBreakdown[key] = 0;
+  for (const o of orders) {
+    const pt = Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, o.paymentType) ? o.paymentType : 'naqd';
+    paymentBreakdown[pt] = (paymentBreakdown[pt] || 0) + orderIncomeAmount(o);
   }
 
-  if (req.method === 'POST' && req.url === '/api/expense-remove') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, id } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Faqat oshxona egasi o\'chira oladi'));
-      const owner = ownerCtx.owner;
-      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
-
-      const before = (owner.expenses || []).length;
-      owner.expenses = (owner.expenses || []).filter(e => e.id !== id);
-      saveOwners(owners);
-
-      return sendJSON(res, 200, { ok: true, removed: before !== owner.expenses.length });
-    });
-    return;
+  const kassaBreakdown = {};
+  for (const key of Object.keys(PAYMENT_TYPES)) kassaBreakdown[key] = 0;
+  for (const o of kassaOrders) {
+    const pt = Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, o.paymentType) ? o.paymentType : 'naqd';
+    kassaBreakdown[pt] = (kassaBreakdown[pt] || 0) + orderIncomeAmount(o);
   }
 
-  if (req.method === 'POST' && req.url === '/api/cashflow') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = pruneExpiredOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
-      const owner = ownerCtx.owner;
-      if (!ownerCanUseFeature(owner, 'cashflow')) return sendJSON(res, 200, featureBlockedResult('cashflow'));
-
-      const branchId = Object.prototype.hasOwnProperty.call(payload, 'branchId') ? (payload.branchId || null) : undefined;
-      const cashflow = computeCashflow(owner, branchId);
-      const recentExpenses = (owner.expenses || []).filter(e => matchesBranchFilter(e, branchId)).slice(0, 30);
-
-      return sendJSON(res, 200, { ok: true, cashflow, expenses: recentExpenses, categories: EXPENSE_CATEGORIES, branches: owner.branches || [], centralBranchName: owner.centralBranchName || null });
-    });
-    return;
+  const byCategory = {};
+  for (const key of Object.keys(EXPENSE_CATEGORIES)) byCategory[key] = 0;
+  for (const e of expenses) {
+    const cat = Object.prototype.hasOwnProperty.call(EXPENSE_CATEGORIES, e.category) ? e.category : 'boshqa';
+    byCategory[cat] = (byCategory[cat] || 0) + (e.amount || 0);
   }
 
-  if (req.method === 'POST' && req.url === '/api/dashboard-summary') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+  return {
+    income, expense, net: income - expense, orderCount: orders.length, byCategory,
+    kassaIncome, dostavkaIncome, dostavkaOrderCount: dostavkaOrders.length, paymentBreakdown, kassaBreakdown
+  };
+}
 
-      const userId = String(check.user && check.user.id);
-      const owners = pruneExpiredOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
-      const owner = ownerCtx.owner;
-      if (!ownerCanUseFeature(owner, 'dashboard')) return sendJSON(res, 200, featureBlockedResult('dashboard'));
+function computeCashflow(owner, branchId) {
+  const now = new Date();
+  const todayStart = tzDayStart(now);
+  const weekStart = tzWeekStart(now);
+  const monthStart = tzMonthStart(now);
 
-      const branchId = Object.prototype.hasOwnProperty.call(payload, 'branchId') ? payload.branchId : undefined;
+  const orders = (owner.orders || []).filter(o => matchesBranchFilter(o, branchId));
+  const expenses = (owner.expenses || []).filter(e => matchesBranchFilter(e, branchId));
+  const dailySeries = [];
 
-      const now = new Date();
-      const todayStart = tzDayStart(now);
-      const yesterdayStart = new Date(todayStart.getTime() - 86400000);
-
-      const today = cashflowBucket(owner, todayStart, branchId);
-
-      const yesterdayOrders = (owner.orders || []).filter(o => {
-        const d = new Date(o.createdAt);
-        return d >= yesterdayStart && d < todayStart && matchesBranchFilter(o, branchId);
-      });
-      const yesterdayIncome = yesterdayOrders.reduce((s, o) => s + orderIncomeAmount(o), 0);
-      const yesterdayExpense = (owner.expenses || []).filter(e => {
-        const d = new Date(e.createdAt);
-        return d >= yesterdayStart && d < todayStart && matchesBranchFilter(e, branchId);
-      }).reduce((s, e) => s + (e.amount || 0), 0);
-
-      const todayCourierDeliveries = (owner.orders || []).filter(o =>
-        o.orderType === 'dostavka' && o.deliveredBy && new Date(o.deliveredAt || o.createdAt) >= todayStart && matchesBranchFilter(o, branchId)).length;
-      const yesterdayCourierDeliveries = (owner.orders || []).filter(o => {
-        if (o.orderType !== 'dostavka' || !o.deliveredBy) return false;
-        const d = new Date(o.deliveredAt || o.createdAt);
-        return d >= yesterdayStart && d < todayStart && matchesBranchFilter(o, branchId);
-      }).length;
-
-      const summary = {
-        todaySales: today.income,
-        yesterdaySales: yesterdayIncome,
-        todayNetProfit: today.net,
-        yesterdayNetProfit: yesterdayIncome - yesterdayExpense,
-        todayOrderCount: today.orderCount,
-        yesterdayOrderCount: yesterdayOrders.length,
-        todayCourierDeliveries,
-        yesterdayCourierDeliveries
-      };
-
-      return sendJSON(res, 200, { ok: true, summary });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/order-status-counts') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = pruneExpiredOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
-      const owner = ownerCtx.owner;
-      if (!ownerCanUseFeature(owner, 'dashboard')) return sendJSON(res, 200, featureBlockedResult('dashboard'));
-
-      const branchId = Object.prototype.hasOwnProperty.call(payload, 'branchId') ? payload.branchId : undefined;
-
-      const now = new Date();
-      const todayStart = tzDayStart(now);
-      const thresholdMs = ORDER_DELAY_THRESHOLD_MINUTES * 60 * 1000;
-
-      const todaysOrders = (owner.orders || []).filter(o => new Date(o.createdAt) >= todayStart && matchesBranchFilter(o, branchId));
-
-      let yangi = 0, tayyorlanmoqda = 0, tayyor = 0, kechikayotgan = 0;
-      for (const o of todaysOrders) {
-        if (o.status === 'bekor_qilindi') continue;
-        if (o.status === 'tayyor') { tayyor += 1; continue; }
-        const ageMs = now - new Date(o.createdAt);
-        if (ageMs > thresholdMs) { kechikayotgan += 1; continue; }
-        if (o.status === 'tayyorlanmoqda') tayyorlanmoqda += 1;
-        else yangi += 1;
-      }
-
-      return sendJSON(res, 200, {
-        ok: true,
-        counts: { yangi, tayyorlanmoqda, tayyor, kechikayotgan },
-        delayThresholdMinutes: ORDER_DELAY_THRESHOLD_MINUTES
-      });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/dashboard-alerts') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = pruneExpiredOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
-      const owner = ownerCtx.owner;
-      if (!ownerCanUseFeature(owner, 'dashboard')) return sendJSON(res, 200, featureBlockedResult('dashboard'));
-
-      const branchId = Object.prototype.hasOwnProperty.call(payload, 'branchId') ? payload.branchId : undefined;
-      const alerts = [];
-
-      const stockPools = branchId === undefined
-        ? [owner, ...(owner.branches || [])]
-        : (branchId === null ? [owner] : [findBranch(owner, branchId)].filter(Boolean));
-      let lowStockCount = 0;
-      for (const pool of stockPools) {
-        for (const item of (pool.stock || [])) {
-          if (item.minQty === null || item.minQty === undefined) continue;
-          if (item.qty <= item.minQty) lowStockCount += 1;
-        }
-      }
-      if (lowStockCount > 0) {
-        alerts.push({
-          type: 'low_stock', level: 'error', text: 'Tugayotgan mahsulotlar bor',
-          count: lowStockCount, screen: 'ombor'
-        });
-      }
-
-      const now = new Date();
-      const todayStart = tzDayStart(now);
-      const thresholdMs = ORDER_DELAY_THRESHOLD_MINUTES * 60 * 1000;
-      const todaysOrders = (owner.orders || []).filter(o => new Date(o.createdAt) >= todayStart && matchesBranchFilter(o, branchId));
-      let delayedCount = 0;
-      for (const o of todaysOrders) {
-        if (o.status === 'tayyor') continue;
-        if ((now - new Date(o.createdAt)) > thresholdMs) delayedCount += 1;
-      }
-      if (delayedCount > 0) {
-        alerts.push({
-          type: 'delayed_orders', level: 'warning', text: 'Kechikayotgan buyurtmalar',
-          count: delayedCount, screen: 'buyurtmalar_kechikkan'
-        });
-      }
-
-      const todayDateKey = tzDateKey(now);
-      const dailyReportClosed = (owner.zReports || []).some(z => z.date === todayDateKey && (branchId === undefined || (z.branchId || null) === (branchId || null)));
-      if (!dailyReportClosed) {
-        alerts.push({
-          type: 'daily_report_open', level: 'info', text: 'Bugungi kun yakuni uchun hisob yopilmagan',
-          count: null, screen: 'zreport'
-        });
-      }
-
-      return sendJSON(res, 200, { ok: true, alerts });
-    });
-    return;
-  }
-
-  function resolvePeriodStart(period) {
-    const now = new Date();
-    if (period === 'week') return tzWeekStart(now);
-    if (period === 'month') return tzMonthStart(now);
-    if (period === 'all') return new Date(0);
-    return tzDayStart(now);
-  }
-
-  if (req.method === 'POST' && req.url === '/api/branch-report') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, period } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = pruneExpiredOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
-      const owner = ownerCtx.owner;
-
-      const fromDate = resolvePeriodStart(period);
-      const orders = (owner.orders || []).filter(o => new Date(o.createdAt) >= fromDate);
-
-      const buckets = new Map();
-      buckets.set(null, { branchId: null, branchName: owner.centralBranchName || 'Markaziy', orderCount: 0, income: 0, kassaIncome: 0, dostavkaIncome: 0 });
-      for (const b of (owner.branches || [])) {
-        buckets.set(b.id, { branchId: b.id, branchName: b.name, orderCount: 0, income: 0, kassaIncome: 0, dostavkaIncome: 0 });
-      }
-
-      for (const o of orders) {
-        const key = buckets.has(o.branchId || null) ? (o.branchId || null) : null;
-        const bucket = buckets.get(key);
-        bucket.orderCount += 1;
-        bucket.income += orderIncomeAmount(o);
-        if (o.orderType === 'dostavka' && o.paymentType === 'dostavka_orqali') bucket.dostavkaIncome += orderIncomeAmount(o);
-        else bucket.kassaIncome += orderIncomeAmount(o);
-      }
-
-      const report = Array.from(buckets.values())
-        .map(b => Object.assign({}, b, { avgCheck: b.orderCount ? Math.round(b.income / b.orderCount) : 0 }))
-        .sort((a, b) => b.income - a.income);
-
-      return sendJSON(res, 200, { ok: true, report });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/restricted-customers') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
-      const owner = ownerCtx.owner;
-
-      const customers = [];
-      for (const c of (owner.customers || [])) {
-        const cancelledCount = customerCancelledDeliveryCount(owner, c.id);
-        if (cancelledCount < CARD_ONLY_AFTER_CANCELLED_DELIVERIES) continue;
-        const recentCancellations = (owner.orders || [])
-          .filter(o => String(o.customerId) === String(c.id) && o.orderType === 'dostavka' && o.status === 'bekor_qilindi')
-          .sort((a, b) => new Date(b.cancelledAt || b.createdAt) - new Date(a.cancelledAt || a.createdAt))
-          .slice(0, 5)
-          .map(o => ({ reason: o.cancelReason || null, cancelledAt: o.cancelledAt || o.createdAt, total: o.total || 0 }));
-        customers.push({
-          id: c.id,
-          name: c.firstName || c.username || `ID: ${c.id}`,
-          username: c.username || null,
-          cancelledCount,
-          restricted: customerIsCardOnlyRestricted(owner, c.id),
-          recentCancellations
-        });
-      }
-      customers.sort((a, b) => b.cancelledCount - a.cancelledCount);
-
-      return sendJSON(res, 200, { ok: true, customers });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/owner-reviews') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, targetOwnerId } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      let owner;
-      if (targetOwnerId && isAdminId(userId)) {
-        owner = findOwner(owners, targetOwnerId);
-        if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Bunday oshxona topilmadi.' });
-      } else {
-        owner = findOwner(owners, userId);
-        if (!isOwnerAccessValid(owner)) return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga (yoki adminga) ko\'rinadi'));
-      }
-
-      const rating = ownerAverageRating(owner);
-      const reviews = ownerRatedOrders(owner)
-        .sort((a, b) => new Date(b.customerRatedAt) - new Date(a.customerRatedAt))
-        .slice(0, 200)
-        .map(o => ({
-          orderId: o.id,
-          stars: o.customerRating,
-          comment: o.customerComment || null,
-          ratedAt: o.customerRatedAt,
-          customerName: (findCustomer(owner, o.customerId) || {}).firstName || o.customerName || null
-        }));
-
-      return sendJSON(res, 200, { ok: true, avgRating: rating.avg, ratingCount: rating.count, reviews });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/toggle-customer-restriction') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, customerId, action } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
-      const owner = ownerCtx.owner;
-
-      if (!customerId) return sendJSON(res, 200, { ok: false, reason: 'Mijoz tanlanmagan.' });
-      if (!Array.isArray(owner.cardOnlyOverrides)) owner.cardOnlyOverrides = [];
-
-      if (action === 'clear') {
-        if (!owner.cardOnlyOverrides.some(id => String(id) === String(customerId))) {
-          owner.cardOnlyOverrides.push(String(customerId));
-        }
-      } else if (action === 'restore') {
-        owner.cardOnlyOverrides = owner.cardOnlyOverrides.filter(id => String(id) !== String(customerId));
-      } else {
-        return sendJSON(res, 200, { ok: false, reason: 'Noto\'g\'ri amal.' });
-      }
-
-      saveOwners(owners);
-      return sendJSON(res, 200, { ok: true, restricted: customerIsCardOnlyRestricted(owner, customerId) });
-    });
-    return;
-  }
-
-  function buildZReport(owner, dateKey, branchId) {
-    const dayStart = tzDayStartFromKey(dateKey);
+  for (let i = 13; i >= 0; i--) {
+    const dayStart = new Date(todayStart.getTime() - i * 86400000);
     const dayEnd = new Date(dayStart.getTime() + 86400000);
-
-    const orders = (owner.orders || []).filter(o => {
-      const t = new Date(o.createdAt);
-      return t >= dayStart && t < dayEnd && matchesBranchFilter(o, branchId);
-    });
-    const expenses = (owner.expenses || []).filter(e => {
-      const t = new Date(e.createdAt);
-      return t >= dayStart && t < dayEnd && matchesBranchFilter(e, branchId);
-    });
-
-    const dostavkaOrders = orders.filter(o => o.orderType === 'dostavka' && o.paymentType === 'dostavka_orqali');
-    const kassaOrders = orders.filter(o => !(o.orderType === 'dostavka' && o.paymentType === 'dostavka_orqali'));
-    const kassaIncome = kassaOrders.reduce((s, o) => s + orderIncomeAmount(o), 0);
-    const dostavkaIncome = dostavkaOrders.reduce((s, o) => s + orderIncomeAmount(o), 0);
-    const income = kassaIncome + dostavkaIncome;
-
-    const paymentBreakdown = {};
-    for (const key of Object.keys(PAYMENT_TYPES)) paymentBreakdown[key] = 0;
-    for (const o of orders) {
-      const pt = Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, o.paymentType) ? o.paymentType : 'naqd';
-      paymentBreakdown[pt] = (paymentBreakdown[pt] || 0) + orderIncomeAmount(o);
-    }
-
-    const kassaBreakdown = {};
-    for (const key of Object.keys(PAYMENT_TYPES)) kassaBreakdown[key] = 0;
-    for (const o of kassaOrders) {
-      const pt = Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, o.paymentType) ? o.paymentType : 'naqd';
-      kassaBreakdown[pt] = (kassaBreakdown[pt] || 0) + orderIncomeAmount(o);
-    }
-
-    const expenseByCategory = {};
-    for (const key of Object.keys(EXPENSE_CATEGORIES)) expenseByCategory[key] = 0;
-    for (const e of expenses) {
-      const cat = Object.prototype.hasOwnProperty.call(EXPENSE_CATEGORIES, e.category) ? e.category : 'boshqa';
-      expenseByCategory[cat] = (expenseByCategory[cat] || 0) + (e.amount || 0);
-    }
-    const expense = expenses.reduce((s, e) => s + (e.amount || 0), 0);
-
-    return {
-      date: dateKey,
-      income, kassaIncome, dostavkaIncome, orderCount: orders.length,
-      paymentBreakdown, expense, expenseByCategory, net: income - expense, kassaBreakdown
-    };
+    const key = tzDateKey(dayStart);
+    const dayIncome = orders.filter(o => { const t = new Date(o.createdAt); return t >= dayStart && t < dayEnd; }).reduce((s, o) => s + orderIncomeAmount(o), 0);
+    const dayExpense = expenses.filter(e => { const t = new Date(e.createdAt); return t >= dayStart && t < dayEnd; }).reduce((s, e) => s + (e.amount || 0), 0);
+    dailySeries.push({ date: key, income: dayIncome, expense: dayExpense, net: dayIncome - dayExpense });
   }
 
-  if (req.method === 'POST' && req.url === '/api/z-report-create') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+  return {
+    today: cashflowBucket(owner, todayStart, branchId),
+    week: cashflowBucket(owner, weekStart, branchId),
+    month: cashflowBucket(owner, monthStart, branchId),
+    dailySeries
+  };
+}
 
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
-      const owner = ownerCtx.owner;
-      if (!ownerCanUseFeature(owner, 'z-report')) return sendJSON(res, 200, featureBlockedResult('z-report'));
+authed('/api/expense-add', (payload, res, { userId }) => {
+  const { amount, note, category, branchId } = payload;
 
-      const branchId = payload.branchId ? (findBranch(owner, payload.branchId) ? payload.branchId : null) : null;
-      const dateKey = tzDateKey(new Date());
-      const built = buildZReport(owner, dateKey, branchId);
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi xarajat kirita oladi');
+  const owner = ownerCtx.owner;
+  if (!ownerCanUseFeature(owner, 'expense-manage')) return sendFeatureBlocked(res, 'expense-manage');
 
-      if (!owner.zReports) owner.zReports = [];
-      const existing = owner.zReports.find(z => z.date === dateKey && (z.branchId || null) === (branchId || null));
-      const report = Object.assign({
-        id: existing ? existing.id : crypto.randomBytes(4).toString('hex'),
-        branchId: branchId || null,
-        createdAt: new Date().toISOString(),
-        createdBy: userId
-      }, built);
-
-      if (existing) {
-        Object.assign(existing, report);
-      } else {
-        owner.zReports.unshift(report);
-      }
-      if (owner.zReports.length > 90) owner.zReports.length = 90;
-      saveOwners(owners);
-
-      return sendJSON(res, 200, { ok: true, report, wasUpdate: !!existing });
-    });
-    return;
+  const amountNum = Number(amount);
+  if (!Number.isFinite(amountNum) || amountNum <= 0) {
+    return sendFail(res, 'Summani to\'g\'ri kiriting.');
+  }
+  const categoryKey = Object.prototype.hasOwnProperty.call(EXPENSE_CATEGORIES, category) ? category : 'boshqa';
+  const noteStr = String(note || '').trim().slice(0, 200);
+  let branchIdVal = null;
+  if (branchId) {
+    if (!findBranch(owner, branchId)) return sendFail(res, 'Bunday filial topilmadi.');
+    branchIdVal = branchId;
   }
 
-  if (req.method === 'POST' && req.url === '/api/z-report-list') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+  if (!owner.expenses) owner.expenses = [];
+  const expense = {
+    id: crypto.randomBytes(4).toString('hex'),
+    amount: amountNum,
+    category: categoryKey,
+    note: noteStr,
+    branchId: branchIdVal,
+    createdAt: new Date().toISOString(),
+    createdBy: userId
+  };
+  owner.expenses.unshift(expense);
+  if (owner.expenses.length > 500) owner.expenses.length = 500;
+  saveOwners(owners);
 
-      const userId = String(check.user && check.user.id);
-      const owners = pruneExpiredOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
-      const owner = ownerCtx.owner;
+  return sendOk(res, { expense });
+});
 
-      const branchId = Object.prototype.hasOwnProperty.call(payload, 'branchId') ? (payload.branchId || null) : undefined;
-      const reports = (owner.zReports || [])
-        .filter(z => matchesBranchFilter(z, branchId))
-        .slice().sort((a, b) => b.date.localeCompare(a.date)).slice(0, 30);
-      return sendJSON(res, 200, { ok: true, reports, branches: owner.branches || [], centralBranchName: owner.centralBranchName || null });
-    });
-    return;
+authed('/api/expense-remove', (payload, res, { userId }) => {
+  const { id } = payload;
+
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'chira oladi');
+  const owner = ownerCtx.owner;
+  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
+
+  const before = (owner.expenses || []).length;
+  owner.expenses = (owner.expenses || []).filter(e => e.id !== id);
+  saveOwners(owners);
+
+  return sendOk(res, { removed: before !== owner.expenses.length });
+});
+
+authed('/api/cashflow', (payload, res, { userId }) => {
+  const owners = pruneExpiredOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
+  const owner = ownerCtx.owner;
+  if (!ownerCanUseFeature(owner, 'cashflow')) return sendFeatureBlocked(res, 'cashflow');
+
+  const branchId = Object.prototype.hasOwnProperty.call(payload, 'branchId') ? (payload.branchId || null) : undefined;
+  const cashflow = computeCashflow(owner, branchId);
+  const recentExpenses = (owner.expenses || []).filter(e => matchesBranchFilter(e, branchId)).slice(0, 30);
+
+  return sendOk(res, { cashflow, expenses: recentExpenses, categories: EXPENSE_CATEGORIES, branches: owner.branches || [], centralBranchName: owner.centralBranchName || null });
+});
+
+authed('/api/dashboard-summary', (payload, res, { userId }) => {
+  const owners = pruneExpiredOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
+  const owner = ownerCtx.owner;
+  if (!ownerCanUseFeature(owner, 'dashboard')) return sendFeatureBlocked(res, 'dashboard');
+
+  const branchId = Object.prototype.hasOwnProperty.call(payload, 'branchId') ? payload.branchId : undefined;
+
+  const now = new Date();
+  const todayStart = tzDayStart(now);
+  const yesterdayStart = new Date(todayStart.getTime() - 86400000);
+
+  const today = cashflowBucket(owner, todayStart, branchId);
+
+  const yesterdayOrders = (owner.orders || []).filter(o => {
+    const d = new Date(o.createdAt);
+    return d >= yesterdayStart && d < todayStart && matchesBranchFilter(o, branchId);
+  });
+  const yesterdayIncome = yesterdayOrders.reduce((s, o) => s + orderIncomeAmount(o), 0);
+  const yesterdayExpense = (owner.expenses || []).filter(e => {
+    const d = new Date(e.createdAt);
+    return d >= yesterdayStart && d < todayStart && matchesBranchFilter(e, branchId);
+  }).reduce((s, e) => s + (e.amount || 0), 0);
+
+  const todayCourierDeliveries = (owner.orders || []).filter(o =>
+    o.orderType === 'dostavka' && o.deliveredBy && new Date(o.deliveredAt || o.createdAt) >= todayStart && matchesBranchFilter(o, branchId)).length;
+  const yesterdayCourierDeliveries = (owner.orders || []).filter(o => {
+    if (o.orderType !== 'dostavka' || !o.deliveredBy) return false;
+    const d = new Date(o.deliveredAt || o.createdAt);
+    return d >= yesterdayStart && d < todayStart && matchesBranchFilter(o, branchId);
+  }).length;
+
+  const summary = {
+    todaySales: today.income,
+    yesterdaySales: yesterdayIncome,
+    todayNetProfit: today.net,
+    yesterdayNetProfit: yesterdayIncome - yesterdayExpense,
+    todayOrderCount: today.orderCount,
+    yesterdayOrderCount: yesterdayOrders.length,
+    todayCourierDeliveries,
+    yesterdayCourierDeliveries
+  };
+
+  return sendOk(res, { summary });
+});
+
+authed('/api/order-status-counts', (payload, res, { userId }) => {
+  const owners = pruneExpiredOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
+  const owner = ownerCtx.owner;
+  if (!ownerCanUseFeature(owner, 'dashboard')) return sendFeatureBlocked(res, 'dashboard');
+
+  const branchId = Object.prototype.hasOwnProperty.call(payload, 'branchId') ? payload.branchId : undefined;
+
+  const now = new Date();
+  const todayStart = tzDayStart(now);
+  const thresholdMs = ORDER_DELAY_THRESHOLD_MINUTES * 60 * 1000;
+
+  const todaysOrders = (owner.orders || []).filter(o => new Date(o.createdAt) >= todayStart && matchesBranchFilter(o, branchId));
+
+  let yangi = 0, tayyorlanmoqda = 0, tayyor = 0, kechikayotgan = 0;
+  for (const o of todaysOrders) {
+    if (o.status === 'bekor_qilindi') continue;
+    if (o.status === 'tayyor') { tayyor += 1; continue; }
+    const ageMs = now - new Date(o.createdAt);
+    if (ageMs > thresholdMs) { kechikayotgan += 1; continue; }
+    if (o.status === 'tayyorlanmoqda') tayyorlanmoqda += 1;
+    else yangi += 1;
   }
 
-  const UZ_WEEKDAYS = ['Yakshanba', 'Dushanba', 'Seshanba', 'Chorshanba', 'Payshanba', 'Juma', 'Shanba'];
+  return sendOk(res, {
+    counts: { yangi, tayyorlanmoqda, tayyor, kechikayotgan },
+    delayThresholdMinutes: ORDER_DELAY_THRESHOLD_MINUTES
+  });
+});
 
-  function computeTopItems(owner, fromDate, limit) {
-    const orders = (owner.orders || []).filter(o => new Date(o.createdAt) >= fromDate);
-    const byId = new Map();
-    for (const o of orders) {
-      for (const it of (o.items || [])) {
-        const cur = byId.get(it.id) || { id: it.id, name: it.name, qty: 0, revenue: 0 };
-        cur.qty += it.qty;
-        cur.revenue += it.price * it.qty;
-        byId.set(it.id, cur);
-      }
-    }
-    return Array.from(byId.values()).sort((a, b) => b.qty - a.qty).slice(0, limit || 5);
-  }
+authed('/api/dashboard-alerts', (payload, res, { userId }) => {
+  const owners = pruneExpiredOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
+  const owner = ownerCtx.owner;
+  if (!ownerCanUseFeature(owner, 'dashboard')) return sendFeatureBlocked(res, 'dashboard');
 
-  function computePeakTimes(owner, fromDate) {
-    const orders = (owner.orders || []).filter(o => new Date(o.createdAt) >= fromDate);
-    const byHour = new Array(24).fill(0);
-    const byDay = new Array(7).fill(0);
-    for (const o of orders) {
-      const d = new Date(o.createdAt);
-      byHour[d.getHours()]++;
-      byDay[d.getDay()]++;
-    }
-    const hours = byHour.map((count, hour) => ({ hour, count })).sort((a, b) => b.count - a.count);
-    const days = byDay.map((count, day) => ({ day, dayLabel: UZ_WEEKDAYS[day], count })).sort((a, b) => b.count - a.count);
-    return { byHour, byDay, topHours: hours.filter(h => h.count > 0).slice(0, 3), topDays: days.filter(d => d.count > 0).slice(0, 3) };
-  }
+  const branchId = Object.prototype.hasOwnProperty.call(payload, 'branchId') ? payload.branchId : undefined;
+  const alerts = [];
 
-  function computeStockForecast(owner, branchId) {
-    const pool = resolveStockPool(owner, branchId || null);
-    if (!pool) return [];
-    const since = new Date(Date.now() - 7 * 86400000);
-    const usageById = new Map();
-    for (const m of (pool.stockMovements || [])) {
-      if (m.type !== 'chiqim') continue;
-      if (!m.note || !m.note.startsWith('Buyurtma:')) continue;
-      if (new Date(m.createdAt) < since) continue;
-      usageById.set(m.stockId, (usageById.get(m.stockId) || 0) + m.qty);
-    }
-    const forecast = [];
+  const stockPools = branchId === undefined
+    ? [owner, ...(owner.branches || [])]
+    : (branchId === null ? [owner] : [findBranch(owner, branchId)].filter(Boolean));
+  let lowStockCount = 0;
+  for (const pool of stockPools) {
     for (const item of (pool.stock || [])) {
-      const used7d = usageById.get(item.id) || 0;
-      if (used7d <= 0) continue;
-      const avgDaily = Math.round((used7d / 7) * 1000) / 1000;
-      const predictedNeed = Math.round(avgDaily * 1000) / 1000;
-
-      const daysLeft = avgDaily > 0 ? Math.round((item.qty / avgDaily) * 10) / 10 : null;
-      forecast.push({
-        stockId: item.id, name: item.name, unit: item.unit,
-        currentQty: item.qty, avgDailyUsage: avgDaily, predictedNeed,
-        shortage: item.qty < predictedNeed,
-        daysLeft, urgent: daysLeft !== null && daysLeft <= 3
-      });
+      if (item.minQty === null || item.minQty === undefined) continue;
+      if (item.qty <= item.minQty) lowStockCount += 1;
     }
-    forecast.sort((a, b) => {
-      const aLeft = a.daysLeft === null ? Infinity : a.daysLeft;
-      const bLeft = b.daysLeft === null ? Infinity : b.daysLeft;
-      return aLeft - bLeft;
-    });
-    return forecast;
   }
-
-  function callAnthropicApi(systemPrompt, userText) {
-    return new Promise((resolve, reject) => {
-      if (!ANTHROPIC_API_KEY) return reject(new Error('ANTHROPIC_API_KEY sozlanmagan'));
-      const body = JSON.stringify({
-        model: AI_MODEL,
-        max_tokens: 500,
-        system: systemPrompt,
-        messages: [{ role: 'user', content: userText }]
-      });
-      const reqOptions = {
-        hostname: 'api.anthropic.com',
-        path: '/v1/messages',
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': ANTHROPIC_API_KEY,
-          'anthropic-version': '2023-06-01',
-          'Content-Length': Buffer.byteLength(body)
-        }
-      };
-      const apiReq = https.request(reqOptions, apiRes => {
-        let data = '';
-        apiRes.on('data', chunk => { data += chunk; });
-        apiRes.on('end', () => {
-          try {
-            const parsed = JSON.parse(data);
-            const text = (parsed.content || []).map(c => c.text || '').join('\n').trim();
-            if (!text) return reject(new Error('AI javob bo\'sh qaytdi'));
-            resolve(text);
-          } catch (e) { reject(e); }
-        });
-      });
-      apiReq.on('error', reject);
-      apiReq.write(body);
-      apiReq.end();
+  if (lowStockCount > 0) {
+    alerts.push({
+      type: 'low_stock', level: 'error', text: 'Tugayotgan mahsulotlar bor',
+      count: lowStockCount, screen: 'ombor'
     });
   }
 
-  function ruleBasedAiAnswer(question, ctx) {
-    const q = String(question || '').toLowerCase();
+  const now = new Date();
+  const todayStart = tzDayStart(now);
+  const thresholdMs = ORDER_DELAY_THRESHOLD_MINUTES * 60 * 1000;
+  const todaysOrders = (owner.orders || []).filter(o => new Date(o.createdAt) >= todayStart && matchesBranchFilter(o, branchId));
+  let delayedCount = 0;
+  for (const o of todaysOrders) {
+    if (o.status === 'tayyor') continue;
+    if ((now - new Date(o.createdAt)) > thresholdMs) delayedCount += 1;
+  }
+  if (delayedCount > 0) {
+    alerts.push({
+      type: 'delayed_orders', level: 'warning', text: 'Kechikayotgan buyurtmalar',
+      count: delayedCount, screen: 'buyurtmalar_kechikkan'
+    });
+  }
 
-    if (/bugun/.test(q) && /foyda|savdo|kirim/.test(q)) {
-      return `Bugungi kirim: ${fmtNum(ctx.cashflow.today.income)} so'm, xarajat: ${fmtNum(ctx.cashflow.today.expense)} so'm, sof foyda: ${fmtNum(ctx.cashflow.today.net)} so'm (${ctx.cashflow.today.orderCount} ta buyurtma).`;
+  const todayDateKey = tzDateKey(now);
+  const dailyReportClosed = (owner.zReports || []).some(z => z.date === todayDateKey && (branchId === undefined || (z.branchId || null) === (branchId || null)));
+  if (!dailyReportClosed) {
+    alerts.push({
+      type: 'daily_report_open', level: 'info', text: 'Bugungi kun yakuni uchun hisob yopilmagan',
+      count: null, screen: 'zreport'
+    });
+  }
+
+  return sendOk(res, { alerts });
+});
+
+function resolvePeriodStart(period) {
+  const now = new Date();
+  if (period === 'week') return tzWeekStart(now);
+  if (period === 'month') return tzMonthStart(now);
+  if (period === 'all') return new Date(0);
+  return tzDayStart(now);
+}
+
+authed('/api/branch-report', (payload, res, { userId }) => {
+  const { period } = payload;
+
+  const owners = pruneExpiredOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
+  const owner = ownerCtx.owner;
+
+  const fromDate = resolvePeriodStart(period);
+  const orders = (owner.orders || []).filter(o => new Date(o.createdAt) >= fromDate);
+
+  const buckets = new Map();
+  buckets.set(null, { branchId: null, branchName: owner.centralBranchName || 'Markaziy', orderCount: 0, income: 0, kassaIncome: 0, dostavkaIncome: 0 });
+  for (const b of (owner.branches || [])) {
+    buckets.set(b.id, { branchId: b.id, branchName: b.name, orderCount: 0, income: 0, kassaIncome: 0, dostavkaIncome: 0 });
+  }
+
+  for (const o of orders) {
+    const key = buckets.has(o.branchId || null) ? (o.branchId || null) : null;
+    const bucket = buckets.get(key);
+    bucket.orderCount += 1;
+    bucket.income += orderIncomeAmount(o);
+    if (o.orderType === 'dostavka' && o.paymentType === 'dostavka_orqali') bucket.dostavkaIncome += orderIncomeAmount(o);
+    else bucket.kassaIncome += orderIncomeAmount(o);
+  }
+
+  const report = Array.from(buckets.values())
+    .map(b => Object.assign({}, b, { avgCheck: b.orderCount ? Math.round(b.income / b.orderCount) : 0 }))
+    .sort((a, b) => b.income - a.income);
+
+  return sendOk(res, { report });
+});
+
+authed('/api/restricted-customers', (payload, res, { userId }) => {
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
+  const owner = ownerCtx.owner;
+
+  const customers = [];
+  for (const c of (owner.customers || [])) {
+    const cancelledCount = customerCancelledDeliveryCount(owner, c.id);
+    if (cancelledCount < CARD_ONLY_AFTER_CANCELLED_DELIVERIES) continue;
+    const recentCancellations = (owner.orders || [])
+      .filter(o => String(o.customerId) === String(c.id) && o.orderType === 'dostavka' && o.status === 'bekor_qilindi')
+      .sort((a, b) => new Date(b.cancelledAt || b.createdAt) - new Date(a.cancelledAt || a.createdAt))
+      .slice(0, 5)
+      .map(o => ({ reason: o.cancelReason || null, cancelledAt: o.cancelledAt || o.createdAt, total: o.total || 0 }));
+    customers.push({
+      id: c.id,
+      name: c.firstName || c.username || `ID: ${c.id}`,
+      username: c.username || null,
+      cancelledCount,
+      restricted: customerIsCardOnlyRestricted(owner, c.id),
+      recentCancellations
+    });
+  }
+  customers.sort((a, b) => b.cancelledCount - a.cancelledCount);
+
+  return sendOk(res, { customers });
+});
+
+authed('/api/owner-reviews', (payload, res, { userId }) => {
+  const { targetOwnerId } = payload;
+
+  const owners = loadOwners();
+  let owner;
+  if (targetOwnerId && isAdminId(userId)) {
+    owner = findOwner(owners, targetOwnerId);
+    if (!owner) return sendFail(res, 'Bunday oshxona topilmadi.');
+  } else {
+    owner = findOwner(owners, userId);
+    if (!isOwnerAccessValid(owner)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga (yoki adminga) ko\'rinadi');
+  }
+
+  const rating = ownerAverageRating(owner);
+  const reviews = ownerRatedOrders(owner)
+    .sort((a, b) => new Date(b.customerRatedAt) - new Date(a.customerRatedAt))
+    .slice(0, 200)
+    .map(o => ({
+      orderId: o.id,
+      stars: o.customerRating,
+      comment: o.customerComment || null,
+      ratedAt: o.customerRatedAt,
+      customerName: (findCustomer(owner, o.customerId) || {}).firstName || o.customerName || null
+    }));
+
+  return sendOk(res, { avgRating: rating.avg, ratingCount: rating.count, reviews });
+});
+
+authed('/api/toggle-customer-restriction', (payload, res, { userId }) => {
+  const { customerId, action } = payload;
+
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
+  const owner = ownerCtx.owner;
+
+  if (!customerId) return sendFail(res, 'Mijoz tanlanmagan.');
+  if (!Array.isArray(owner.cardOnlyOverrides)) owner.cardOnlyOverrides = [];
+
+  if (action === 'clear') {
+    if (!owner.cardOnlyOverrides.some(id => String(id) === String(customerId))) {
+      owner.cardOnlyOverrides.push(String(customerId));
     }
-    if (/hafta/.test(q) && /foyda|savdo|kirim/.test(q)) {
-      return `Shu hafta kirim: ${fmtNum(ctx.cashflow.week.income)} so'm, xarajat: ${fmtNum(ctx.cashflow.week.expense)} so'm, sof foyda: ${fmtNum(ctx.cashflow.week.net)} so'm (${ctx.cashflow.week.orderCount} ta buyurtma).`;
+  } else if (action === 'restore') {
+    owner.cardOnlyOverrides = owner.cardOnlyOverrides.filter(id => String(id) !== String(customerId));
+  } else {
+    return sendFail(res, 'Noto\'g\'ri amal.');
+  }
+
+  saveOwners(owners);
+  return sendOk(res, { restricted: customerIsCardOnlyRestricted(owner, customerId) });
+});
+
+function buildZReport(owner, dateKey, branchId) {
+  const dayStart = tzDayStartFromKey(dateKey);
+  const dayEnd = new Date(dayStart.getTime() + 86400000);
+
+  const orders = (owner.orders || []).filter(o => {
+    const t = new Date(o.createdAt);
+    return t >= dayStart && t < dayEnd && matchesBranchFilter(o, branchId);
+  });
+  const expenses = (owner.expenses || []).filter(e => {
+    const t = new Date(e.createdAt);
+    return t >= dayStart && t < dayEnd && matchesBranchFilter(e, branchId);
+  });
+
+  const dostavkaOrders = orders.filter(o => o.orderType === 'dostavka' && o.paymentType === 'dostavka_orqali');
+  const kassaOrders = orders.filter(o => !(o.orderType === 'dostavka' && o.paymentType === 'dostavka_orqali'));
+  const kassaIncome = kassaOrders.reduce((s, o) => s + orderIncomeAmount(o), 0);
+  const dostavkaIncome = dostavkaOrders.reduce((s, o) => s + orderIncomeAmount(o), 0);
+  const income = kassaIncome + dostavkaIncome;
+
+  const paymentBreakdown = {};
+  for (const key of Object.keys(PAYMENT_TYPES)) paymentBreakdown[key] = 0;
+  for (const o of orders) {
+    const pt = Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, o.paymentType) ? o.paymentType : 'naqd';
+    paymentBreakdown[pt] = (paymentBreakdown[pt] || 0) + orderIncomeAmount(o);
+  }
+
+  const kassaBreakdown = {};
+  for (const key of Object.keys(PAYMENT_TYPES)) kassaBreakdown[key] = 0;
+  for (const o of kassaOrders) {
+    const pt = Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, o.paymentType) ? o.paymentType : 'naqd';
+    kassaBreakdown[pt] = (kassaBreakdown[pt] || 0) + orderIncomeAmount(o);
+  }
+
+  const expenseByCategory = {};
+  for (const key of Object.keys(EXPENSE_CATEGORIES)) expenseByCategory[key] = 0;
+  for (const e of expenses) {
+    const cat = Object.prototype.hasOwnProperty.call(EXPENSE_CATEGORIES, e.category) ? e.category : 'boshqa';
+    expenseByCategory[cat] = (expenseByCategory[cat] || 0) + (e.amount || 0);
+  }
+  const expense = expenses.reduce((s, e) => s + (e.amount || 0), 0);
+
+  return {
+    date: dateKey,
+    income, kassaIncome, dostavkaIncome, orderCount: orders.length,
+    paymentBreakdown, expense, expenseByCategory, net: income - expense, kassaBreakdown
+  };
+}
+
+authed('/api/z-report-create', (payload, res, { userId }) => {
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
+  const owner = ownerCtx.owner;
+  if (!ownerCanUseFeature(owner, 'z-report')) return sendFeatureBlocked(res, 'z-report');
+
+  const branchId = payload.branchId ? (findBranch(owner, payload.branchId) ? payload.branchId : null) : null;
+  const dateKey = tzDateKey(new Date());
+  const built = buildZReport(owner, dateKey, branchId);
+
+  if (!owner.zReports) owner.zReports = [];
+  const existing = owner.zReports.find(z => z.date === dateKey && (z.branchId || null) === (branchId || null));
+  const report = Object.assign({
+    id: existing ? existing.id : crypto.randomBytes(4).toString('hex'),
+    branchId: branchId || null,
+    createdAt: new Date().toISOString(),
+    createdBy: userId
+  }, built);
+
+  if (existing) {
+    Object.assign(existing, report);
+  } else {
+    owner.zReports.unshift(report);
+  }
+  if (owner.zReports.length > 90) owner.zReports.length = 90;
+  saveOwners(owners);
+
+  return sendOk(res, { report, wasUpdate: !!existing });
+});
+
+authed('/api/z-report-list', (payload, res, { userId }) => {
+  const owners = pruneExpiredOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
+  const owner = ownerCtx.owner;
+
+  const branchId = Object.prototype.hasOwnProperty.call(payload, 'branchId') ? (payload.branchId || null) : undefined;
+  const reports = (owner.zReports || [])
+    .filter(z => matchesBranchFilter(z, branchId))
+    .slice().sort((a, b) => b.date.localeCompare(a.date)).slice(0, 30);
+  return sendOk(res, { reports, branches: owner.branches || [], centralBranchName: owner.centralBranchName || null });
+});
+
+const UZ_WEEKDAYS = ['Yakshanba', 'Dushanba', 'Seshanba', 'Chorshanba', 'Payshanba', 'Juma', 'Shanba'];
+
+function computeTopItems(owner, fromDate, limit) {
+  const orders = (owner.orders || []).filter(o => new Date(o.createdAt) >= fromDate);
+  const byId = new Map();
+  for (const o of orders) {
+    for (const it of (o.items || [])) {
+      const cur = byId.get(it.id) || { id: it.id, name: it.name, qty: 0, revenue: 0 };
+      cur.qty += it.qty;
+      cur.revenue += it.price * it.qty;
+      byId.set(it.id, cur);
     }
-    if (/oy/.test(q) && /foyda|savdo|kirim/.test(q)) {
-      return `Shu oy kirim: ${fmtNum(ctx.cashflow.month.income)} so'm, xarajat: ${fmtNum(ctx.cashflow.month.expense)} so'm, sof foyda: ${fmtNum(ctx.cashflow.month.net)} so'm (${ctx.cashflow.month.orderCount} ta buyurtma).`;
-    }
-    if (/top|eng ko'p sotilgan|mashhur|qaysi taom/.test(q)) {
-      if (!ctx.topItems.length) return 'Hozircha (so\'nggi 30 kunda) buyurtma tarixi yo\'q.';
-      const list = ctx.topItems.slice(0, 3).map((it, i) => `${i + 1}. ${it.name} — ${it.qty} dona (${fmtNum(it.revenue)} so'm)`).join('\n');
-      return `Eng ko'p sotilgan taomlar (so'nggi 30 kun):\n${list}`;
-    }
-    if (/pik|band vaqt|qaysi soat|eng gavjum/.test(q)) {
-      if (!ctx.peak.topHours.length) return 'Hozircha buyurtma tarixi yo\'q.';
-      const h = ctx.peak.topHours[0];
-      return `Eng band soat: ${h.hour}:00 atrofida (${h.count} ta buyurtma, so'nggi 30 kun). Eng band kun: ${ctx.peak.topDays[0] ? ctx.peak.topDays[0].dayLabel : 'ma\'lumot yo\'q'}.`;
-    }
-    if (/kam qolgan|tugab qolayotgan|sklad|zaxira/.test(q)) {
-      const low = (ctx.forecast || []).filter(f => f.shortage);
-      if (!low.length) return 'Hozircha ertangi kunga yetarli zaxira bor ko\'rinadi (oxirgi 7 kunlik iste\'mol bo\'yicha).';
-      const list = low.slice(0, 5).map(f => `• ${f.name}: bor ${fmtNum(f.currentQty)} ${f.unit}, kunlik o'rtacha sarf ${fmtNum(f.avgDailyUsage)} ${f.unit}`).join('\n');
-      return `Ertaga yetishmasligi mumkin bo'lgan mahsulotlar:\n${list}`;
-    }
-
-    const topLine = ctx.topItems[0] ? `Eng ko'p sotilgan: ${ctx.topItems[0].name}.` : '';
-    return `Aniq javob topa olmadim, lekin umumiy holat shunday: bugungi sof foyda ${fmtNum(ctx.cashflow.today.net)} so'm, shu hafta ${fmtNum(ctx.cashflow.week.net)} so'm. ${topLine} Aniqroq javob uchun "bugun foyda qancha", "eng ko'p sotilgan taom", "pik vaqt qachon" yoki "sklad kam qolganmi" kabi savol bering.`;
   }
+  return Array.from(byId.values()).sort((a, b) => b.qty - a.qty).slice(0, limit || 5);
+}
 
-  if (req.method === 'POST' && req.url === '/api/ai-analytics') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, period, branchId } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
+function computePeakTimes(owner, fromDate) {
+  const orders = (owner.orders || []).filter(o => new Date(o.createdAt) >= fromDate);
+  const byHour = new Array(24).fill(0);
+  const byDay = new Array(7).fill(0);
+  for (const o of orders) {
+    const d = new Date(o.createdAt);
+    byHour[d.getHours()]++;
+    byDay[d.getDay()]++;
+  }
+  const hours = byHour.map((count, hour) => ({ hour, count })).sort((a, b) => b.count - a.count);
+  const days = byDay.map((count, day) => ({ day, dayLabel: UZ_WEEKDAYS[day], count })).sort((a, b) => b.count - a.count);
+  return { byHour, byDay, topHours: hours.filter(h => h.count > 0).slice(0, 3), topDays: days.filter(d => d.count > 0).slice(0, 3) };
+}
 
-      const userId = String(check.user && check.user.id);
-      const owners = pruneExpiredOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
-      const owner = ownerCtx.owner;
-      if (!ownerCanUseFeature(owner, 'ai-analytics')) return sendJSON(res, 200, featureBlockedResult('ai-analytics'));
+function computeStockForecast(owner, branchId) {
+  const pool = resolveStockPool(owner, branchId || null);
+  if (!pool) return [];
+  const since = new Date(Date.now() - 7 * 86400000);
+  const usageById = new Map();
+  for (const m of (pool.stockMovements || [])) {
+    if (m.type !== 'chiqim') continue;
+    if (!m.note || !m.note.startsWith('Buyurtma:')) continue;
+    if (new Date(m.createdAt) < since) continue;
+    usageById.set(m.stockId, (usageById.get(m.stockId) || 0) + m.qty);
+  }
+  const forecast = [];
+  for (const item of (pool.stock || [])) {
+    const used7d = usageById.get(item.id) || 0;
+    if (used7d <= 0) continue;
+    const avgDaily = Math.round((used7d / 7) * 1000) / 1000;
+    const predictedNeed = Math.round(avgDaily * 1000) / 1000;
 
-      const fromDate = resolvePeriodStart(period || 'week');
-      const topItems = computeTopItems(owner, fromDate, 8);
-      const peak = computePeakTimes(owner, fromDate);
-      const forecast = computeStockForecast(owner, branchId || null);
-
-      return sendJSON(res, 200, {
-        ok: true,
-        period: period || 'week',
-        topItems,
-        peakHours: peak.byHour,
-        peakDays: peak.byDay,
-        topHours: peak.topHours,
-        topDays: peak.topDays,
-        forecast
-      });
+    const daysLeft = avgDaily > 0 ? Math.round((item.qty / avgDaily) * 10) / 10 : null;
+    forecast.push({
+      stockId: item.id, name: item.name, unit: item.unit,
+      currentQty: item.qty, avgDailyUsage: avgDaily, predictedNeed,
+      shortage: item.qty < predictedNeed,
+      daysLeft, urgent: daysLeft !== null && daysLeft <= 3
     });
-    return;
   }
+  forecast.sort((a, b) => {
+    const aLeft = a.daysLeft === null ? Infinity : a.daysLeft;
+    const bLeft = b.daysLeft === null ? Infinity : b.daysLeft;
+    return aLeft - bLeft;
+  });
+  return forecast;
+}
 
-  if (req.method === 'POST' && req.url === '/api/daily-report-preview') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = pruneExpiredOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
-      const owner = ownerCtx.owner;
-      if (!ownerCanUseFeature(owner, 'z-report')) return sendJSON(res, 200, featureBlockedResult('z-report'));
-
-      const yesterdayKey = aiDirDateKey(new Date(Date.now() - 86400000));
-      return sendJSON(res, 200, {
-        ok: true,
-        text: buildDailyReportText(owner, yesterdayKey),
-        enabled: owner.dailyReportEnabled !== false,
-        sentToday: owner.dailyReportLastSent === yesterdayKey,
-        hour: AI_DIRECTOR_HOUR
-      });
+function callAnthropicApi(systemPrompt, userText) {
+  return new Promise((resolve, reject) => {
+    if (!ANTHROPIC_API_KEY) return reject(new Error('ANTHROPIC_API_KEY sozlanmagan'));
+    const body = JSON.stringify({
+      model: AI_MODEL,
+      max_tokens: 500,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: userText }]
     });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/daily-report-send-now') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
-      const owner = ownerCtx.owner;
-      if (!ownerCanUseFeature(owner, 'z-report')) return sendJSON(res, 200, featureBlockedResult('z-report'));
-
-      sendDailyReportDigest(owner, true).then(() => {
-        saveOwners(owners);
-        sendJSON(res, 200, { ok: true });
-      }).catch(() => sendJSON(res, 200, { ok: false, reason: 'Yuborishda xatolik yuz berdi.' }));
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/daily-report-toggle') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, enabled } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
-      const owner = ownerCtx.owner;
-      if (!ownerCanUseFeature(owner, 'z-report')) return sendJSON(res, 200, featureBlockedResult('z-report'));
-
-      owner.dailyReportEnabled = !!enabled;
-      saveOwners(owners);
-      return sendJSON(res, 200, { ok: true, enabled: owner.dailyReportEnabled });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/ai-director-preview') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = pruneExpiredOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
-      const owner = ownerCtx.owner;
-      if (!ownerCanUseFeature(owner, 'ai-director')) return sendJSON(res, 200, featureBlockedResult('ai-director'));
-
-      return sendJSON(res, 200, {
-        ok: true,
-        text: buildAiDirectorText(owner),
-        enabled: owner.aiDirectorEnabled !== false,
-        sentToday: owner.aiDirectorLastSent === aiDirDateKey(new Date()),
-        hour: AI_DIRECTOR_HOUR
-      });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/ai-director-send-now') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
-      const owner = ownerCtx.owner;
-      if (!ownerCanUseFeature(owner, 'ai-director')) return sendJSON(res, 200, featureBlockedResult('ai-director'));
-
-      sendAiDirectorDigest(owner, true).then(() => {
-        saveOwners(owners);
-        sendJSON(res, 200, { ok: true });
-      }).catch(() => sendJSON(res, 200, { ok: false, reason: 'Yuborishda xatolik yuz berdi.' }));
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/ai-director-toggle') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, enabled } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
-      const owner = ownerCtx.owner;
-      if (!ownerCanUseFeature(owner, 'ai-director')) return sendJSON(res, 200, featureBlockedResult('ai-director'));
-
-      owner.aiDirectorEnabled = !!enabled;
-      saveOwners(owners);
-      return sendJSON(res, 200, { ok: true, enabled: owner.aiDirectorEnabled });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/ai-director-weekly-preview') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = pruneExpiredOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
-      const owner = ownerCtx.owner;
-      if (!ownerCanUseFeature(owner, 'ai-director')) return sendJSON(res, 200, featureBlockedResult('ai-director'));
-
-      return sendJSON(res, 200, {
-        ok: true,
-        text: buildAiWeeklyDirectorText(owner),
-        enabled: owner.aiWeeklyEnabled !== false,
-        sentThisWeek: owner.aiWeeklyLastSent === aiDirWeekKey(new Date()),
-        weekday: AI_DIRECTOR_WEEKLY_DAY,
-        hour: AI_DIRECTOR_HOUR
-      });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/ai-director-weekly-send-now') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
-      const owner = ownerCtx.owner;
-      if (!ownerCanUseFeature(owner, 'ai-director')) return sendJSON(res, 200, featureBlockedResult('ai-director'));
-
-      sendAiWeeklyDirectorDigest(owner, true).then(() => {
-        saveOwners(owners);
-        sendJSON(res, 200, { ok: true });
-      }).catch(() => sendJSON(res, 200, { ok: false, reason: 'Yuborishda xatolik yuz berdi.' }));
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/ai-director-weekly-toggle') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, enabled } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
-      const owner = ownerCtx.owner;
-      if (!ownerCanUseFeature(owner, 'ai-director')) return sendJSON(res, 200, featureBlockedResult('ai-director'));
-
-      owner.aiWeeklyEnabled = !!enabled;
-      saveOwners(owners);
-      return sendJSON(res, 200, { ok: true, enabled: owner.aiWeeklyEnabled });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/ai-ask') {
-    readBody(req, async (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, question } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = pruneExpiredOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
-      const owner = ownerCtx.owner;
-      if (!ownerCanUseFeature(owner, 'ai-analytics')) return sendJSON(res, 200, featureBlockedResult('ai-analytics'));
-
-      const qTrim = String(question || '').trim();
-      if (!qTrim) return sendJSON(res, 200, { ok: false, reason: 'Savolingizni kiriting.' });
-      if (qTrim.length > 300) return sendJSON(res, 200, { ok: false, reason: 'Savol juda uzun (300 belgigacha).' });
-
-      const monthAgo = new Date(Date.now() - 30 * 86400000);
-      const ctx = {
-        cashflow: computeCashflow(owner),
-        topItems: computeTopItems(owner, monthAgo, 10),
-        peak: computePeakTimes(owner, monthAgo),
-        forecast: computeStockForecast(owner, null)
-      };
-
-      if (!ANTHROPIC_API_KEY) {
-        return sendJSON(res, 200, { ok: true, answer: ruleBasedAiAnswer(qTrim, ctx), source: 'qoida' });
+    const reqOptions = {
+      hostname: 'api.anthropic.com',
+      path: '/v1/messages',
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'Content-Length': Buffer.byteLength(body)
       }
-
-      const systemPrompt = 'Sen oshxona (restoran) egasiga o\'zbek tilida yordam beruvchi qisqa AI tahlilchisan. ' +
-        'Faqat berilgan JSON ma\'lumotlar asosida javob ber, o\'ylab topma. 2-4 gaplik, aniq raqamlar bilan qisqa javob yoz.\n' +
-        'Ma\'lumotlar (JSON):\n' + JSON.stringify(ctx);
-
-      try {
-        const answer = await callAnthropicApi(systemPrompt, qTrim);
-        return sendJSON(res, 200, { ok: true, answer, source: 'ai' });
-      } catch (e) {
-        return sendJSON(res, 200, { ok: true, answer: ruleBasedAiAnswer(qTrim, ctx), source: 'qoida' });
-      }
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/staff-activity-log') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, staffId, limit } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = pruneExpiredOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
-      const owner = ownerCtx.owner;
-
-      const staffById = new Map((owner.staff || []).map(s => [String(s.id), s]));
-      let log = owner.staffActionLog || [];
-      if (staffId) log = log.filter(e => String(e.userId) === String(staffId));
-
-      const lim = Math.min(200, Math.max(1, parseInt(limit, 10) || 50));
-      const entries = log.slice(0, lim).map(e => {
-        const isOwnerEntry = String(e.userId) === String(owner.id);
-        const staff = staffById.get(String(e.userId));
-        return Object.assign({}, e, {
-          displayName: isOwnerEntry ? 'Egasi' : (staff ? staffDisplayName(staff) : `ID: ${e.userId}`),
-          roleLabel: isOwnerEntry ? 'Egasi' : (STAFF_ROLES[e.role] || e.role)
-        });
-      });
-
-      return sendJSON(res, 200, { ok: true, entries, staff: owner.staff || [] });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/notification-error-log') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = pruneExpiredOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
-      const owner = ownerCtx.owner;
-      if (!ownerCanUseFeature(owner, 'notification-log')) return sendJSON(res, 200, featureBlockedResult('notification-log'));
-
-      return sendJSON(res, 200, { ok: true, entries: owner.notificationErrors || [] });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/notification-error-log-clear') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
-      const owner = ownerCtx.owner;
-      if (!ownerCanUseFeature(owner, 'notification-log')) return sendJSON(res, 200, featureBlockedResult('notification-log'));
-
-      owner.notificationErrors = [];
-      saveOwners(owners);
-      return sendJSON(res, 200, { ok: true });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/notification-prefs-get') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = pruneExpiredOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
-      const owner = ownerCtx.owner;
-
-      const prefs = {};
-      for (const key of Object.keys(NOTIFICATION_CATEGORIES)) {
-        prefs[key] = !isNotificationCategoryMuted(owner, key);
-      }
-      return sendJSON(res, 200, {
-        ok: true,
-        prefs,
-        categories: Object.entries(NOTIFICATION_CATEGORIES).map(([key, label]) => ({ key, label }))
-      });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/notification-prefs-save') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
-      const owner = ownerCtx.owner;
-
-      const incoming = payload.prefs && typeof payload.prefs === 'object' ? payload.prefs : {};
-      if (!owner.notificationPrefs) owner.notificationPrefs = {};
-      for (const key of Object.keys(NOTIFICATION_CATEGORIES)) {
-        if (key in incoming) owner.notificationPrefs[key] = !!incoming[key];
-      }
-      saveOwners(owners);
-
-      const prefs = {};
-      for (const key of Object.keys(NOTIFICATION_CATEGORIES)) {
-        prefs[key] = !isNotificationCategoryMuted(owner, key);
-      }
-      return sendJSON(res, 200, { ok: true, prefs });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/owner-payment-card-get') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = pruneExpiredOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
-      const owner = ownerCtx.owner;
-
-      return sendJSON(res, 200, { ok: true, card: owner.customerPaymentCard || { cardNumber: '', cardHolder: '' } });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/owner-payment-card-set') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
-      const owner = ownerCtx.owner;
-
-      const cardNumber = String(payload.cardNumber || '').trim().slice(0, 40);
-      const cardHolder = String(payload.cardHolder || '').trim().slice(0, 80);
-      owner.customerPaymentCard = { cardNumber, cardHolder };
-      saveOwners(owners);
-
-      return sendJSON(res, 200, { ok: true, card: owner.customerPaymentCard });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/staff-performance-report') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, period } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = pruneExpiredOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi'));
-      const owner = ownerCtx.owner;
-      if (!ownerCanUseFeature(owner, 'staff-performance')) return sendJSON(res, 200, featureBlockedResult('staff-performance'));
-
-      const fromDate = resolvePeriodStart(period || 'month');
-      const log = (owner.staffActionLog || []).filter(e => new Date(e.createdAt) >= fromDate);
-
-      const report = (owner.staff || []).map(staff => {
-        const mine = log.filter(e => String(e.userId) === String(staff.id));
-        const actionCount = mine.length;
-        const errorCount = mine.reduce((sum, e) => sum + (e.errorCount || 0), 0);
-        const lastActiveAt = mine.length ? mine.reduce((max, e) => e.createdAt > max ? e.createdAt : max, mine[0].createdAt) : null;
-        return {
-          id: staff.id,
-          username: staff.username || null,
-          fullName: staffDisplayName(staff),
-          role: staff.role,
-          roles: normalizeStaffRoles(staff),
-          roleLabel: rolesLabel(normalizeStaffRoles(staff)),
-          actionCount, errorCount, lastActiveAt,
-          score: actionCount - errorCount * 2
-        };
-      });
-
-      report.sort((a, b) => b.score - a.score);
-      if (report.length && report[0].actionCount > 0) report[0].isTop = true;
-
-      return sendJSON(res, 200, { ok: true, report, period: period || 'month' });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/my-profile') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      if (isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Admin uchun profil mavjud emas' });
-
-      const owners = pruneExpiredOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q yoki muddati tugagan'));
-      const owner = ownerCtx.owner;
-
-      let tariffInfo = null;
-      if (owner.tariffId) {
-        const tariff = loadTariffs().find(t => t.id === owner.tariffId);
-        if (tariff) tariffInfo = { id: tariff.id, name: tariff.name };
-      }
-
-      const profileOut = owner.profile ? Object.assign({}, owner.profile, { isSuperAdmin: userId === String(ADMIN_ID) }) : null;
-      return sendJSON(res, 200, { ok: true, profile: profileOut, tariff: tariffInfo });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/super-admin-reset-reports') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      if (userId !== String(ADMIN_ID)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu amal faqat super adminga ruxsat etilgan.' });
-      }
-
-      const owners = loadOwners();
-      const owner = findOwner(owners, userId);
-      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Owner topilmadi.' });
-
-      const safetyFile = savePreRestoreSafetySnapshot(userId);
-
-      owner.orders = [];
-      owner.expenses = [];
-      owner.zReports = [];
-      saveOwners(owners);
-
-      return sendJSON(res, 200, { ok: true, safetyFile });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/save-profile') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, name, address, phone, workHours, logoUrl, brandColor } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      if (isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Admin uchun profil mavjud emas' });
-
-      const owners = pruneExpiredOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q yoki muddati tugagan'));
-      const owner = ownerCtx.owner;
-
-      const nameTrim = String(name || '').trim();
-      const addressTrim = String(address || '').trim();
-      const phoneTrim = String(phone || '').trim();
-      const workHoursTrim = String(workHours || '').trim();
-      const logoTrim = String(logoUrl || '').trim();
-      const brandColorTrim = String(brandColor || '').trim();
-
-      if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Oshxona nomini kiriting.' });
-      if (!addressTrim) return sendJSON(res, 200, { ok: false, reason: 'Manzilni kiriting.' });
-      if (!phoneTrim || !isPlausiblePhone(phoneTrim)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Telefon raqamini O\'zbekiston formatida kiriting (masalan: +998901234567).' });
-      }
-      // Ish vaqti noto'g'ri formatda kiritilsa, oldin jim tarzda standart
-      // (10:00-03:00) vaqtga tushib qolar edi va owner buni sezmas edi.
-      // Endi bunday holatda aniq xatolik qaytariladi.
-      if (workHoursTrim && !parseWorkHoursRange(workHoursTrim)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Ish vaqti formati noto\'g\'ri. Masalan: 09:00 - 23:00 (yoki "9:00 dan 23:00 gacha").' });
-      }
-      if (logoTrim && !isValidImageValue(logoTrim)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Logotip rasmi noto\'g\'ri yoki hajmi juda katta. Boshqa rasm tanlang.' });
-      }
-      if (brandColorTrim && !/^#[0-9A-Fa-f]{6}$/.test(brandColorTrim)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Brend rangi noto\'g\'ri formatda (masalan #1E4FD8).' });
-      }
-
-      if (!ownerCanUseFeature(owner, 'restaurant-brand')) {
-        const existingLogo = (owner.profile && owner.profile.logoUrl) || '';
-        const existingBrandColor = (owner.profile && owner.profile.brandColor) || '';
-        if (logoTrim !== existingLogo || brandColorTrim !== existingBrandColor) {
-          return sendJSON(res, 200, featureBlockedResult('restaurant-brand'));
-        }
-      }
-
-      const owners2 = loadOwners();
-      const target = findOwner(owners2, userId);
-      const wasCompleted = !!(target.profile && target.profile.completedAt);
-      target.profile = {
-        name: nameTrim,
-        address: addressTrim,
-        phone: phoneTrim,
-        workHours: workHoursTrim || null,
-        logoUrl: logoTrim || null,
-        brandColor: brandColorTrim || null,
-        completedAt: wasCompleted ? target.profile.completedAt : new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      };
-      saveOwners(owners2);
-
-      return sendJSON(res, 200, { ok: true, profile: target.profile });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/feature-list') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin ko\'ra oladi' });
-
-      return sendJSON(res, 200, { ok: true, groups: getFeatureCatalogGrouped() });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/admin-payment-requisites-get') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin ko\'ra oladi' });
-
-      return sendJSON(res, 200, { ok: true, requisites: loadPaymentRequisites() });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/admin-payment-requisites-set') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, cardNumber, cardHolder, clickNumber, paymeNumber } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin o\'zgartira oladi' });
-
-      const updated = savePaymentRequisites({
-        cardNumber: String(cardNumber || '').trim() || DEFAULT_PAYMENT_REQUISITES.cardNumber,
-        cardHolder: String(cardHolder || '').trim() || DEFAULT_PAYMENT_REQUISITES.cardHolder,
-        clickNumber: String(clickNumber || '').trim() || DEFAULT_PAYMENT_REQUISITES.clickNumber,
-        paymeNumber: String(paymeNumber || '').trim() || DEFAULT_PAYMENT_REQUISITES.paymeNumber
-      });
-
-      return sendJSON(res, 200, { ok: true, requisites: updated });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/tariff-list') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin ko\'ra oladi' });
-
-      const owners = loadOwners();
-      const tariffs = loadTariffs().slice().sort((a, b) => (a.order || 0) - (b.order || 0))
-        .map(t => ({ ...t, ownerCount: owners.filter(o => o.tariffId === t.id).length }));
-      return sendJSON(res, 200, { ok: true, tariffs });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/tariff-add') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, name, price, maxBranches } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin qo\'sha oladi' });
-
-      const nameTrim = String(name || '').trim();
-      if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Tarif nomini kiriting.' });
-
-      let priceVal = 0;
-      if (price !== undefined && price !== null && String(price).trim() !== '') {
-        priceVal = Number(price);
-        if (!Number.isFinite(priceVal) || priceVal < 0) return sendJSON(res, 200, { ok: false, reason: 'Narx 0 yoki musbat son bo\'lishi kerak.' });
-      }
-
-      // Filiallar soni (ixtiyoriy) — bo'sh/0 qoldirilsa cheklanmagan.
-      let maxBranchesVal = null;
-      if (maxBranches !== undefined && maxBranches !== null && String(maxBranches).trim() !== '') {
-        const v = parseInt(maxBranches, 10);
-        if (!Number.isInteger(v) || v <= 0) {
-          return sendJSON(res, 200, { ok: false, reason: 'Filiallar soni musbat butun son bo\'lishi kerak (yoki cheklanmagan uchun bo\'sh qoldiring).' });
-        }
-        maxBranchesVal = v;
-      }
-
-      const tariffs = loadTariffs();
-      if (tariffs.some(t => t.name.toLowerCase() === nameTrim.toLowerCase())) {
-        return sendJSON(res, 200, { ok: false, reason: 'Shu nomdagi tarif allaqachon mavjud.' });
-      }
-      const tariff = {
-        id: crypto.randomBytes(4).toString('hex'),
-        name: nameTrim,
-        order: tariffs.length,
-        price: priceVal,
-        maxBranches: maxBranchesVal,
-        reminderDays: 1,
-        features: {},
-        createdAt: new Date().toISOString()
-      };
-      tariffs.push(tariff);
-      saveTariffs(tariffs);
-
-      return sendJSON(res, 200, { ok: true, tariff });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/tariff-rename') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, id, name, price, reminderDays, maxBranches } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin o\'zgartira oladi' });
-
-      const nameTrim = String(name || '').trim();
-      if (!nameTrim) return sendJSON(res, 200, { ok: false, reason: 'Tarif nomini kiriting.' });
-
-      const tariffs = loadTariffs();
-      const tariff = tariffs.find(t => t.id === id);
-      if (!tariff) return sendJSON(res, 200, { ok: false, reason: 'Tarif topilmadi.' });
-      if (tariffs.some(t => t.id !== id && t.name.toLowerCase() === nameTrim.toLowerCase())) {
-        return sendJSON(res, 200, { ok: false, reason: 'Shu nomdagi tarif allaqachon mavjud.' });
-      }
-      if (price !== undefined && price !== null && String(price).trim() !== '') {
-        const priceVal = Number(price);
-        if (!Number.isFinite(priceVal) || priceVal < 0) return sendJSON(res, 200, { ok: false, reason: 'Narx 0 yoki musbat son bo\'lishi kerak.' });
-        tariff.price = priceVal;
-      }
-
-      if (reminderDays !== undefined && reminderDays !== null && String(reminderDays).trim() !== '') {
-        const reminderVal = parseInt(reminderDays, 10);
-        if (!Number.isInteger(reminderVal) || reminderVal <= 0) {
-          return sendJSON(res, 200, { ok: false, reason: 'Eslatma kunlari musbat butun son bo\'lishi kerak.' });
-        }
-        tariff.reminderDays = reminderVal;
-      }
-      // Filiallar soni — bo'sh string yuborilsa cheklovni OLIB TASHLAYDI
-      // (cheklanmagan qiladi); maydon umuman yuborilmasa (undefined),
-      // eski qiymat tegilmay qoladi.
-      if (maxBranches !== undefined) {
-        if (maxBranches === null || String(maxBranches).trim() === '') {
-          tariff.maxBranches = null;
-        } else {
-          const v = parseInt(maxBranches, 10);
-          if (!Number.isInteger(v) || v <= 0) {
-            return sendJSON(res, 200, { ok: false, reason: 'Filiallar soni musbat butun son bo\'lishi kerak (yoki cheklanmagan uchun bo\'sh qoldiring).' });
-          }
-          tariff.maxBranches = v;
-        }
-      }
-      tariff.name = nameTrim;
-      saveTariffs(tariffs);
-
-      return sendJSON(res, 200, { ok: true, tariff });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/tariff-remove') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, id, force } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin o\'chira oladi' });
-
-      const tariffs = loadTariffs();
-      const idx = tariffs.findIndex(t => t.id === id);
-      if (idx === -1) return sendJSON(res, 200, { ok: false, reason: 'Tarif topilmadi.' });
-
-      const owners = loadOwners();
-      const assignedOwners = owners.filter(o => o.tariffId === id);
-      if (assignedOwners.length && !force) {
-        return sendJSON(res, 200, {
-          ok: false,
-          reason: `Bu tarifga ${assignedOwners.length} ta do'kon egasi biriktirilgan. Avval ularni boshqa tarifga o'tkazing, yoki tasdiqlab, ularni tarifsiz qoldirib o'chiring.`,
-          blockedCount: assignedOwners.length
-        });
-      }
-      if (assignedOwners.length && force) {
-        assignedOwners.forEach(o => { o.tariffId = null; });
-        saveOwners(owners);
-      }
-
-      tariffs.splice(idx, 1);
-
-      tariffs.sort((a, b) => (a.order || 0) - (b.order || 0)).forEach((t, i) => { t.order = i; });
-      saveTariffs(tariffs);
-
-      return sendJSON(res, 200, { ok: true });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/tariff-set-features') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, id, features } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin belgilay oladi' });
-
-      const tariffs = loadTariffs();
-      const tariff = tariffs.find(t => t.id === id);
-      if (!tariff) return sendJSON(res, 200, { ok: false, reason: 'Tarif topilmadi.' });
-
-      const validIds = new Set(FEATURE_CATALOG.map(f => f.id));
-      const cleaned = {};
-      if (features && typeof features === 'object') {
-        for (const fid of Object.keys(features)) {
-          if (validIds.has(fid)) cleaned[fid] = !!features[fid];
-        }
-      }
-      tariff.features = cleaned;
-      saveTariffs(tariffs);
-
-      return sendJSON(res, 200, { ok: true, tariff });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/subscription-plan-list') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin ko\'ra oladi' });
-
-      const tariffs = loadTariffs();
-      const plans = Object.values(loadSubscriptionPlans())
-        .sort((a, b) => (a.order || 0) - (b.order || 0))
-        .map(p => {
-          const tariff = p.tariffId ? tariffs.find(t => t.id === p.tariffId) : null;
-          return { ...p, tariffLabel: tariff ? tariff.name : null };
-        });
-      return sendJSON(res, 200, { ok: true, plans, tariffs: tariffs.map(t => ({ id: t.id, name: t.name })) });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/subscription-plan-add') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, label, days, price, discountNote, tariffId } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin qo\'sha oladi' });
-
-      const labelTrim = String(label || '').trim();
-      if (!labelTrim) return sendJSON(res, 200, { ok: false, reason: 'Reja nomini kiriting.' });
-
-      const daysVal = parseInt(days, 10);
-      if (!Number.isInteger(daysVal) || daysVal <= 0) {
-        return sendJSON(res, 200, { ok: false, reason: 'Muddat (kun) musbat butun son bo\'lishi kerak.' });
-      }
-
-      const priceVal = Number(price);
-      if (!Number.isFinite(priceVal) || priceVal < 0) {
-        return sendJSON(res, 200, { ok: false, reason: 'Narx 0 yoki musbat son bo\'lishi kerak.' });
-      }
-
-      let tariffIdVal = null;
-      if (tariffId !== undefined && tariffId !== null && String(tariffId).trim() !== '') {
-        const tariffs = loadTariffs();
-        if (!tariffs.some(t => t.id === tariffId)) {
-          return sendJSON(res, 200, { ok: false, reason: 'Tanlangan tarif topilmadi.' });
-        }
-        tariffIdVal = tariffId;
-      }
-
-      const plans = loadSubscriptionPlans();
-      const id = crypto.randomBytes(4).toString('hex');
-      const order = Object.keys(plans).length;
-      plans[id] = {
-        id,
-        label: labelTrim,
-        days: daysVal,
-        price: priceVal,
-        discountNote: discountNote ? String(discountNote).trim() || null : null,
-        tariffId: tariffIdVal,
-        order
-      };
-      saveSubscriptionPlans(plans);
-
-      return sendJSON(res, 200, { ok: true, plan: plans[id] });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/subscription-plan-update') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, id, label, days, price, discountNote, tariffId } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin o\'zgartira oladi' });
-
-      const plans = loadSubscriptionPlans();
-      const plan = plans[id];
-      if (!plan) return sendJSON(res, 200, { ok: false, reason: 'Reja topilmadi.' });
-
-      const labelTrim = String(label || '').trim();
-      if (!labelTrim) return sendJSON(res, 200, { ok: false, reason: 'Reja nomini kiriting.' });
-
-      const daysVal = parseInt(days, 10);
-      if (!Number.isInteger(daysVal) || daysVal <= 0) {
-        return sendJSON(res, 200, { ok: false, reason: 'Muddat (kun) musbat butun son bo\'lishi kerak.' });
-      }
-
-      const priceVal = Number(price);
-      if (!Number.isFinite(priceVal) || priceVal < 0) {
-        return sendJSON(res, 200, { ok: false, reason: 'Narx 0 yoki musbat son bo\'lishi kerak.' });
-      }
-
-      let tariffIdVal = null;
-      if (tariffId !== undefined && tariffId !== null && String(tariffId).trim() !== '') {
-        const tariffs = loadTariffs();
-        if (!tariffs.some(t => t.id === tariffId)) {
-          return sendJSON(res, 200, { ok: false, reason: 'Tanlangan tarif topilmadi.' });
-        }
-        tariffIdVal = tariffId;
-      }
-
-      plan.label = labelTrim;
-      plan.days = daysVal;
-      plan.price = priceVal;
-      plan.discountNote = discountNote ? String(discountNote).trim() || null : null;
-      plan.tariffId = tariffIdVal;
-      saveSubscriptionPlans(plans);
-
-      return sendJSON(res, 200, { ok: true, plan });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/subscription-plan-remove') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, id } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin o\'chira oladi' });
-
-      const plans = loadSubscriptionPlans();
-      if (!plans[id]) return sendJSON(res, 200, { ok: false, reason: 'Reja topilmadi.' });
-
-      delete plans[id];
-      Object.values(plans).sort((a, b) => (a.order || 0) - (b.order || 0)).forEach((p, i) => { p.order = i; });
-      saveSubscriptionPlans(plans);
-
-      return sendJSON(res, 200, { ok: true });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/system-status') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin ko\'ra oladi' });
-
-      const owners = loadOwners();
-      const activeOwners = owners.filter(isOwnerAccessValid);
-      const todayStart = new Date();
-      todayStart.setHours(0, 0, 0, 0);
-
-      let totalStaff = 0, totalOrders = 0, todayOrders = 0, totalNotifErrors = 0;
-      owners.forEach(o => {
-        totalStaff += (o.staff || []).length;
-        const orders = o.orders || [];
-        totalOrders += orders.length;
-        todayOrders += orders.filter(ord => ord.createdAt && new Date(ord.createdAt) >= todayStart).length;
-        totalNotifErrors += (o.notificationErrors || []).length;
-      });
-
-      function fileInfo(file) {
+    };
+    const apiReq = https.request(reqOptions, apiRes => {
+      let data = '';
+      apiRes.on('data', chunk => { data += chunk; });
+      apiRes.on('end', () => {
         try {
-          const st = fs.statSync(file);
-          return { exists: true, sizeKb: Math.round(st.size / 1024 * 10) / 10 };
-        } catch (e) {
-          return { exists: false, sizeKb: 0 };
-        }
-      }
-
-      const mem = process.memoryUsage();
-
-      return sendJSON(res, 200, {
-        ok: true,
-        status: {
-          uptimeSeconds: Math.floor(process.uptime()),
-          serverStartedAt: SERVER_STARTED_AT,
-          nodeVersion: process.version,
-          memoryRssMb: Math.round(mem.rss / 1024 / 1024 * 10) / 10,
-          owners: { total: owners.length, active: activeOwners.length, expired: owners.length - activeOwners.length },
-          totalStaff,
-          totalOrders,
-          todayOrders,
-          notificationErrors: totalNotifErrors,
-          webhook: webhookStats,
-          botConfigured: !!BOT_TOKEN && BOT_TOKEN !== 'BOT_TOKEN_BU_YERGA',
-          publicUrlConfigured: !!PUBLIC_URL,
-          dataFiles: {
-            owners: fileInfo(OWNERS_FILE),
-            invites: fileInfo(INVITES_FILE),
-            requests: fileInfo(REQUESTS_FILE),
-            profiles: fileInfo(PROFILES_FILE)
-          }
-        }
+          const parsed = JSON.parse(data);
+          const text = (parsed.content || []).map(c => c.text || '').join('\n').trim();
+          if (!text) return reject(new Error('AI javob bo\'sh qaytdi'));
+          resolve(text);
+        } catch (e) { reject(e); }
       });
     });
-    return;
+    apiReq.on('error', reject);
+    apiReq.write(body);
+    apiReq.end();
+  });
+}
+
+function ruleBasedAiAnswer(question, ctx) {
+  const q = String(question || '').toLowerCase();
+
+  if (/bugun/.test(q) && /foyda|savdo|kirim/.test(q)) {
+    return `Bugungi kirim: ${fmtNum(ctx.cashflow.today.income)} so'm, xarajat: ${fmtNum(ctx.cashflow.today.expense)} so'm, sof foyda: ${fmtNum(ctx.cashflow.today.net)} so'm (${ctx.cashflow.today.orderCount} ta buyurtma).`;
+  }
+  if (/hafta/.test(q) && /foyda|savdo|kirim/.test(q)) {
+    return `Shu hafta kirim: ${fmtNum(ctx.cashflow.week.income)} so'm, xarajat: ${fmtNum(ctx.cashflow.week.expense)} so'm, sof foyda: ${fmtNum(ctx.cashflow.week.net)} so'm (${ctx.cashflow.week.orderCount} ta buyurtma).`;
+  }
+  if (/oy/.test(q) && /foyda|savdo|kirim/.test(q)) {
+    return `Shu oy kirim: ${fmtNum(ctx.cashflow.month.income)} so'm, xarajat: ${fmtNum(ctx.cashflow.month.expense)} so'm, sof foyda: ${fmtNum(ctx.cashflow.month.net)} so'm (${ctx.cashflow.month.orderCount} ta buyurtma).`;
+  }
+  if (/top|eng ko'p sotilgan|mashhur|qaysi taom/.test(q)) {
+    if (!ctx.topItems.length) return 'Hozircha (so\'nggi 30 kunda) buyurtma tarixi yo\'q.';
+    const list = ctx.topItems.slice(0, 3).map((it, i) => `${i + 1}. ${it.name} — ${it.qty} dona (${fmtNum(it.revenue)} so'm)`).join('\n');
+    return `Eng ko'p sotilgan taomlar (so'nggi 30 kun):\n${list}`;
+  }
+  if (/pik|band vaqt|qaysi soat|eng gavjum/.test(q)) {
+    if (!ctx.peak.topHours.length) return 'Hozircha buyurtma tarixi yo\'q.';
+    const h = ctx.peak.topHours[0];
+    return `Eng band soat: ${h.hour}:00 atrofida (${h.count} ta buyurtma, so'nggi 30 kun). Eng band kun: ${ctx.peak.topDays[0] ? ctx.peak.topDays[0].dayLabel : 'ma\'lumot yo\'q'}.`;
+  }
+  if (/kam qolgan|tugab qolayotgan|sklad|zaxira/.test(q)) {
+    const low = (ctx.forecast || []).filter(f => f.shortage);
+    if (!low.length) return 'Hozircha ertangi kunga yetarli zaxira bor ko\'rinadi (oxirgi 7 kunlik iste\'mol bo\'yicha).';
+    const list = low.slice(0, 5).map(f => `• ${f.name}: bor ${fmtNum(f.currentQty)} ${f.unit}, kunlik o'rtacha sarf ${fmtNum(f.avgDailyUsage)} ${f.unit}`).join('\n');
+    return `Ertaga yetishmasligi mumkin bo'lgan mahsulotlar:\n${list}`;
   }
 
-  if (req.method === 'POST' && req.url === '/api/owners') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin ko\'ra oladi' });
+  const topLine = ctx.topItems[0] ? `Eng ko'p sotilgan: ${ctx.topItems[0].name}.` : '';
+  return `Aniq javob topa olmadim, lekin umumiy holat shunday: bugungi sof foyda ${fmtNum(ctx.cashflow.today.net)} so'm, shu hafta ${fmtNum(ctx.cashflow.week.net)} so'm. ${topLine} Aniqroq javob uchun "bugun foyda qancha", "eng ko'p sotilgan taom", "pik vaqt qachon" yoki "sklad kam qolganmi" kabi savol bering.`;
+}
 
-      const owners = pruneExpiredOwners().map(o => {
-        const clean = Object.assign({}, o);
-        delete clean.passwordHash;
-        delete clean.sessionToken;
-        delete clean.sessionExpiresAt;
-        clean.hasLogin = !!(o.login && o.passwordHash);
+authed('/api/ai-analytics', (payload, res, { userId }) => {
+  const { period, branchId } = payload;
 
-        const rating = ownerAverageRating(o);
-        clean.avgRating = rating.avg;
-        clean.ratingCount = rating.count;
-        return clean;
-      });
+  const owners = pruneExpiredOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
+  const owner = ownerCtx.owner;
+  if (!ownerCanUseFeature(owner, 'ai-analytics')) return sendFeatureBlocked(res, 'ai-analytics');
 
-      owners.sort((a, b) => {
-        if (a.avgRating === null && b.avgRating === null) return 0;
-        if (a.avgRating === null) return 1;
-        if (b.avgRating === null) return -1;
-        return b.avgRating - a.avgRating;
-      });
+  const fromDate = resolvePeriodStart(period || 'week');
+  const topItems = computeTopItems(owner, fromDate, 8);
+  const peak = computePeakTimes(owner, fromDate);
+  const forecast = computeStockForecast(owner, branchId || null);
 
-      const payments = loadPayments();
-      const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).getTime();
-      const revenue = {
-        totalLifetime: payments.reduce((s, p) => s + (Number(p.amount) || 0), 0),
-        thisMonth: payments.filter(p => new Date(p.at).getTime() >= monthStart).reduce((s, p) => s + (Number(p.amount) || 0), 0),
-        paymentCount: payments.length
-      };
-      return sendJSON(res, 200, { ok: true, owners, revenue });
+  return sendOk(res, {
+    period: period || 'week',
+    topItems,
+    peakHours: peak.byHour,
+    peakDays: peak.byDay,
+    topHours: peak.topHours,
+    topDays: peak.topDays,
+    forecast
+  });
+});
+
+authed('/api/daily-report-preview', (payload, res, { userId }) => {
+  const owners = pruneExpiredOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
+  const owner = ownerCtx.owner;
+  if (!ownerCanUseFeature(owner, 'z-report')) return sendFeatureBlocked(res, 'z-report');
+
+  const yesterdayKey = aiDirDateKey(new Date(Date.now() - 86400000));
+  return sendOk(res, {
+    text: buildDailyReportText(owner, yesterdayKey),
+    enabled: owner.dailyReportEnabled !== false,
+    sentToday: owner.dailyReportLastSent === yesterdayKey,
+    hour: AI_DIRECTOR_HOUR
+  });
+});
+
+authed('/api/daily-report-send-now', (payload, res, { userId }) => {
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
+  const owner = ownerCtx.owner;
+  if (!ownerCanUseFeature(owner, 'z-report')) return sendFeatureBlocked(res, 'z-report');
+
+  sendDailyReportDigest(owner, true).then(() => {
+    saveOwners(owners);
+    sendOk(res);
+  }).catch(() => sendFail(res, 'Yuborishda xatolik yuz berdi.'));
+});
+
+authed('/api/daily-report-toggle', (payload, res, { userId }) => {
+  const { enabled } = payload;
+
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
+  const owner = ownerCtx.owner;
+  if (!ownerCanUseFeature(owner, 'z-report')) return sendFeatureBlocked(res, 'z-report');
+
+  owner.dailyReportEnabled = !!enabled;
+  saveOwners(owners);
+  return sendOk(res, { enabled: owner.dailyReportEnabled });
+});
+
+authed('/api/ai-director-preview', (payload, res, { userId }) => {
+  const owners = pruneExpiredOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
+  const owner = ownerCtx.owner;
+  if (!ownerCanUseFeature(owner, 'ai-director')) return sendFeatureBlocked(res, 'ai-director');
+
+  return sendOk(res, {
+    text: buildAiDirectorText(owner),
+    enabled: owner.aiDirectorEnabled !== false,
+    sentToday: owner.aiDirectorLastSent === aiDirDateKey(new Date()),
+    hour: AI_DIRECTOR_HOUR
+  });
+});
+
+authed('/api/ai-director-send-now', (payload, res, { userId }) => {
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
+  const owner = ownerCtx.owner;
+  if (!ownerCanUseFeature(owner, 'ai-director')) return sendFeatureBlocked(res, 'ai-director');
+
+  sendAiDirectorDigest(owner, true).then(() => {
+    saveOwners(owners);
+    sendOk(res);
+  }).catch(() => sendFail(res, 'Yuborishda xatolik yuz berdi.'));
+});
+
+authed('/api/ai-director-toggle', (payload, res, { userId }) => {
+  const { enabled } = payload;
+
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
+  const owner = ownerCtx.owner;
+  if (!ownerCanUseFeature(owner, 'ai-director')) return sendFeatureBlocked(res, 'ai-director');
+
+  owner.aiDirectorEnabled = !!enabled;
+  saveOwners(owners);
+  return sendOk(res, { enabled: owner.aiDirectorEnabled });
+});
+
+authed('/api/ai-director-weekly-preview', (payload, res, { userId }) => {
+  const owners = pruneExpiredOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
+  const owner = ownerCtx.owner;
+  if (!ownerCanUseFeature(owner, 'ai-director')) return sendFeatureBlocked(res, 'ai-director');
+
+  return sendOk(res, {
+    text: buildAiWeeklyDirectorText(owner),
+    enabled: owner.aiWeeklyEnabled !== false,
+    sentThisWeek: owner.aiWeeklyLastSent === aiDirWeekKey(new Date()),
+    weekday: AI_DIRECTOR_WEEKLY_DAY,
+    hour: AI_DIRECTOR_HOUR
+  });
+});
+
+authed('/api/ai-director-weekly-send-now', (payload, res, { userId }) => {
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
+  const owner = ownerCtx.owner;
+  if (!ownerCanUseFeature(owner, 'ai-director')) return sendFeatureBlocked(res, 'ai-director');
+
+  sendAiWeeklyDirectorDigest(owner, true).then(() => {
+    saveOwners(owners);
+    sendOk(res);
+  }).catch(() => sendFail(res, 'Yuborishda xatolik yuz berdi.'));
+});
+
+authed('/api/ai-director-weekly-toggle', (payload, res, { userId }) => {
+  const { enabled } = payload;
+
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
+  const owner = ownerCtx.owner;
+  if (!ownerCanUseFeature(owner, 'ai-director')) return sendFeatureBlocked(res, 'ai-director');
+
+  owner.aiWeeklyEnabled = !!enabled;
+  saveOwners(owners);
+  return sendOk(res, { enabled: owner.aiWeeklyEnabled });
+});
+
+authed('/api/ai-ask', async (payload, res, { userId }) => {
+  const { question } = payload;
+
+  const owners = pruneExpiredOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
+  const owner = ownerCtx.owner;
+  if (!ownerCanUseFeature(owner, 'ai-analytics')) return sendFeatureBlocked(res, 'ai-analytics');
+
+  const qTrim = String(question || '').trim();
+  if (!qTrim) return sendFail(res, 'Savolingizni kiriting.');
+  if (qTrim.length > 300) return sendFail(res, 'Savol juda uzun (300 belgigacha).');
+
+  const monthAgo = new Date(Date.now() - 30 * 86400000);
+  const ctx = {
+    cashflow: computeCashflow(owner),
+    topItems: computeTopItems(owner, monthAgo, 10),
+    peak: computePeakTimes(owner, monthAgo),
+    forecast: computeStockForecast(owner, null)
+  };
+
+  if (!ANTHROPIC_API_KEY) {
+    return sendOk(res, { answer: ruleBasedAiAnswer(qTrim, ctx), source: 'qoida' });
+  }
+
+  const systemPrompt = 'Sen oshxona (restoran) egasiga o\'zbek tilida yordam beruvchi qisqa AI tahlilchisan. ' +
+    'Faqat berilgan JSON ma\'lumotlar asosida javob ber, o\'ylab topma. 2-4 gaplik, aniq raqamlar bilan qisqa javob yoz.\n' +
+    'Ma\'lumotlar (JSON):\n' + JSON.stringify(ctx);
+
+  try {
+    const answer = await callAnthropicApi(systemPrompt, qTrim);
+    return sendOk(res, { answer, source: 'ai' });
+  } catch (e) {
+    return sendOk(res, { answer: ruleBasedAiAnswer(qTrim, ctx), source: 'qoida' });
+  }
+});
+
+authed('/api/staff-activity-log', (payload, res, { userId }) => {
+  const { staffId, limit } = payload;
+
+  const owners = pruneExpiredOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
+  const owner = ownerCtx.owner;
+
+  const staffById = new Map((owner.staff || []).map(s => [String(s.id), s]));
+  let log = owner.staffActionLog || [];
+  if (staffId) log = log.filter(e => String(e.userId) === String(staffId));
+
+  const lim = Math.min(200, Math.max(1, parseInt(limit, 10) || 50));
+  const entries = log.slice(0, lim).map(e => {
+    const isOwnerEntry = String(e.userId) === String(owner.id);
+    const staff = staffById.get(String(e.userId));
+    return Object.assign({}, e, {
+      displayName: isOwnerEntry ? 'Egasi' : (staff ? staffDisplayName(staff) : `ID: ${e.userId}`),
+      roleLabel: isOwnerEntry ? 'Egasi' : (STAFF_ROLES[e.role] || e.role)
     });
-    return;
+  });
+
+  return sendOk(res, { entries, staff: owner.staff || [] });
+});
+
+authed('/api/notification-error-log', (payload, res, { userId }) => {
+  const owners = pruneExpiredOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
+  const owner = ownerCtx.owner;
+  if (!ownerCanUseFeature(owner, 'notification-log')) return sendFeatureBlocked(res, 'notification-log');
+
+  return sendOk(res, { entries: owner.notificationErrors || [] });
+});
+
+authed('/api/notification-error-log-clear', (payload, res, { userId }) => {
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
+  const owner = ownerCtx.owner;
+  if (!ownerCanUseFeature(owner, 'notification-log')) return sendFeatureBlocked(res, 'notification-log');
+
+  owner.notificationErrors = [];
+  saveOwners(owners);
+  return sendOk(res);
+});
+
+authed('/api/notification-prefs-get', (payload, res, { userId }) => {
+  const owners = pruneExpiredOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
+  const owner = ownerCtx.owner;
+
+  const prefs = {};
+  for (const key of Object.keys(NOTIFICATION_CATEGORIES)) {
+    prefs[key] = !isNotificationCategoryMuted(owner, key);
+  }
+  return sendOk(res, {
+    prefs,
+    categories: Object.entries(NOTIFICATION_CATEGORIES).map(([key, label]) => ({ key, label }))
+  });
+});
+
+authed('/api/notification-prefs-save', (payload, res, { userId }) => {
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
+  const owner = ownerCtx.owner;
+
+  const incoming = payload.prefs && typeof payload.prefs === 'object' ? payload.prefs : {};
+  if (!owner.notificationPrefs) owner.notificationPrefs = {};
+  for (const key of Object.keys(NOTIFICATION_CATEGORIES)) {
+    if (key in incoming) owner.notificationPrefs[key] = !!incoming[key];
+  }
+  saveOwners(owners);
+
+  const prefs = {};
+  for (const key of Object.keys(NOTIFICATION_CATEGORIES)) {
+    prefs[key] = !isNotificationCategoryMuted(owner, key);
+  }
+  return sendOk(res, { prefs });
+});
+
+authed('/api/owner-payment-card-get', (payload, res, { userId }) => {
+  const owners = pruneExpiredOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
+  const owner = ownerCtx.owner;
+
+  return sendOk(res, { card: owner.customerPaymentCard || { cardNumber: '', cardHolder: '' } });
+});
+
+authed('/api/owner-payment-card-set', (payload, res, { userId }) => {
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
+  const owner = ownerCtx.owner;
+
+  const cardNumber = String(payload.cardNumber || '').trim().slice(0, 40);
+  const cardHolder = String(payload.cardHolder || '').trim().slice(0, 80);
+  owner.customerPaymentCard = { cardNumber, cardHolder };
+  saveOwners(owners);
+
+  return sendOk(res, { card: owner.customerPaymentCard });
+});
+
+authed('/api/staff-performance-report', (payload, res, { userId }) => {
+  const { period } = payload;
+
+  const owners = pruneExpiredOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
+  const owner = ownerCtx.owner;
+  if (!ownerCanUseFeature(owner, 'staff-performance')) return sendFeatureBlocked(res, 'staff-performance');
+
+  const fromDate = resolvePeriodStart(period || 'month');
+  const log = (owner.staffActionLog || []).filter(e => new Date(e.createdAt) >= fromDate);
+
+  const report = (owner.staff || []).map(staff => {
+    const mine = log.filter(e => String(e.userId) === String(staff.id));
+    const actionCount = mine.length;
+    const errorCount = mine.reduce((sum, e) => sum + (e.errorCount || 0), 0);
+    const lastActiveAt = mine.length ? mine.reduce((max, e) => e.createdAt > max ? e.createdAt : max, mine[0].createdAt) : null;
+    return {
+      id: staff.id,
+      username: staff.username || null,
+      fullName: staffDisplayName(staff),
+      role: staff.role,
+      roles: normalizeStaffRoles(staff),
+      roleLabel: rolesLabel(normalizeStaffRoles(staff)),
+      actionCount, errorCount, lastActiveAt,
+      score: actionCount - errorCount * 2
+    };
+  });
+
+  report.sort((a, b) => b.score - a.score);
+  if (report.length && report[0].actionCount > 0) report[0].isTop = true;
+
+  return sendOk(res, { report, period: period || 'month' });
+});
+
+authed('/api/my-profile', (payload, res, { userId }) => {
+  if (isAdminId(userId)) return sendFail(res, 'Admin uchun profil mavjud emas');
+
+  const owners = pruneExpiredOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q yoki muddati tugagan');
+  const owner = ownerCtx.owner;
+
+  let tariffInfo = null;
+  if (owner.tariffId) {
+    const tariff = loadTariffs().find(t => t.id === owner.tariffId);
+    if (tariff) tariffInfo = { id: tariff.id, name: tariff.name };
   }
 
-  if (req.method === 'POST' && req.url === '/api/owner-set-tariff') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, id, tariffId } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin belgilay oladi' });
-      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+  const profileOut = owner.profile ? Object.assign({}, owner.profile, { isSuperAdmin: userId === String(ADMIN_ID) }) : null;
+  return sendOk(res, { profile: profileOut, tariff: tariffInfo });
+});
 
-      const owners = loadOwners();
-      const owner = findOwner(owners, id);
-      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Bunday do\'kon egasi topilmadi' });
-
-      if (tariffId) {
-        const tariffs = loadTariffs();
-        if (!tariffs.some(t => t.id === tariffId)) {
-          return sendJSON(res, 200, { ok: false, reason: 'Bunday tarif topilmadi.' });
-        }
-        owner.tariffId = tariffId;
-      } else {
-        owner.tariffId = null;
-      }
-      saveOwners(owners);
-
-      return sendJSON(res, 200, { ok: true, tariffId: owner.tariffId });
-    });
-    return;
+authed('/api/super-admin-reset-reports', (payload, res, { userId }) => {
+  if (userId !== String(ADMIN_ID)) {
+    return sendFail(res, 'Bu amal faqat super adminga ruxsat etilgan.');
   }
 
-  if (req.method === 'POST' && req.url === '/api/owner-set-expiry') {
-    readBody(req, async (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, id, action, days, date } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin o\'zgartira oladi' });
-      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
+  const owners = loadOwners();
+  const owner = findOwner(owners, userId);
+  if (!owner) return sendFail(res, 'Owner topilmadi.');
 
-      const owners = loadOwners();
-      const owner = findOwner(owners, id);
-      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Bunday do\'kon egasi topilmadi' });
+  const safetyFile = savePreRestoreSafetySnapshot(userId);
 
-      if (action === 'extend') {
-        const n = parseInt(days, 10);
-        if (!Number.isInteger(n) || n <= 0) {
-          return sendJSON(res, 200, { ok: false, reason: 'Kun soni musbat butun son bo\'lishi kerak.' });
-        }
-        const currentMs = owner.subscriptionUntil ? new Date(owner.subscriptionUntil).getTime() : NaN;
-        const base = Number.isFinite(currentMs) && currentMs > Date.now() ? currentMs : Date.now();
-        const untilIso = new Date(base + n * 86400000).toISOString();
-        owner.subscriptionUntil = untilIso;
-        owner.expiresAt = untilIso;
-        owner.subscriptionStatus = SUBSCRIPTION_STATUS.ACTIVE;
-        owner.graceUntil = null;
-        owner.reminderSentAt = null;
-        owner.blockedNotifiedAt = null;
-        saveOwners(owners);
-        return sendJSON(res, 200, { ok: true, owner });
-      }
+  owner.orders = [];
+  owner.expenses = [];
+  owner.zReports = [];
+  saveOwners(owners);
 
-      if (action === 'setDate') {
-        const d = new Date(date);
-        if (!date || isNaN(d.getTime())) {
-          return sendJSON(res, 200, { ok: false, reason: 'Sana noto\'g\'ri.' });
-        }
+  return sendOk(res, { safetyFile });
+});
 
-        d.setHours(23, 59, 59, 999);
-        if (d.getTime() <= Date.now()) {
-          owner.subscriptionUntil = d.toISOString();
-          owner.expiresAt = d.toISOString();
-          owner.subscriptionStatus = SUBSCRIPTION_STATUS.BLOCKED;
-          owner.graceUntil = null;
-          owner.blockedNotifiedAt = new Date().toISOString();
-          saveOwners(owners);
-          await sendMessage(ADMIN_ID,
-            `⏰ <b>Obuna muddati qisqartirildi</b>\n${ownerLabel(owner)} (ID: <code>${owner.id}</code>) uchun Mini App'ga kirish admin tomonidan bloklandi.\nMa'lumotlari saqlanib qolyapti — qayta uzaytirsangiz, kirish tiklanadi.`);
-          await sendMessage(owner.id,
-            `⏰ Sizning obuna muddatingiz administrator tomonidan qisqartirildi, Mini App'ga kirish bloklandi.\nMa'lumotlaringiz saqlanib qolyapti. Davom ettirish uchun administrator bilan bog'laning.`);
-          return sendJSON(res, 200, { ok: true, owner, blocked: true });
-        }
-        owner.subscriptionUntil = d.toISOString();
-        owner.expiresAt = d.toISOString();
-        owner.subscriptionStatus = SUBSCRIPTION_STATUS.ACTIVE;
-        owner.graceUntil = null;
-        owner.reminderSentAt = null;
-        owner.blockedNotifiedAt = null;
-        saveOwners(owners);
-        return sendJSON(res, 200, { ok: true, owner });
-      }
+authed('/api/save-profile', (payload, res, { userId }) => {
+  const { name, address, phone, workHours, logoUrl, brandColor } = payload;
 
-      if (action === 'unlimited') {
-        owner.subscriptionUntil = null;
-        owner.expiresAt = null;
-        owner.subscriptionStatus = SUBSCRIPTION_STATUS.ACTIVE;
-        owner.graceUntil = null;
-        owner.reminderSentAt = null;
-        owner.blockedNotifiedAt = null;
-        saveOwners(owners);
-        return sendJSON(res, 200, { ok: true, owner });
-      }
+  if (isAdminId(userId)) return sendFail(res, 'Admin uchun profil mavjud emas');
 
-      if (action === 'cancelNow') {
-        const nowIso = new Date().toISOString();
-        owner.subscriptionUntil = nowIso;
-        owner.expiresAt = nowIso;
-        owner.subscriptionStatus = SUBSCRIPTION_STATUS.BLOCKED;
-        owner.graceUntil = null;
-        owner.blockedNotifiedAt = nowIso;
-        saveOwners(owners);
-        await sendMessage(ADMIN_ID,
-          `⏰ <b>Obuna bekor qilindi</b>\n${ownerLabel(owner)} (ID: <code>${owner.id}</code>) uchun Mini App'ga kirish admin tomonidan bloklandi.\nMa'lumotlari saqlanib qolyapti — qayta uzaytirsangiz, kirish tiklanadi.`);
-        await sendMessage(owner.id,
-          `⏰ Sizning obunangiz administrator tomonidan bekor qilindi, Mini App'ga kirish bloklandi.\nMa'lumotlaringiz saqlanib qolyapti.`);
-        return sendJSON(res, 200, { ok: true, owner, blocked: true });
-      }
+  const owners = pruneExpiredOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q yoki muddati tugagan');
+  const owner = ownerCtx.owner;
 
-      return sendJSON(res, 200, { ok: false, reason: 'Noto\'g\'ri amal.' });
-    });
-    return;
+  const nameTrim = String(name || '').trim();
+  const addressTrim = String(address || '').trim();
+  const phoneTrim = String(phone || '').trim();
+  const workHoursTrim = String(workHours || '').trim();
+  const logoTrim = String(logoUrl || '').trim();
+  const brandColorTrim = String(brandColor || '').trim();
+
+  if (!nameTrim) return sendFail(res, 'Oshxona nomini kiriting.');
+  if (!addressTrim) return sendFail(res, 'Manzilni kiriting.');
+  if (!phoneTrim || !isPlausiblePhone(phoneTrim)) {
+    return sendFail(res, 'Telefon raqamini O\'zbekiston formatida kiriting (masalan: +998901234567).');
+  }
+  // Ish vaqti noto'g'ri formatda kiritilsa, oldin jim tarzda standart
+  // (10:00-03:00) vaqtga tushib qolar edi va owner buni sezmas edi.
+  // Endi bunday holatda aniq xatolik qaytariladi.
+  if (workHoursTrim && !parseWorkHoursRange(workHoursTrim)) {
+    return sendFail(res, 'Ish vaqti formati noto\'g\'ri. Masalan: 09:00 - 23:00 (yoki "9:00 dan 23:00 gacha").');
+  }
+  if (logoTrim && !isValidImageValue(logoTrim)) {
+    return sendFail(res, 'Logotip rasmi noto\'g\'ri yoki hajmi juda katta. Boshqa rasm tanlang.');
+  }
+  if (brandColorTrim && !/^#[0-9A-Fa-f]{6}$/.test(brandColorTrim)) {
+    return sendFail(res, 'Brend rangi noto\'g\'ri formatda (masalan #1E4FD8).');
   }
 
-  if (req.method === 'POST' && req.url === '/api/set-owner-credentials') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, id, login, password } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin belgilay oladi' });
-      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
-
-      const owners = loadOwners();
-      const owner = findOwner(owners, id);
-      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Bunday do\'kon egasi topilmadi' });
-
-      const loginNorm = normalizeLogin(login);
-      if (!/^[a-z0-9_.]{3,32}$/.test(loginNorm)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Login 3-32 belgi, faqat lotin harflari/raqam/._ bo\'lishi mumkin.' });
-      }
-      const passwordStr = String(password || '');
-      if (passwordStr.length < 6) {
-        return sendJSON(res, 200, { ok: false, reason: 'Parol kamida 6 belgidan iborat bo\'lishi kerak.' });
-      }
-      const clash = owners.find(o => normalizeLogin(o.login) === loginNorm && String(o.id) !== String(owner.id));
-      if (clash) {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu login band, boshqasini tanlang.' });
-      }
-
-      owner.login = loginNorm;
-      owner.passwordHash = hashPassword(passwordStr);
-
-      owner.sessionToken = null;
-      owner.sessionExpiresAt = null;
-      saveOwners(owners);
-
-      return sendJSON(res, 200, { ok: true, login: owner.login });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/remove-owner-credentials') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, id } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin o\'chira oladi' });
-      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
-
-      const owners = loadOwners();
-      const owner = findOwner(owners, id);
-      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Bunday do\'kon egasi topilmadi' });
-
-      owner.login = null;
-      owner.passwordHash = null;
-      owner.sessionToken = null;
-      owner.sessionExpiresAt = null;
-      saveOwners(owners);
-
-      return sendJSON(res, 200, { ok: true });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/owner-confirm-password') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, password } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = pruneExpiredOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q yoki muddati tugagan'));
-      const owner = ownerCtx.owner;
-
-      if (!owner.login || !owner.passwordHash) {
-
-        return sendJSON(res, 200, { ok: true, skipped: true });
-      }
-      if (!verifyPassword(password, owner.passwordHash)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Parol noto\'g\'ri.' });
-      }
-      return sendJSON(res, 200, { ok: true });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/owner-change-password') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, currentPassword, newPassword } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = pruneExpiredOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q yoki muddati tugagan'));
-      const owner = ownerCtx.owner;
-
-      if (!owner.login || !owner.passwordHash) {
-        return sendJSON(res, 200, { ok: false, reason: 'Sizga hali login/parol biriktirilmagan. Administrator bilan bog\'laning.' });
-      }
-      if (!verifyPassword(currentPassword, owner.passwordHash)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Joriy parol noto\'g\'ri.' });
-      }
-
-      const newPasswordStr = String(newPassword || '');
-      if (newPasswordStr.length < 6) {
-        return sendJSON(res, 200, { ok: false, reason: 'Yangi parol kamida 6 belgidan iborat bo\'lishi kerak.' });
-      }
-
-      const owners2 = loadOwners();
-      const target = findOwner(owners2, owner.id);
-      if (!target) return sendJSON(res, 200, { ok: false, reason: 'Bunday do\'kon egasi topilmadi' });
-
-      target.passwordHash = hashPassword(newPasswordStr);
-
-      target.sessionToken = null;
-      target.sessionExpiresAt = null;
-      saveOwners(owners2);
-
-      return sendJSON(res, 200, { ok: true });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/owner-remove-password') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, currentPassword } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      const owners = pruneExpiredOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, 'Ruxsatingiz yo\'q yoki muddati tugagan'));
-      const owner = ownerCtx.owner;
-
-      if (!owner.login || !owner.passwordHash) {
-
-        return sendJSON(res, 200, { ok: true, alreadyRemoved: true });
-      }
-      if (!verifyPassword(currentPassword, owner.passwordHash)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Joriy parol noto\'g\'ri.' });
-      }
-
-      const owners2 = loadOwners();
-      const target = findOwner(owners2, owner.id);
-      if (!target) return sendJSON(res, 200, { ok: false, reason: 'Bunday do\'kon egasi topilmadi' });
-
-      target.login = null;
-      target.passwordHash = null;
-      target.sessionToken = null;
-      target.sessionExpiresAt = null;
-      saveOwners(owners2);
-
-      return sendJSON(res, 200, { ok: true });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/owner-login') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { login, password } = payload;
-      const loginNorm = normalizeLogin(login);
-      if (!loginNorm || !password) {
-        return sendJSON(res, 200, { ok: false, reason: 'Login va parolni kiriting.' });
-      }
-
-      const owners = pruneExpiredOwners();
-      const owner = owners.find(o => normalizeLogin(o.login) === loginNorm);
-      if (!owner || !owner.passwordHash || !verifyPassword(password, owner.passwordHash)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Login yoki parol noto\'g\'ri.' });
-      }
-      if (!isOwnerAccessValid(owner)) {
-        return sendJSON(res, 200, subscriptionBlockedJSON(owners, owner.id, 'Obuna muddati tugagan. Administrator bilan bog\'laning.'));
-      }
-
-      const owners2 = loadOwners();
-      const target = findOwner(owners2, owner.id);
-      const token = crypto.randomBytes(24).toString('hex');
-      target.sessionToken = token;
-      target.sessionExpiresAt = new Date(Date.now() + SESSION_TOKEN_TTL_MS).toISOString();
-      saveOwners(owners2);
-
-      return sendJSON(res, 200, {
-        ok: true,
-        sessionToken: `sess_${token}`,
-        restaurantName: (target.profile && target.profile.name) || null
-      });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/owner-logout') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData } = payload;
-      if (typeof initData === 'string' && initData.startsWith('sess_')) {
-        const token = initData.slice('sess_'.length);
-        const owners = loadOwners();
-        const owner = owners.find(o => o.sessionToken === token);
-        if (owner) {
-          owner.sessionToken = null;
-          owner.sessionExpiresAt = null;
-          saveOwners(owners);
-        }
-      }
-      return sendJSON(res, 200, { ok: true });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/add-owner') {
-    readBody(req, async (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, input, days, price, paid } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin qo\'sha oladi' });
-
-      const resolved = await resolveUserInput(input);
-      if (resolved.error) return sendJSON(res, 200, { ok: false, reason: resolved.error });
-
-      let expiresAt = null;
-      if (days !== undefined && days !== null && days !== '') {
-        const n = parseInt(days, 10);
-        if (!Number.isInteger(n) || n <= 0) {
-          return sendJSON(res, 200, { ok: false, reason: 'Kun soni musbat butun son bo\'lishi kerak, yoki bo\'sh qoldiring (doimiy).' });
-        }
-        expiresAt = new Date(Date.now() + n * 86400000).toISOString();
-      }
-
-      let priceVal = 0;
-      if (price !== undefined && price !== null && price !== '') {
-        const p = Number(price);
-        if (!Number.isFinite(p) || p < 0) {
-          return sendJSON(res, 200, { ok: false, reason: 'Narx musbat son bo\'lishi kerak.' });
-        }
-        priceVal = p;
-      }
-
-      const owners = loadOwners();
-      if (isAdminId(resolved.id)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu foydalanuvchi allaqachon administrator' });
-      }
-      if (findOwner(owners, resolved.id)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu foydalanuvchi ro\'yxatda allaqachon bor' });
-      }
-
-      const newOwner = {
-        id: resolved.id,
-        username: resolved.username || null,
-        addedAt: new Date().toISOString(),
-        expiresAt,
-        price: priceVal,
-        paid: !!paid,
-        paidAt: paid ? new Date().toISOString() : null,
-
-        subscriptionStatus: SUBSCRIPTION_STATUS.ACTIVE,
-        subscriptionUntil: expiresAt,
-        graceUntil: null,
-        trialGivenAt: null
-      };
-      owners.push(newOwner);
-      saveOwners(owners);
-      if (newOwner.paid) recordPayment(newOwner, priceVal);
-
-      return sendJSON(res, 200, { ok: true, owner: newOwner });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/update-owner-billing') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, id, price, paid } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin o\'zgartira oladi' });
-      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
-
-      const owners = loadOwners();
-      const owner = findOwner(owners, id);
-      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Bunday do\'kon egasi topilmadi' });
-
-      if (price !== undefined && price !== null && price !== '') {
-        const p = Number(price);
-        if (!Number.isFinite(p) || p < 0) {
-          return sendJSON(res, 200, { ok: false, reason: 'Narx musbat son bo\'lishi kerak.' });
-        }
-        owner.price = p;
-      }
-
-      let justPaid = false;
-      if (paid !== undefined && paid !== null) {
-        const wasPaid = !!owner.paid;
-        owner.paid = !!paid;
-        if (owner.paid && !wasPaid) { owner.paidAt = new Date().toISOString(); justPaid = true; }
-        if (!owner.paid) owner.paidAt = null;
-      }
-
-      saveOwners(owners);
-
-      if (justPaid) {
-        recordPayment(owner, owner.price);
-      }
-      return sendJSON(res, 200, { ok: true, owner });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/remove-owner') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, id } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-
-      const userId = String(check.user && check.user.id);
-      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin o\'chira oladi' });
-      if (!id) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
-
-      let owners = loadOwners();
-      const before = owners.length;
-      const target = findOwner(owners, id);
-
-      if (target) moveOwnerToTrash(target, userId);
-      owners = owners.filter(o => String(o.id) !== String(id));
-      saveOwners(owners);
-
-      return sendJSON(res, 200, { ok: true, removed: before !== owners.length });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/trash-list') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin ko\'ra oladi' });
-
-      const now = Date.now();
-      const list = loadTrash().map(t => ({
-        id: t.id,
-        ownerId: t.ownerSnapshot.id,
-        ownerLabel: ownerLabel(t.ownerSnapshot),
-        restaurantName: (t.ownerSnapshot.profile && t.ownerSnapshot.profile.name) || null,
-        trashedAt: t.trashedAt,
-        autoPurgeAt: t.autoPurgeAt,
-        daysLeft: Math.max(0, Math.ceil((new Date(t.autoPurgeAt).getTime() - now) / 86400000)),
-        restoreStatus: t.restoreStatus
-      })).sort((a, b) => new Date(a.autoPurgeAt) - new Date(b.autoPurgeAt));
-
-      return sendJSON(res, 200, { ok: true, trash: list });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/trash-restore') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, trashId } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin tiklay oladi' });
-      if (!trashId) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
-
-      const trash = loadTrash();
-      const entry = findTrashEntry(trash, trashId);
-      if (!entry) return sendJSON(res, 200, { ok: false, reason: 'Bu yozuv Savatchada topilmadi.' });
-
-      const result = restoreOwnerFromTrash(entry);
-      if (!result.ok) return sendJSON(res, 200, { ok: false, reason: result.reason });
-
-      saveTrash(trash.filter(t => t.id !== trashId));
-      logTrashEvent('restored', entry.ownerSnapshot, { restoredBy: userId, via: 'admin_panel' });
-      sendMessage(entry.ownerSnapshot.id,
-        `✅ <b>Oshxonangiz tiklandi!</b>\nBarcha ma'lumotlaringiz (menyu, xodimlar, sozlamalar) saqlanib qolgan. Mini App tugmasi orqali oching.`)
-        .catch(() => {});
-
-      return sendJSON(res, 200, { ok: true });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/trash-purge-now') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, trashId } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin o\'chira oladi' });
-      if (!trashId) return sendJSON(res, 200, { ok: false, reason: 'ID ko\'rsatilmagan' });
-
-      const trash = loadTrash();
-      const entry = findTrashEntry(trash, trashId);
-      if (!entry) return sendJSON(res, 200, { ok: false, reason: 'Bu yozuv Savatchada topilmadi.' });
-
-      archiveOwnerOrders(entry.ownerSnapshot);
-      logTrashEvent('purged', entry.ownerSnapshot, { reason: 'admin_qolda', purgedBy: userId });
-      saveTrash(trash.filter(t => t.id !== trashId));
-
-      return sendJSON(res, 200, { ok: true });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/trash-log') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin ko\'ra oladi' });
-
-      const log = loadTrashLog().slice().sort((a, b) => new Date(b.at) - new Date(a.at)).slice(0, 200);
-      return sendJSON(res, 200, { ok: true, log });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/backup-export') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      const owners0 = pruneExpiredOwners();
-      const owner0 = findOwner(owners0, userId);
-      if (!isOwnerAccessValid(owner0)) return sendJSON(res, 200, { ok: false, reason: 'Zaxira faqat tasdiqlangan do\'kon egasiga ruxsat etilgan.' });
-
-      let snapshot;
-      try {
-        snapshot = buildBackupSnapshot(userId);
-      } catch (e) {
-        console.error('backup-export xatolik:', e.message);
-        return sendJSON(res, 200, { ok: false, reason: 'Zaxira tayyorlashda xatolik yuz berdi.' });
-      }
-
-      const json = JSON.stringify(snapshot, null, 2);
-      const filename = `zaxira_${new Date().toISOString().slice(0, 10)}.json`;
-
-      const adminName = (check.user && (check.user.first_name || check.user.username)) || userId;
-      const totalRecords = Object.values(snapshot.counts).reduce((a, b) => a + b, 0);
-      allAdminIds().forEach(aid => {
-        sendMessage(aid, `🔐 <b>DB zaxirasi yuklab olindi</b>\n👤 ${adminName} (ID: ${userId})\n🕒 ${new Date().toLocaleString('uz-UZ')}\n📦 Jami ${totalRecords} ta yozuv`)
-          .catch(() => {});
-      });
-
-      return sendJSON(res, 200, {
-        ok: true,
-        filename,
-        mime: 'application/json;charset=utf-8',
-        content: json,
-        counts: snapshot.counts
-      });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/backup-import-preview') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      const owners1 = pruneExpiredOwners();
-      const owner1 = findOwner(owners1, userId);
-      if (!isOwnerAccessValid(owner1)) return sendJSON(res, 200, { ok: false, reason: 'Bazani tiklash faqat tasdiqlangan do\'kon egasiga ruxsat etilgan.' });
-
-      const rawContent = payload.content;
-      if (!rawContent || typeof rawContent !== 'string') {
-        return sendJSON(res, 200, { ok: false, reason: 'Fayl tanlanmagan yoki bo\'sh.' });
-      }
-
-      let snapshot;
-      try {
-        snapshot = JSON.parse(rawContent);
-      } catch (e) {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu fayl to\'g\'ri JSON zaxira fayli emas.' });
-      }
-
-      if (!snapshot || typeof snapshot !== 'object' || !snapshot.files || typeof snapshot.files !== 'object') {
-        return sendJSON(res, 200, { ok: false, reason: 'Fayl formati noto\'g\'ri — bu Mini App zaxira fayli emasga o\'xshaydi.' });
-      }
-      const knownKeys = new Set(BACKUP_FILE_DEFS.map(d => d.key));
-      const fileKeys = Object.keys(snapshot.files).filter(k => knownKeys.has(k));
-      if (fileKeys.length === 0) {
-        return sendJSON(res, 200, { ok: false, reason: 'Faylda tanish bo\'limlar topilmadi.' });
-      }
-
-      const contentHash = crypto.createHash('sha256').update(rawContent).digest('hex');
-      const token = crypto.randomBytes(16).toString('hex');
-      pendingBackupRestores.set(token, { adminId: userId, contentHash, createdAt: Date.now(), snapshot });
-
-      return sendJSON(res, 200, {
-        ok: true,
-        confirmToken: token,
-        version: snapshot.version || null,
-        exportedAt: snapshot.exportedAt || null,
-        counts: snapshot.counts || null,
-        sections: fileKeys
-      });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/backup-import-confirm') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      const owners2 = pruneExpiredOwners();
-      const owner2 = findOwner(owners2, userId);
-      if (!isOwnerAccessValid(owner2)) return sendJSON(res, 200, { ok: false, reason: 'Bazani tiklash faqat tasdiqlangan do\'kon egasiga ruxsat etilgan.' });
-
-      const { confirmToken, confirmText, content } = payload;
-      if ((confirmText || '').trim().toUpperCase() !== 'TASDIQLAYMAN') {
-        return sendJSON(res, 200, { ok: false, reason: 'Tasdiqlash uchun "TASDIQLAYMAN" so\'zini aniq kiriting.' });
-      }
-      const pending = confirmToken && pendingBackupRestores.get(confirmToken);
-      if (!pending) {
-        return sendJSON(res, 200, { ok: false, reason: 'Tasdiqlash muddati tugagan yoki noto\'g\'ri. Faylni qaytadan yuklang.' });
-      }
-      if (String(pending.adminId) !== userId) {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu tasdiqlash boshqa admin uchun yaratilgan.' });
-      }
-      if (Date.now() - pending.createdAt > BACKUP_RESTORE_TOKEN_TTL_MS) {
-        pendingBackupRestores.delete(confirmToken);
-        return sendJSON(res, 200, { ok: false, reason: 'Tasdiqlash muddati (10 daqiqa) tugagan. Faylni qaytadan yuklang.' });
-      }
-      const contentHash = crypto.createHash('sha256').update(String(content || '')).digest('hex');
-      if (contentHash !== pending.contentHash) {
-        return sendJSON(res, 200, { ok: false, reason: 'Fayl mazmuni preview qilingandan beri o\'zgargan. Qaytadan yuklang.' });
-      }
-
-      pendingBackupRestores.delete(confirmToken);
-
-      let safetyFile = null;
-      let applied = [];
-      try {
-        safetyFile = savePreRestoreSafetySnapshot(userId);
-        applied = applyBackupSnapshot(pending.snapshot);
-      } catch (e) {
-        console.error('backup-import-confirm xatolik:', e.message);
-        return sendJSON(res, 200, { ok: false, reason: 'Bazani tiklashda xatolik yuz berdi. Hech narsa o\'zgartirilmadi yoki qisman o\'zgargan bo\'lishi mumkin — pre_restore_backups papkasini tekshiring.' });
-      }
-
-      const adminName = (check.user && (check.user.first_name || check.user.username)) || userId;
-      allAdminIds().forEach(aid => {
-        sendMessage(aid, `⚠️ <b>DB TIKLANDI (restore)</b>\n👤 ${adminName} (ID: ${userId})\n🕒 ${new Date().toLocaleString('uz-UZ')}\n📦 Almashtirilgan bo'limlar: ${applied.join(', ') || 'yo\'q'}\n💾 Tiklashdan oldingi holat saqlandi: ${safetyFile || 'saqlanmadi (xatolik)'}`)
-          .catch(() => {});
-      });
-
-      return sendJSON(res, 200, { ok: true, applied, safetyFile });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/create-invite') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin havola yarata oladi' });
-
-      if (!BOT_USERNAME || BOT_USERNAME === 'BOT_USERNAME_BU_YERGA') {
-        return sendJSON(res, 200, { ok: false, reason: 'Serverda BOT_USERNAME sozlanmagan.' });
-      }
-
-      const token = createInvite();
-      const link = `https://t.me/${BOT_USERNAME}?start=inv_${token}`;
-      return sendJSON(res, 200, { ok: true, link });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/subscription-status') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, { ok: false, reason: 'Faqat do\'kon egasi uchun.' });
-      const owner = ownerCtx.owner;
-
-      const access = getOwnerSubscriptionAccess(owner);
-      const requisites = loadPaymentRequisites();
-      const plans = loadSubscriptionPlans();
-      const tariffs = loadTariffs();
-      const plansList = Object.values(plans)
-        .sort((a, b) => (a.order || 0) - (b.order || 0))
-        .map(p => {
-          const tariff = p.tariffId ? tariffs.find(t => t.id === p.tariffId) : null;
-          return { ...p, tariffLabel: tariff ? tariff.name : null };
-        });
-
-      return sendJSON(res, 200, {
-        ok: true,
-        status: access.status,
-        allowed: access.allowed,
-        daysLeft: access.daysLeft,
-        inGrace: access.inGrace,
-        subscriptionUntil: owner.subscriptionUntil || null,
-        requisites: { cardNumber: requisites.cardNumber, cardHolder: requisites.cardHolder },
-        plans: plansList,
-        pendingRequest: owner.subscriptionPaymentRequest || null
-      });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/subscription-history') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, { ok: false, reason: 'Faqat do\'kon egasi uchun.' });
-      const owner = ownerCtx.owner;
-
-      const history = loadPayments()
-        .filter(p => String(p.ownerId) === String(owner.id) && p.source === 'subscription')
-        .sort((a, b) => new Date(b.at) - new Date(a.at))
-        .map(p => ({ planLabel: p.planLabel, amount: p.amount, days: p.days, at: p.at }));
-
-      return sendJSON(res, 200, { ok: true, history });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/subscription-select-plan') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-
-      const owners = loadOwners();
-      const ownerCtx = resolveOwnerContext(owners, userId);
-      if (!ownerCtx || ownerCtx.role !== 'egasi') return sendJSON(res, 200, { ok: false, reason: 'Faqat do\'kon egasi uchun.' });
-      const owner = ownerCtx.owner;
-
-      const plan = loadSubscriptionPlans()[payload.planId];
-      if (!plan) return sendJSON(res, 200, { ok: false, reason: 'Tarif topilmadi.' });
-
-      const reqData = createSubscriptionPaymentRequest(owner, payload.planId);
-      saveOwners(owners);
-
-      sendMessage(owner.id,
-        `✅ Siz <b>${escapeHtmlServer(plan.label)}</b> tarifini tanladingiz (${fmtNum(plan.price)} so'm).\n\n` +
-        `Endi to'lov chekining (skrinshotning) RASMINI shu botga yuboring — administrator tekshirib ` +
-        `tasdiqlagach, obunangiz avtomatik yangilanadi.`);
-
-      return sendJSON(res, 200, { ok: true, request: reqData, botUsername: BOT_USERNAME || null });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/admin-pending-subscription-payments') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin ko\'ra oladi' });
-
-      const owners = loadOwners();
-      const pending = owners
-        .filter(o => o.subscriptionPaymentRequest && o.subscriptionPaymentRequest.status === 'kutilmoqda_tasdiq')
-        .map(o => ({
-          ownerId: o.id,
-          ownerLabel: ownerLabel(o),
-          restaurantName: (o.profile && o.profile.name) || null,
-          request: o.subscriptionPaymentRequest
-        }));
-
-      return sendJSON(res, 200, { ok: true, pending });
-    });
-    return;
-  }
-
-  if (req.method === 'POST' && req.url === '/api/admin-subscription-decide') {
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin qaror qabul qila oladi' });
-
-      const owners = loadOwners();
-      const owner = findOwner(owners, payload.ownerId);
-      if (!owner) return sendJSON(res, 200, { ok: false, reason: 'Oshxona topilmadi.' });
-
-      const action = payload.action === 'approve' ? 'approve' : (payload.action === 'reject' ? 'reject' : null);
-      if (!action) return sendJSON(res, 200, { ok: false, reason: 'Noto\'g\'ri amal.' });
-
-      const result = decideSubscriptionPayment(owner, action, userId, payload.reason);
-      if (!result.ok) return sendJSON(res, 200, result);
-      saveOwners(owners);
-
-      return sendJSON(res, 200, { ok: true, newUntil: result.newUntil || null });
-    });
-    return;
-  }
-
-  function collectBroadcastRecipients(targetType) {
-    const owners = loadOwners();
-    const ids = new Set();
-    if (targetType === 'owner' || targetType === 'all') {
-      owners.forEach(o => ids.add(String(o.id)));
+  if (!ownerCanUseFeature(owner, 'restaurant-brand')) {
+    const existingLogo = (owner.profile && owner.profile.logoUrl) || '';
+    const existingBrandColor = (owner.profile && owner.profile.brandColor) || '';
+    if (logoTrim !== existingLogo || brandColorTrim !== existingBrandColor) {
+      return sendFeatureBlocked(res, 'restaurant-brand');
     }
-    if (targetType === 'customer' || targetType === 'all') {
-      owners.forEach(o => (o.customers || []).forEach(c => ids.add(String(c.id))));
-    }
-    if (targetType === 'staff' || targetType === 'all') {
-      owners.forEach(o => (o.staff || []).forEach(s => ids.add(String(s.id))));
-    }
-    return Array.from(ids);
   }
 
-  function isValidBroadcastImageUrl(value) {
-    return isValidImageValue(value);
-  }
-  function isBase64ImageValue(value) {
-    return !!value && /^data:image\/(png|jpe?g|webp);base64,/i.test(value);
+  const owners2 = loadOwners();
+  const target = findOwner(owners2, userId);
+  const wasCompleted = !!(target.profile && target.profile.completedAt);
+  target.profile = {
+    name: nameTrim,
+    address: addressTrim,
+    phone: phoneTrim,
+    workHours: workHoursTrim || null,
+    logoUrl: logoTrim || null,
+    brandColor: brandColorTrim || null,
+    completedAt: wasCompleted ? target.profile.completedAt : new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+  saveOwners(owners2);
+
+  return sendOk(res, { profile: target.profile });
+});
+
+authed('/api/feature-list', (payload, res, { userId }) => {
+  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin ko\'ra oladi');
+
+  return sendOk(res, { groups: getFeatureCatalogGrouped() });
+});
+
+authed('/api/admin-payment-requisites-get', (payload, res, { userId }) => {
+  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin ko\'ra oladi');
+
+  return sendOk(res, { requisites: loadPaymentRequisites() });
+});
+
+authed('/api/admin-payment-requisites-set', (payload, res, { userId }) => {
+  const { cardNumber, cardHolder, clickNumber, paymeNumber } = payload;
+  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin o\'zgartira oladi');
+
+  const updated = savePaymentRequisites({
+    cardNumber: String(cardNumber || '').trim() || DEFAULT_PAYMENT_REQUISITES.cardNumber,
+    cardHolder: String(cardHolder || '').trim() || DEFAULT_PAYMENT_REQUISITES.cardHolder,
+    clickNumber: String(clickNumber || '').trim() || DEFAULT_PAYMENT_REQUISITES.clickNumber,
+    paymeNumber: String(paymeNumber || '').trim() || DEFAULT_PAYMENT_REQUISITES.paymeNumber
+  });
+
+  return sendOk(res, { requisites: updated });
+});
+
+authed('/api/tariff-list', (payload, res, { userId }) => {
+  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin ko\'ra oladi');
+
+  const owners = loadOwners();
+  const tariffs = loadTariffs().slice().sort((a, b) => (a.order || 0) - (b.order || 0))
+    .map(t => ({ ...t, ownerCount: owners.filter(o => o.tariffId === t.id).length }));
+  return sendOk(res, { tariffs });
+});
+
+authed('/api/tariff-add', (payload, res, { userId }) => {
+  const { name, price, maxBranches } = payload;
+  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin qo\'sha oladi');
+
+  const nameTrim = String(name || '').trim();
+  if (!nameTrim) return sendFail(res, 'Tarif nomini kiriting.');
+
+  let priceVal = 0;
+  if (price !== undefined && price !== null && String(price).trim() !== '') {
+    priceVal = Number(price);
+    if (!Number.isFinite(priceVal) || priceVal < 0) return sendFail(res, 'Narx 0 yoki musbat son bo\'lishi kerak.');
   }
 
-  function sendBroadcastToChat(chatId, text, photo, buttonText, buttonUrl) {
-    const replyMarkup = (buttonText && buttonUrl) ? { inline_keyboard: [[{ text: buttonText, url: buttonUrl }]] } : null;
-    const params = { chat_id: chatId, parse_mode: 'HTML' };
-    if (replyMarkup) params.reply_markup = JSON.stringify(replyMarkup);
-    const method = photo ? 'sendPhoto' : 'sendMessage';
-    if (photo) { params.photo = photo; params.caption = text; }
-    else { params.text = text; }
-    return telegramApi(method, params).then(result => {
-      if (!result || !result.ok) {
-        const reason = (result && result.description) || 'noma\'lum xatolik';
-        console.error(`[broadcast xato] chat_id=${chatId}: ${reason}`);
-        return false;
+  // Filiallar soni (ixtiyoriy) — bo'sh/0 qoldirilsa cheklanmagan.
+  let maxBranchesVal = null;
+  if (maxBranches !== undefined && maxBranches !== null && String(maxBranches).trim() !== '') {
+    const v = parseInt(maxBranches, 10);
+    if (!Number.isInteger(v) || v <= 0) {
+      return sendFail(res, 'Filiallar soni musbat butun son bo\'lishi kerak (yoki cheklanmagan uchun bo\'sh qoldiring).');
+    }
+    maxBranchesVal = v;
+  }
+
+  const tariffs = loadTariffs();
+  if (tariffs.some(t => t.name.toLowerCase() === nameTrim.toLowerCase())) {
+    return sendFail(res, 'Shu nomdagi tarif allaqachon mavjud.');
+  }
+  const tariff = {
+    id: crypto.randomBytes(4).toString('hex'),
+    name: nameTrim,
+    order: tariffs.length,
+    price: priceVal,
+    maxBranches: maxBranchesVal,
+    reminderDays: 1,
+    features: {},
+    createdAt: new Date().toISOString()
+  };
+  tariffs.push(tariff);
+  saveTariffs(tariffs);
+
+  return sendOk(res, { tariff });
+});
+
+authed('/api/tariff-rename', (payload, res, { userId }) => {
+  const { id, name, price, reminderDays, maxBranches } = payload;
+  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin o\'zgartira oladi');
+
+  const nameTrim = String(name || '').trim();
+  if (!nameTrim) return sendFail(res, 'Tarif nomini kiriting.');
+
+  const tariffs = loadTariffs();
+  const tariff = tariffs.find(t => t.id === id);
+  if (!tariff) return sendFail(res, 'Tarif topilmadi.');
+  if (tariffs.some(t => t.id !== id && t.name.toLowerCase() === nameTrim.toLowerCase())) {
+    return sendFail(res, 'Shu nomdagi tarif allaqachon mavjud.');
+  }
+  if (price !== undefined && price !== null && String(price).trim() !== '') {
+    const priceVal = Number(price);
+    if (!Number.isFinite(priceVal) || priceVal < 0) return sendFail(res, 'Narx 0 yoki musbat son bo\'lishi kerak.');
+    tariff.price = priceVal;
+  }
+
+  if (reminderDays !== undefined && reminderDays !== null && String(reminderDays).trim() !== '') {
+    const reminderVal = parseInt(reminderDays, 10);
+    if (!Number.isInteger(reminderVal) || reminderVal <= 0) {
+      return sendFail(res, 'Eslatma kunlari musbat butun son bo\'lishi kerak.');
+    }
+    tariff.reminderDays = reminderVal;
+  }
+  // Filiallar soni — bo'sh string yuborilsa cheklovni OLIB TASHLAYDI
+  // (cheklanmagan qiladi); maydon umuman yuborilmasa (undefined),
+  // eski qiymat tegilmay qoladi.
+  if (maxBranches !== undefined) {
+    if (maxBranches === null || String(maxBranches).trim() === '') {
+      tariff.maxBranches = null;
+    } else {
+      const v = parseInt(maxBranches, 10);
+      if (!Number.isInteger(v) || v <= 0) {
+        return sendFail(res, 'Filiallar soni musbat butun son bo\'lishi kerak (yoki cheklanmagan uchun bo\'sh qoldiring).');
       }
-      return true;
-    }).catch(err => {
-      console.error(`[broadcast tarmoq xatosi] chat_id=${chatId}: ${(err && err.message) || err}`);
-      return false;
+      tariff.maxBranches = v;
+    }
+  }
+  tariff.name = nameTrim;
+  saveTariffs(tariffs);
+
+  return sendOk(res, { tariff });
+});
+
+authed('/api/tariff-remove', (payload, res, { userId }) => {
+  const { id, force } = payload;
+  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin o\'chira oladi');
+
+  const tariffs = loadTariffs();
+  const idx = tariffs.findIndex(t => t.id === id);
+  if (idx === -1) return sendFail(res, 'Tarif topilmadi.');
+
+  const owners = loadOwners();
+  const assignedOwners = owners.filter(o => o.tariffId === id);
+  if (assignedOwners.length && !force) {
+    return sendJSON(res, 200, {
+      ok: false,
+      reason: `Bu tarifga ${assignedOwners.length} ta do'kon egasi biriktirilgan. Avval ularni boshqa tarifga o'tkazing, yoki tasdiqlab, ularni tarifsiz qoldirib o'chiring.`,
+      blockedCount: assignedOwners.length
     });
   }
+  if (assignedOwners.length && force) {
+    assignedOwners.forEach(o => { o.tariffId = null; });
+    saveOwners(owners);
+  }
 
-  async function sendBroadcastPhotoUploadAndGetFileId(chatId, dataUrl, text, buttonText, buttonUrl) {
-    const match = /^data:(image\/[a-z]+);base64,(.+)$/i.exec(dataUrl);
-    if (!match) return { ok: false, fileId: null };
-    const mimeType = match[1].toLowerCase() === 'image/jpg' ? 'image/jpeg' : match[1].toLowerCase();
-    const buffer = Buffer.from(match[2], 'base64');
-    const replyMarkup = (buttonText && buttonUrl) ? { inline_keyboard: [[{ text: buttonText, url: buttonUrl }]] } : null;
-    const fields = { caption: text, parse_mode: 'HTML' };
-    if (replyMarkup) fields.reply_markup = JSON.stringify(replyMarkup);
+  tariffs.splice(idx, 1);
+
+  tariffs.sort((a, b) => (a.order || 0) - (b.order || 0)).forEach((t, i) => { t.order = i; });
+  saveTariffs(tariffs);
+
+  return sendOk(res);
+});
+
+authed('/api/tariff-set-features', (payload, res, { userId }) => {
+  const { id, features } = payload;
+  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin belgilay oladi');
+
+  const tariffs = loadTariffs();
+  const tariff = tariffs.find(t => t.id === id);
+  if (!tariff) return sendFail(res, 'Tarif topilmadi.');
+
+  const validIds = new Set(FEATURE_CATALOG.map(f => f.id));
+  const cleaned = {};
+  if (features && typeof features === 'object') {
+    for (const fid of Object.keys(features)) {
+      if (validIds.has(fid)) cleaned[fid] = !!features[fid];
+    }
+  }
+  tariff.features = cleaned;
+  saveTariffs(tariffs);
+
+  return sendOk(res, { tariff });
+});
+
+authed('/api/subscription-plan-list', (payload, res, { userId }) => {
+  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin ko\'ra oladi');
+
+  const tariffs = loadTariffs();
+  const plans = Object.values(loadSubscriptionPlans())
+    .sort((a, b) => (a.order || 0) - (b.order || 0))
+    .map(p => {
+      const tariff = p.tariffId ? tariffs.find(t => t.id === p.tariffId) : null;
+      return { ...p, tariffLabel: tariff ? tariff.name : null };
+    });
+  return sendOk(res, { plans, tariffs: tariffs.map(t => ({ id: t.id, name: t.name })) });
+});
+
+authed('/api/subscription-plan-add', (payload, res, { userId }) => {
+  const { label, days, price, discountNote, tariffId } = payload;
+  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin qo\'sha oladi');
+
+  const labelTrim = String(label || '').trim();
+  if (!labelTrim) return sendFail(res, 'Reja nomini kiriting.');
+
+  const daysVal = parseInt(days, 10);
+  if (!Number.isInteger(daysVal) || daysVal <= 0) {
+    return sendFail(res, 'Muddat (kun) musbat butun son bo\'lishi kerak.');
+  }
+
+  const priceVal = Number(price);
+  if (!Number.isFinite(priceVal) || priceVal < 0) {
+    return sendFail(res, 'Narx 0 yoki musbat son bo\'lishi kerak.');
+  }
+
+  let tariffIdVal = null;
+  if (tariffId !== undefined && tariffId !== null && String(tariffId).trim() !== '') {
+    const tariffs = loadTariffs();
+    if (!tariffs.some(t => t.id === tariffId)) {
+      return sendFail(res, 'Tanlangan tarif topilmadi.');
+    }
+    tariffIdVal = tariffId;
+  }
+
+  const plans = loadSubscriptionPlans();
+  const id = crypto.randomBytes(4).toString('hex');
+  const order = Object.keys(plans).length;
+  plans[id] = {
+    id,
+    label: labelTrim,
+    days: daysVal,
+    price: priceVal,
+    discountNote: discountNote ? String(discountNote).trim() || null : null,
+    tariffId: tariffIdVal,
+    order
+  };
+  saveSubscriptionPlans(plans);
+
+  return sendOk(res, { plan: plans[id] });
+});
+
+authed('/api/subscription-plan-update', (payload, res, { userId }) => {
+  const { id, label, days, price, discountNote, tariffId } = payload;
+  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin o\'zgartira oladi');
+
+  const plans = loadSubscriptionPlans();
+  const plan = plans[id];
+  if (!plan) return sendFail(res, 'Reja topilmadi.');
+
+  const labelTrim = String(label || '').trim();
+  if (!labelTrim) return sendFail(res, 'Reja nomini kiriting.');
+
+  const daysVal = parseInt(days, 10);
+  if (!Number.isInteger(daysVal) || daysVal <= 0) {
+    return sendFail(res, 'Muddat (kun) musbat butun son bo\'lishi kerak.');
+  }
+
+  const priceVal = Number(price);
+  if (!Number.isFinite(priceVal) || priceVal < 0) {
+    return sendFail(res, 'Narx 0 yoki musbat son bo\'lishi kerak.');
+  }
+
+  let tariffIdVal = null;
+  if (tariffId !== undefined && tariffId !== null && String(tariffId).trim() !== '') {
+    const tariffs = loadTariffs();
+    if (!tariffs.some(t => t.id === tariffId)) {
+      return sendFail(res, 'Tanlangan tarif topilmadi.');
+    }
+    tariffIdVal = tariffId;
+  }
+
+  plan.label = labelTrim;
+  plan.days = daysVal;
+  plan.price = priceVal;
+  plan.discountNote = discountNote ? String(discountNote).trim() || null : null;
+  plan.tariffId = tariffIdVal;
+  saveSubscriptionPlans(plans);
+
+  return sendOk(res, { plan });
+});
+
+authed('/api/subscription-plan-remove', (payload, res, { userId }) => {
+  const { id } = payload;
+  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin o\'chira oladi');
+
+  const plans = loadSubscriptionPlans();
+  if (!plans[id]) return sendFail(res, 'Reja topilmadi.');
+
+  delete plans[id];
+  Object.values(plans).sort((a, b) => (a.order || 0) - (b.order || 0)).forEach((p, i) => { p.order = i; });
+  saveSubscriptionPlans(plans);
+
+  return sendOk(res);
+});
+
+authed('/api/system-status', (payload, res, { userId }) => {
+  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin ko\'ra oladi');
+
+  const owners = loadOwners();
+  const activeOwners = owners.filter(isOwnerAccessValid);
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+
+  let totalStaff = 0, totalOrders = 0, todayOrders = 0, totalNotifErrors = 0;
+  owners.forEach(o => {
+    totalStaff += (o.staff || []).length;
+    const orders = o.orders || [];
+    totalOrders += orders.length;
+    todayOrders += orders.filter(ord => ord.createdAt && new Date(ord.createdAt) >= todayStart).length;
+    totalNotifErrors += (o.notificationErrors || []).length;
+  });
+
+  function fileInfo(file) {
     try {
-      const result = await telegramApiUploadPhoto(chatId, buffer, mimeType, fields);
-      if (!result || !result.ok) {
-        const reason = (result && result.description) || 'noma\'lum xatolik';
-        console.error(`[broadcast rasm yuklash xatosi] chat_id=${chatId}: ${reason}`);
-        return { ok: false, fileId: null };
+      const st = fs.statSync(file);
+      return { exists: true, sizeKb: Math.round(st.size / 1024 * 10) / 10 };
+    } catch (e) {
+      return { exists: false, sizeKb: 0 };
+    }
+  }
+
+  const mem = process.memoryUsage();
+
+  return sendOk(res, {
+    status: {
+      uptimeSeconds: Math.floor(process.uptime()),
+      serverStartedAt: SERVER_STARTED_AT,
+      nodeVersion: process.version,
+      memoryRssMb: Math.round(mem.rss / 1024 / 1024 * 10) / 10,
+      owners: { total: owners.length, active: activeOwners.length, expired: owners.length - activeOwners.length },
+      totalStaff,
+      totalOrders,
+      todayOrders,
+      notificationErrors: totalNotifErrors,
+      webhook: webhookStats,
+      botConfigured: !!BOT_TOKEN && BOT_TOKEN !== 'BOT_TOKEN_BU_YERGA',
+      publicUrlConfigured: !!PUBLIC_URL,
+      dataFiles: {
+        owners: fileInfo(OWNERS_FILE),
+        invites: fileInfo(INVITES_FILE),
+        requests: fileInfo(REQUESTS_FILE),
+        profiles: fileInfo(PROFILES_FILE)
       }
-      const sizes = result.result && result.result.photo;
-      const fileId = (Array.isArray(sizes) && sizes.length) ? sizes[sizes.length - 1].file_id : null;
-      return { ok: true, fileId };
-    } catch (err) {
-      console.error(`[broadcast rasm yuklash tarmoq xatosi] chat_id=${chatId}: ${(err && err.message) || err}`);
+    }
+  });
+});
+
+authed('/api/owners', (payload, res, { userId }) => {
+  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin ko\'ra oladi');
+
+  const owners = pruneExpiredOwners().map(o => {
+    const clean = Object.assign({}, o);
+    delete clean.passwordHash;
+    delete clean.sessionToken;
+    delete clean.sessionExpiresAt;
+    clean.hasLogin = !!(o.login && o.passwordHash);
+
+    const rating = ownerAverageRating(o);
+    clean.avgRating = rating.avg;
+    clean.ratingCount = rating.count;
+    return clean;
+  });
+
+  owners.sort((a, b) => {
+    if (a.avgRating === null && b.avgRating === null) return 0;
+    if (a.avgRating === null) return 1;
+    if (b.avgRating === null) return -1;
+    return b.avgRating - a.avgRating;
+  });
+
+  const payments = loadPayments();
+  const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).getTime();
+  const revenue = {
+    totalLifetime: payments.reduce((s, p) => s + (Number(p.amount) || 0), 0),
+    thisMonth: payments.filter(p => new Date(p.at).getTime() >= monthStart).reduce((s, p) => s + (Number(p.amount) || 0), 0),
+    paymentCount: payments.length
+  };
+  return sendOk(res, { owners, revenue });
+});
+
+authed('/api/owner-set-tariff', (payload, res, { userId }) => {
+  const { id, tariffId } = payload;
+  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin belgilay oladi');
+  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
+
+  const owners = loadOwners();
+  const owner = findOwner(owners, id);
+  if (!owner) return sendFail(res, 'Bunday do\'kon egasi topilmadi');
+
+  if (tariffId) {
+    const tariffs = loadTariffs();
+    if (!tariffs.some(t => t.id === tariffId)) {
+      return sendFail(res, 'Bunday tarif topilmadi.');
+    }
+    owner.tariffId = tariffId;
+  } else {
+    owner.tariffId = null;
+  }
+  saveOwners(owners);
+
+  return sendOk(res, { tariffId: owner.tariffId });
+});
+
+authed('/api/owner-set-expiry', async (payload, res, { userId }) => {
+  const { id, action, days, date } = payload;
+  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin o\'zgartira oladi');
+  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
+
+  const owners = loadOwners();
+  const owner = findOwner(owners, id);
+  if (!owner) return sendFail(res, 'Bunday do\'kon egasi topilmadi');
+
+  if (action === 'extend') {
+    const n = parseInt(days, 10);
+    if (!Number.isInteger(n) || n <= 0) {
+      return sendFail(res, 'Kun soni musbat butun son bo\'lishi kerak.');
+    }
+    const currentMs = owner.subscriptionUntil ? new Date(owner.subscriptionUntil).getTime() : NaN;
+    const base = Number.isFinite(currentMs) && currentMs > Date.now() ? currentMs : Date.now();
+    const untilIso = new Date(base + n * 86400000).toISOString();
+    owner.subscriptionUntil = untilIso;
+    owner.expiresAt = untilIso;
+    owner.subscriptionStatus = SUBSCRIPTION_STATUS.ACTIVE;
+    owner.graceUntil = null;
+    owner.reminderSentAt = null;
+    owner.blockedNotifiedAt = null;
+    saveOwners(owners);
+    return sendOk(res, { owner });
+  }
+
+  if (action === 'setDate') {
+    const d = new Date(date);
+    if (!date || isNaN(d.getTime())) {
+      return sendFail(res, 'Sana noto\'g\'ri.');
+    }
+
+    d.setHours(23, 59, 59, 999);
+    if (d.getTime() <= Date.now()) {
+      owner.subscriptionUntil = d.toISOString();
+      owner.expiresAt = d.toISOString();
+      owner.subscriptionStatus = SUBSCRIPTION_STATUS.BLOCKED;
+      owner.graceUntil = null;
+      owner.blockedNotifiedAt = new Date().toISOString();
+      saveOwners(owners);
+      await sendMessage(ADMIN_ID,
+        `⏰ <b>Obuna muddati qisqartirildi</b>\n${ownerLabel(owner)} (ID: <code>${owner.id}</code>) uchun Mini App'ga kirish admin tomonidan bloklandi.\nMa'lumotlari saqlanib qolyapti — qayta uzaytirsangiz, kirish tiklanadi.`);
+      await sendMessage(owner.id,
+        `⏰ Sizning obuna muddatingiz administrator tomonidan qisqartirildi, Mini App'ga kirish bloklandi.\nMa'lumotlaringiz saqlanib qolyapti. Davom ettirish uchun administrator bilan bog'laning.`);
+      return sendOk(res, { owner, blocked: true });
+    }
+    owner.subscriptionUntil = d.toISOString();
+    owner.expiresAt = d.toISOString();
+    owner.subscriptionStatus = SUBSCRIPTION_STATUS.ACTIVE;
+    owner.graceUntil = null;
+    owner.reminderSentAt = null;
+    owner.blockedNotifiedAt = null;
+    saveOwners(owners);
+    return sendOk(res, { owner });
+  }
+
+  if (action === 'unlimited') {
+    owner.subscriptionUntil = null;
+    owner.expiresAt = null;
+    owner.subscriptionStatus = SUBSCRIPTION_STATUS.ACTIVE;
+    owner.graceUntil = null;
+    owner.reminderSentAt = null;
+    owner.blockedNotifiedAt = null;
+    saveOwners(owners);
+    return sendOk(res, { owner });
+  }
+
+  if (action === 'cancelNow') {
+    const nowIso = new Date().toISOString();
+    owner.subscriptionUntil = nowIso;
+    owner.expiresAt = nowIso;
+    owner.subscriptionStatus = SUBSCRIPTION_STATUS.BLOCKED;
+    owner.graceUntil = null;
+    owner.blockedNotifiedAt = nowIso;
+    saveOwners(owners);
+    await sendMessage(ADMIN_ID,
+      `⏰ <b>Obuna bekor qilindi</b>\n${ownerLabel(owner)} (ID: <code>${owner.id}</code>) uchun Mini App'ga kirish admin tomonidan bloklandi.\nMa'lumotlari saqlanib qolyapti — qayta uzaytirsangiz, kirish tiklanadi.`);
+    await sendMessage(owner.id,
+      `⏰ Sizning obunangiz administrator tomonidan bekor qilindi, Mini App'ga kirish bloklandi.\nMa'lumotlaringiz saqlanib qolyapti.`);
+    return sendOk(res, { owner, blocked: true });
+  }
+
+  return sendFail(res, 'Noto\'g\'ri amal.');
+});
+
+authed('/api/set-owner-credentials', (payload, res, { userId }) => {
+  const { id, login, password } = payload;
+  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin belgilay oladi');
+  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
+
+  const owners = loadOwners();
+  const owner = findOwner(owners, id);
+  if (!owner) return sendFail(res, 'Bunday do\'kon egasi topilmadi');
+
+  const loginNorm = normalizeLogin(login);
+  if (!/^[a-z0-9_.]{3,32}$/.test(loginNorm)) {
+    return sendFail(res, 'Login 3-32 belgi, faqat lotin harflari/raqam/._ bo\'lishi mumkin.');
+  }
+  const passwordStr = String(password || '');
+  if (passwordStr.length < 6) {
+    return sendFail(res, 'Parol kamida 6 belgidan iborat bo\'lishi kerak.');
+  }
+  const clash = owners.find(o => normalizeLogin(o.login) === loginNorm && String(o.id) !== String(owner.id));
+  if (clash) {
+    return sendFail(res, 'Bu login band, boshqasini tanlang.');
+  }
+
+  owner.login = loginNorm;
+  owner.passwordHash = hashPassword(passwordStr);
+
+  owner.sessionToken = null;
+  owner.sessionExpiresAt = null;
+  saveOwners(owners);
+
+  return sendOk(res, { login: owner.login });
+});
+
+authed('/api/remove-owner-credentials', (payload, res, { userId }) => {
+  const { id } = payload;
+  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin o\'chira oladi');
+  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
+
+  const owners = loadOwners();
+  const owner = findOwner(owners, id);
+  if (!owner) return sendFail(res, 'Bunday do\'kon egasi topilmadi');
+
+  owner.login = null;
+  owner.passwordHash = null;
+  owner.sessionToken = null;
+  owner.sessionExpiresAt = null;
+  saveOwners(owners);
+
+  return sendOk(res);
+});
+
+authed('/api/owner-confirm-password', (payload, res, { userId }) => {
+  const { password } = payload;
+
+  const owners = pruneExpiredOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q yoki muddati tugagan');
+  const owner = ownerCtx.owner;
+
+  if (!owner.login || !owner.passwordHash) {
+
+    return sendOk(res, { skipped: true });
+  }
+  if (!verifyPassword(password, owner.passwordHash)) {
+    return sendFail(res, 'Parol noto\'g\'ri.');
+  }
+  return sendOk(res);
+});
+
+authed('/api/owner-change-password', (payload, res, { userId }) => {
+  const { currentPassword, newPassword } = payload;
+
+  const owners = pruneExpiredOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q yoki muddati tugagan');
+  const owner = ownerCtx.owner;
+
+  if (!owner.login || !owner.passwordHash) {
+    return sendFail(res, 'Sizga hali login/parol biriktirilmagan. Administrator bilan bog\'laning.');
+  }
+  if (!verifyPassword(currentPassword, owner.passwordHash)) {
+    return sendFail(res, 'Joriy parol noto\'g\'ri.');
+  }
+
+  const newPasswordStr = String(newPassword || '');
+  if (newPasswordStr.length < 6) {
+    return sendFail(res, 'Yangi parol kamida 6 belgidan iborat bo\'lishi kerak.');
+  }
+
+  const owners2 = loadOwners();
+  const target = findOwner(owners2, owner.id);
+  if (!target) return sendFail(res, 'Bunday do\'kon egasi topilmadi');
+
+  target.passwordHash = hashPassword(newPasswordStr);
+
+  target.sessionToken = null;
+  target.sessionExpiresAt = null;
+  saveOwners(owners2);
+
+  return sendOk(res);
+});
+
+authed('/api/owner-remove-password', (payload, res, { userId }) => {
+  const { currentPassword } = payload;
+
+  const owners = pruneExpiredOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q yoki muddati tugagan');
+  const owner = ownerCtx.owner;
+
+  if (!owner.login || !owner.passwordHash) {
+
+    return sendOk(res, { alreadyRemoved: true });
+  }
+  if (!verifyPassword(currentPassword, owner.passwordHash)) {
+    return sendFail(res, 'Joriy parol noto\'g\'ri.');
+  }
+
+  const owners2 = loadOwners();
+  const target = findOwner(owners2, owner.id);
+  if (!target) return sendFail(res, 'Bunday do\'kon egasi topilmadi');
+
+  target.login = null;
+  target.passwordHash = null;
+  target.sessionToken = null;
+  target.sessionExpiresAt = null;
+  saveOwners(owners2);
+
+  return sendOk(res);
+});
+
+route('/api/owner-login', (payload, res) => {
+  const { login, password } = payload;
+  const loginNorm = normalizeLogin(login);
+  if (!loginNorm || !password) {
+    return sendFail(res, 'Login va parolni kiriting.');
+  }
+
+  const owners = pruneExpiredOwners();
+  const owner = owners.find(o => normalizeLogin(o.login) === loginNorm);
+  if (!owner || !owner.passwordHash || !verifyPassword(password, owner.passwordHash)) {
+    return sendFail(res, 'Login yoki parol noto\'g\'ri.');
+  }
+  if (!isOwnerAccessValid(owner)) {
+    return sendJSON(res, 200, subscriptionBlockedJSON(owners, owner.id, 'Obuna muddati tugagan. Administrator bilan bog\'laning.'));
+  }
+
+  const owners2 = loadOwners();
+  const target = findOwner(owners2, owner.id);
+  const token = crypto.randomBytes(24).toString('hex');
+  target.sessionToken = token;
+  target.sessionExpiresAt = new Date(Date.now() + SESSION_TOKEN_TTL_MS).toISOString();
+  saveOwners(owners2);
+
+  return sendOk(res, {
+    sessionToken: `sess_${token}`,
+    restaurantName: (target.profile && target.profile.name) || null
+  });
+});
+
+route('/api/owner-logout', (payload, res) => {
+  const { initData } = payload;
+  if (typeof initData === 'string' && initData.startsWith('sess_')) {
+    const token = initData.slice('sess_'.length);
+    const owners = loadOwners();
+    const owner = owners.find(o => o.sessionToken === token);
+    if (owner) {
+      owner.sessionToken = null;
+      owner.sessionExpiresAt = null;
+      saveOwners(owners);
+    }
+  }
+  return sendOk(res);
+});
+
+authed('/api/add-owner', async (payload, res, { userId }) => {
+  const { input, days, price, paid } = payload;
+
+  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin qo\'sha oladi');
+
+  const resolved = await resolveUserInput(input);
+  if (resolved.error) return sendFail(res, resolved.error);
+
+  let expiresAt = null;
+  if (days !== undefined && days !== null && days !== '') {
+    const n = parseInt(days, 10);
+    if (!Number.isInteger(n) || n <= 0) {
+      return sendFail(res, 'Kun soni musbat butun son bo\'lishi kerak, yoki bo\'sh qoldiring (doimiy).');
+    }
+    expiresAt = new Date(Date.now() + n * 86400000).toISOString();
+  }
+
+  let priceVal = 0;
+  if (price !== undefined && price !== null && price !== '') {
+    const p = Number(price);
+    if (!Number.isFinite(p) || p < 0) {
+      return sendFail(res, 'Narx musbat son bo\'lishi kerak.');
+    }
+    priceVal = p;
+  }
+
+  const owners = loadOwners();
+  if (isAdminId(resolved.id)) {
+    return sendFail(res, 'Bu foydalanuvchi allaqachon administrator');
+  }
+  if (findOwner(owners, resolved.id)) {
+    return sendFail(res, 'Bu foydalanuvchi ro\'yxatda allaqachon bor');
+  }
+
+  const newOwner = {
+    id: resolved.id,
+    username: resolved.username || null,
+    addedAt: new Date().toISOString(),
+    expiresAt,
+    price: priceVal,
+    paid: !!paid,
+    paidAt: paid ? new Date().toISOString() : null,
+
+    subscriptionStatus: SUBSCRIPTION_STATUS.ACTIVE,
+    subscriptionUntil: expiresAt,
+    graceUntil: null,
+    trialGivenAt: null
+  };
+  owners.push(newOwner);
+  saveOwners(owners);
+  if (newOwner.paid) recordPayment(newOwner, priceVal);
+
+  return sendOk(res, { owner: newOwner });
+});
+
+authed('/api/update-owner-billing', (payload, res, { userId }) => {
+  const { id, price, paid } = payload;
+
+  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin o\'zgartira oladi');
+  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
+
+  const owners = loadOwners();
+  const owner = findOwner(owners, id);
+  if (!owner) return sendFail(res, 'Bunday do\'kon egasi topilmadi');
+
+  if (price !== undefined && price !== null && price !== '') {
+    const p = Number(price);
+    if (!Number.isFinite(p) || p < 0) {
+      return sendFail(res, 'Narx musbat son bo\'lishi kerak.');
+    }
+    owner.price = p;
+  }
+
+  let justPaid = false;
+  if (paid !== undefined && paid !== null) {
+    const wasPaid = !!owner.paid;
+    owner.paid = !!paid;
+    if (owner.paid && !wasPaid) { owner.paidAt = new Date().toISOString(); justPaid = true; }
+    if (!owner.paid) owner.paidAt = null;
+  }
+
+  saveOwners(owners);
+
+  if (justPaid) {
+    recordPayment(owner, owner.price);
+  }
+  return sendOk(res, { owner });
+});
+
+authed('/api/remove-owner', (payload, res, { userId }) => {
+  const { id } = payload;
+
+  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin o\'chira oladi');
+  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
+
+  let owners = loadOwners();
+  const before = owners.length;
+  const target = findOwner(owners, id);
+
+  if (target) moveOwnerToTrash(target, userId);
+  owners = owners.filter(o => String(o.id) !== String(id));
+  saveOwners(owners);
+
+  return sendOk(res, { removed: before !== owners.length });
+});
+
+authed('/api/trash-list', (payload, res, { userId }) => {
+  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin ko\'ra oladi');
+
+  const now = Date.now();
+  const list = loadTrash().map(t => ({
+    id: t.id,
+    ownerId: t.ownerSnapshot.id,
+    ownerLabel: ownerLabel(t.ownerSnapshot),
+    restaurantName: (t.ownerSnapshot.profile && t.ownerSnapshot.profile.name) || null,
+    trashedAt: t.trashedAt,
+    autoPurgeAt: t.autoPurgeAt,
+    daysLeft: Math.max(0, Math.ceil((new Date(t.autoPurgeAt).getTime() - now) / 86400000)),
+    restoreStatus: t.restoreStatus
+  })).sort((a, b) => new Date(a.autoPurgeAt) - new Date(b.autoPurgeAt));
+
+  return sendOk(res, { trash: list });
+});
+
+authed('/api/trash-restore', (payload, res, { userId }) => {
+  const { trashId } = payload;
+  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin tiklay oladi');
+  if (!trashId) return sendFail(res, 'ID ko\'rsatilmagan');
+
+  const trash = loadTrash();
+  const entry = findTrashEntry(trash, trashId);
+  if (!entry) return sendFail(res, 'Bu yozuv Savatchada topilmadi.');
+
+  const result = restoreOwnerFromTrash(entry);
+  if (!result.ok) return sendFail(res, result.reason);
+
+  saveTrash(trash.filter(t => t.id !== trashId));
+  logTrashEvent('restored', entry.ownerSnapshot, { restoredBy: userId, via: 'admin_panel' });
+  sendMessage(entry.ownerSnapshot.id,
+    `✅ <b>Oshxonangiz tiklandi!</b>\nBarcha ma'lumotlaringiz (menyu, xodimlar, sozlamalar) saqlanib qolgan. Mini App tugmasi orqali oching.`)
+    .catch(() => {});
+
+  return sendOk(res);
+});
+
+authed('/api/trash-purge-now', (payload, res, { userId }) => {
+  const { trashId } = payload;
+  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin o\'chira oladi');
+  if (!trashId) return sendFail(res, 'ID ko\'rsatilmagan');
+
+  const trash = loadTrash();
+  const entry = findTrashEntry(trash, trashId);
+  if (!entry) return sendFail(res, 'Bu yozuv Savatchada topilmadi.');
+
+  archiveOwnerOrders(entry.ownerSnapshot);
+  logTrashEvent('purged', entry.ownerSnapshot, { reason: 'admin_qolda', purgedBy: userId });
+  saveTrash(trash.filter(t => t.id !== trashId));
+
+  return sendOk(res);
+});
+
+authed('/api/trash-log', (payload, res, { userId }) => {
+  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin ko\'ra oladi');
+
+  const log = loadTrashLog().slice().sort((a, b) => new Date(b.at) - new Date(a.at)).slice(0, 200);
+  return sendOk(res, { log });
+});
+
+authed('/api/backup-export', (payload, res, { user, userId }) => {
+  const owners0 = pruneExpiredOwners();
+  const owner0 = findOwner(owners0, userId);
+  if (!isOwnerAccessValid(owner0)) return sendFail(res, 'Zaxira faqat tasdiqlangan do\'kon egasiga ruxsat etilgan.');
+
+  let snapshot;
+  try {
+    snapshot = buildBackupSnapshot(userId);
+  } catch (e) {
+    console.error('backup-export xatolik:', e.message);
+    return sendFail(res, 'Zaxira tayyorlashda xatolik yuz berdi.');
+  }
+
+  const json = JSON.stringify(snapshot, null, 2);
+  const filename = `zaxira_${new Date().toISOString().slice(0, 10)}.json`;
+
+  const adminName = (user && (user.first_name || user.username)) || userId;
+  const totalRecords = Object.values(snapshot.counts).reduce((a, b) => a + b, 0);
+  allAdminIds().forEach(aid => {
+    sendMessage(aid, `🔐 <b>DB zaxirasi yuklab olindi</b>\n👤 ${adminName} (ID: ${userId})\n🕒 ${new Date().toLocaleString('uz-UZ')}\n📦 Jami ${totalRecords} ta yozuv`)
+      .catch(() => {});
+  });
+
+  return sendOk(res, {
+    filename,
+    mime: 'application/json;charset=utf-8',
+    content: json,
+    counts: snapshot.counts
+  });
+});
+
+authed('/api/backup-import-preview', (payload, res, { userId }) => {
+  const owners1 = pruneExpiredOwners();
+  const owner1 = findOwner(owners1, userId);
+  if (!isOwnerAccessValid(owner1)) return sendFail(res, 'Bazani tiklash faqat tasdiqlangan do\'kon egasiga ruxsat etilgan.');
+
+  const rawContent = payload.content;
+  if (!rawContent || typeof rawContent !== 'string') {
+    return sendFail(res, 'Fayl tanlanmagan yoki bo\'sh.');
+  }
+
+  let snapshot;
+  try {
+    snapshot = JSON.parse(rawContent);
+  } catch (e) {
+    return sendFail(res, 'Bu fayl to\'g\'ri JSON zaxira fayli emas.');
+  }
+
+  if (!snapshot || typeof snapshot !== 'object' || !snapshot.files || typeof snapshot.files !== 'object') {
+    return sendFail(res, 'Fayl formati noto\'g\'ri — bu Mini App zaxira fayli emasga o\'xshaydi.');
+  }
+  const knownKeys = new Set(BACKUP_FILE_DEFS.map(d => d.key));
+  const fileKeys = Object.keys(snapshot.files).filter(k => knownKeys.has(k));
+  if (fileKeys.length === 0) {
+    return sendFail(res, 'Faylda tanish bo\'limlar topilmadi.');
+  }
+
+  const contentHash = crypto.createHash('sha256').update(rawContent).digest('hex');
+  const token = crypto.randomBytes(16).toString('hex');
+  pendingBackupRestores.set(token, { adminId: userId, contentHash, createdAt: Date.now(), snapshot });
+
+  return sendOk(res, {
+    confirmToken: token,
+    version: snapshot.version || null,
+    exportedAt: snapshot.exportedAt || null,
+    counts: snapshot.counts || null,
+    sections: fileKeys
+  });
+});
+
+authed('/api/backup-import-confirm', (payload, res, { user, userId }) => {
+  const owners2 = pruneExpiredOwners();
+  const owner2 = findOwner(owners2, userId);
+  if (!isOwnerAccessValid(owner2)) return sendFail(res, 'Bazani tiklash faqat tasdiqlangan do\'kon egasiga ruxsat etilgan.');
+
+  const { confirmToken, confirmText, content } = payload;
+  if ((confirmText || '').trim().toUpperCase() !== 'TASDIQLAYMAN') {
+    return sendFail(res, 'Tasdiqlash uchun "TASDIQLAYMAN" so\'zini aniq kiriting.');
+  }
+  const pending = confirmToken && pendingBackupRestores.get(confirmToken);
+  if (!pending) {
+    return sendFail(res, 'Tasdiqlash muddati tugagan yoki noto\'g\'ri. Faylni qaytadan yuklang.');
+  }
+  if (String(pending.adminId) !== userId) {
+    return sendFail(res, 'Bu tasdiqlash boshqa admin uchun yaratilgan.');
+  }
+  if (Date.now() - pending.createdAt > BACKUP_RESTORE_TOKEN_TTL_MS) {
+    pendingBackupRestores.delete(confirmToken);
+    return sendFail(res, 'Tasdiqlash muddati (10 daqiqa) tugagan. Faylni qaytadan yuklang.');
+  }
+  const contentHash = crypto.createHash('sha256').update(String(content || '')).digest('hex');
+  if (contentHash !== pending.contentHash) {
+    return sendFail(res, 'Fayl mazmuni preview qilingandan beri o\'zgargan. Qaytadan yuklang.');
+  }
+
+  pendingBackupRestores.delete(confirmToken);
+
+  let safetyFile = null;
+  let applied = [];
+  try {
+    safetyFile = savePreRestoreSafetySnapshot(userId);
+    applied = applyBackupSnapshot(pending.snapshot);
+  } catch (e) {
+    console.error('backup-import-confirm xatolik:', e.message);
+    return sendFail(res, 'Bazani tiklashda xatolik yuz berdi. Hech narsa o\'zgartirilmadi yoki qisman o\'zgargan bo\'lishi mumkin — pre_restore_backups papkasini tekshiring.');
+  }
+
+  const adminName = (user && (user.first_name || user.username)) || userId;
+  allAdminIds().forEach(aid => {
+    sendMessage(aid, `⚠️ <b>DB TIKLANDI (restore)</b>\n👤 ${adminName} (ID: ${userId})\n🕒 ${new Date().toLocaleString('uz-UZ')}\n📦 Almashtirilgan bo'limlar: ${applied.join(', ') || 'yo\'q'}\n💾 Tiklashdan oldingi holat saqlandi: ${safetyFile || 'saqlanmadi (xatolik)'}`)
+      .catch(() => {});
+  });
+
+  return sendOk(res, { applied, safetyFile });
+});
+
+authed('/api/create-invite', (payload, res, { userId }) => {
+  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin havola yarata oladi');
+
+  if (!BOT_USERNAME || BOT_USERNAME === 'BOT_USERNAME_BU_YERGA') {
+    return sendFail(res, 'Serverda BOT_USERNAME sozlanmagan.');
+  }
+
+  const token = createInvite();
+  const link = `https://t.me/${BOT_USERNAME}?start=inv_${token}`;
+  return sendOk(res, { link });
+});
+
+authed('/api/subscription-status', (payload, res, { userId }) => {
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return sendFail(res, 'Faqat do\'kon egasi uchun.');
+  const owner = ownerCtx.owner;
+
+  const access = getOwnerSubscriptionAccess(owner);
+  const requisites = loadPaymentRequisites();
+  const plans = loadSubscriptionPlans();
+  const tariffs = loadTariffs();
+  const plansList = Object.values(plans)
+    .sort((a, b) => (a.order || 0) - (b.order || 0))
+    .map(p => {
+      const tariff = p.tariffId ? tariffs.find(t => t.id === p.tariffId) : null;
+      return { ...p, tariffLabel: tariff ? tariff.name : null };
+    });
+
+  return sendOk(res, {
+    status: access.status,
+    allowed: access.allowed,
+    daysLeft: access.daysLeft,
+    inGrace: access.inGrace,
+    subscriptionUntil: owner.subscriptionUntil || null,
+    requisites: { cardNumber: requisites.cardNumber, cardHolder: requisites.cardHolder },
+    plans: plansList,
+    pendingRequest: owner.subscriptionPaymentRequest || null
+  });
+});
+
+authed('/api/subscription-history', (payload, res, { userId }) => {
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return sendFail(res, 'Faqat do\'kon egasi uchun.');
+  const owner = ownerCtx.owner;
+
+  const history = loadPayments()
+    .filter(p => String(p.ownerId) === String(owner.id) && p.source === 'subscription')
+    .sort((a, b) => new Date(b.at) - new Date(a.at))
+    .map(p => ({ planLabel: p.planLabel, amount: p.amount, days: p.days, at: p.at }));
+
+  return sendOk(res, { history });
+});
+
+authed('/api/subscription-select-plan', (payload, res, { userId }) => {
+  const owners = loadOwners();
+  const ownerCtx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ownerCtx)) return sendFail(res, 'Faqat do\'kon egasi uchun.');
+  const owner = ownerCtx.owner;
+
+  const plan = loadSubscriptionPlans()[payload.planId];
+  if (!plan) return sendFail(res, 'Tarif topilmadi.');
+
+  const reqData = createSubscriptionPaymentRequest(owner, payload.planId);
+  saveOwners(owners);
+
+  sendMessage(owner.id,
+    `✅ Siz <b>${escapeHtmlServer(plan.label)}</b> tarifini tanladingiz (${fmtNum(plan.price)} so'm).\n\n` +
+    `Endi to'lov chekining (skrinshotning) RASMINI shu botga yuboring — administrator tekshirib ` +
+    `tasdiqlagach, obunangiz avtomatik yangilanadi.`);
+
+  return sendOk(res, { request: reqData, botUsername: BOT_USERNAME || null });
+});
+
+authed('/api/admin-pending-subscription-payments', (payload, res, { userId }) => {
+  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin ko\'ra oladi');
+
+  const owners = loadOwners();
+  const pending = owners
+    .filter(o => o.subscriptionPaymentRequest && o.subscriptionPaymentRequest.status === 'kutilmoqda_tasdiq')
+    .map(o => ({
+      ownerId: o.id,
+      ownerLabel: ownerLabel(o),
+      restaurantName: (o.profile && o.profile.name) || null,
+      request: o.subscriptionPaymentRequest
+    }));
+
+  return sendOk(res, { pending });
+});
+
+authed('/api/admin-subscription-decide', (payload, res, { userId }) => {
+  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin qaror qabul qila oladi');
+
+  const owners = loadOwners();
+  const owner = findOwner(owners, payload.ownerId);
+  if (!owner) return sendFail(res, 'Oshxona topilmadi.');
+
+  const action = payload.action === 'approve' ? 'approve' : (payload.action === 'reject' ? 'reject' : null);
+  if (!action) return sendFail(res, 'Noto\'g\'ri amal.');
+
+  const result = decideSubscriptionPayment(owner, action, userId, payload.reason);
+  if (!result.ok) return sendJSON(res, 200, result);
+  saveOwners(owners);
+
+  return sendOk(res, { newUntil: result.newUntil || null });
+});
+
+function collectBroadcastRecipients(targetType) {
+  const owners = loadOwners();
+  const ids = new Set();
+  if (targetType === 'owner' || targetType === 'all') {
+    owners.forEach(o => ids.add(String(o.id)));
+  }
+  if (targetType === 'customer' || targetType === 'all') {
+    owners.forEach(o => (o.customers || []).forEach(c => ids.add(String(c.id))));
+  }
+  if (targetType === 'staff' || targetType === 'all') {
+    owners.forEach(o => (o.staff || []).forEach(s => ids.add(String(s.id))));
+  }
+  return Array.from(ids);
+}
+
+function isValidBroadcastImageUrl(value) {
+  return isValidImageValue(value);
+}
+function isBase64ImageValue(value) {
+  return !!value && /^data:image\/(png|jpe?g|webp);base64,/i.test(value);
+}
+
+function sendBroadcastToChat(chatId, text, photo, buttonText, buttonUrl) {
+  const replyMarkup = (buttonText && buttonUrl) ? { inline_keyboard: [[{ text: buttonText, url: buttonUrl }]] } : null;
+  const params = { chat_id: chatId, parse_mode: 'HTML' };
+  if (replyMarkup) params.reply_markup = JSON.stringify(replyMarkup);
+  const method = photo ? 'sendPhoto' : 'sendMessage';
+  if (photo) { params.photo = photo; params.caption = text; }
+  else { params.text = text; }
+  return telegramApi(method, params).then(result => {
+    if (!result || !result.ok) {
+      const reason = (result && result.description) || 'noma\'lum xatolik';
+      console.error(`[broadcast xato] chat_id=${chatId}: ${reason}`);
+      return false;
+    }
+    return true;
+  }).catch(err => {
+    console.error(`[broadcast tarmoq xatosi] chat_id=${chatId}: ${(err && err.message) || err}`);
+    return false;
+  });
+}
+
+async function sendBroadcastPhotoUploadAndGetFileId(chatId, dataUrl, text, buttonText, buttonUrl) {
+  const match = /^data:(image\/[a-z]+);base64,(.+)$/i.exec(dataUrl);
+  if (!match) return { ok: false, fileId: null };
+  const mimeType = match[1].toLowerCase() === 'image/jpg' ? 'image/jpeg' : match[1].toLowerCase();
+  const buffer = Buffer.from(match[2], 'base64');
+  const replyMarkup = (buttonText && buttonUrl) ? { inline_keyboard: [[{ text: buttonText, url: buttonUrl }]] } : null;
+  const fields = { caption: text, parse_mode: 'HTML' };
+  if (replyMarkup) fields.reply_markup = JSON.stringify(replyMarkup);
+  try {
+    const result = await telegramApiUploadPhoto(chatId, buffer, mimeType, fields);
+    if (!result || !result.ok) {
+      const reason = (result && result.description) || 'noma\'lum xatolik';
+      console.error(`[broadcast rasm yuklash xatosi] chat_id=${chatId}: ${reason}`);
       return { ok: false, fileId: null };
     }
+    const sizes = result.result && result.result.photo;
+    const fileId = (Array.isArray(sizes) && sizes.length) ? sizes[sizes.length - 1].file_id : null;
+    return { ok: true, fileId };
+  } catch (err) {
+    console.error(`[broadcast rasm yuklash tarmoq xatosi] chat_id=${chatId}: ${(err && err.message) || err}`);
+    return { ok: false, fileId: null };
   }
+}
 
-  async function sendBroadcastSequential(recipientIds, text, image, buttonText, buttonUrl) {
-    let delivered = 0, failed = 0;
-    let pendingUpload = isBase64ImageValue(image);
-    let photo = pendingUpload ? null : (image || null);
+async function sendBroadcastSequential(recipientIds, text, image, buttonText, buttonUrl) {
+  let delivered = 0, failed = 0;
+  let pendingUpload = isBase64ImageValue(image);
+  let photo = pendingUpload ? null : (image || null);
 
-    for (const chatId of recipientIds) {
-      let ok;
-      if (pendingUpload) {
-        const uploadResult = await sendBroadcastPhotoUploadAndGetFileId(chatId, image, text, buttonText, buttonUrl);
-        ok = uploadResult.ok;
-        if (ok) {
-          pendingUpload = false;
-          photo = uploadResult.fileId;
-        }
-      } else {
-        ok = await sendBroadcastToChat(chatId, text, photo, buttonText, buttonUrl);
+  for (const chatId of recipientIds) {
+    let ok;
+    if (pendingUpload) {
+      const uploadResult = await sendBroadcastPhotoUploadAndGetFileId(chatId, image, text, buttonText, buttonUrl);
+      ok = uploadResult.ok;
+      if (ok) {
+        pendingUpload = false;
+        photo = uploadResult.fileId;
       }
-      if (ok) delivered++; else failed++;
-      await new Promise(resolve => setTimeout(resolve, 40));
+    } else {
+      ok = await sendBroadcastToChat(chatId, text, photo, buttonText, buttonUrl);
     }
-    return { delivered, failed };
+    if (ok) delivered++; else failed++;
+    await new Promise(resolve => setTimeout(resolve, 40));
+  }
+  return { delivered, failed };
+}
+
+authed('/api/broadcast-send', async (payload, res, { userId }) => {
+  const { targetType, text, imageUrl, buttonText, buttonUrl } = payload;
+  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin yubora oladi');
+
+  if (!['customer', 'owner', 'staff', 'all'].includes(targetType)) {
+    return sendFail(res, 'Qabul qiluvchi turini tanlang.');
+  }
+  const textTrim = String(text || '').trim();
+  if (!textTrim) return sendFail(res, 'Xabar matnini kiriting.');
+  const imageTrim = String(imageUrl || '').trim();
+  if (!isValidBroadcastImageUrl(imageTrim)) {
+    return sendFail(res, 'Rasm uchun https:// havola kiriting yoki galereyadan tanlang.');
+  }
+  const buttonTextTrim = String(buttonText || '').trim();
+  const buttonUrlTrim = String(buttonUrl || '').trim();
+  if ((buttonTextTrim && !buttonUrlTrim) || (!buttonTextTrim && buttonUrlTrim)) {
+    return sendFail(res, 'Tugma uchun ham matn, ham havola kerak (yoki ikkalasini ham bo\'sh qoldiring).');
+  }
+  if (buttonUrlTrim && !/^https?:\/\//i.test(buttonUrlTrim)) {
+    return sendFail(res, 'Tugma havolasi http:// yoki https:// bilan boshlanishi kerak.');
   }
 
-  if (req.method === 'POST' && req.url === '/api/broadcast-send') {
-    readBody(req, async (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const { initData, targetType, text, imageUrl, buttonText, buttonUrl } = payload;
-      const check = verifyAuth(initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin yubora oladi' });
-
-      if (!['customer', 'owner', 'staff', 'all'].includes(targetType)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Qabul qiluvchi turini tanlang.' });
-      }
-      const textTrim = String(text || '').trim();
-      if (!textTrim) return sendJSON(res, 200, { ok: false, reason: 'Xabar matnini kiriting.' });
-      const imageTrim = String(imageUrl || '').trim();
-      if (!isValidBroadcastImageUrl(imageTrim)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Rasm uchun https:// havola kiriting yoki galereyadan tanlang.' });
-      }
-      const buttonTextTrim = String(buttonText || '').trim();
-      const buttonUrlTrim = String(buttonUrl || '').trim();
-      if ((buttonTextTrim && !buttonUrlTrim) || (!buttonTextTrim && buttonUrlTrim)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Tugma uchun ham matn, ham havola kerak (yoki ikkalasini ham bo\'sh qoldiring).' });
-      }
-      if (buttonUrlTrim && !/^https?:\/\//i.test(buttonUrlTrim)) {
-        return sendJSON(res, 200, { ok: false, reason: 'Tugma havolasi http:// yoki https:// bilan boshlanishi kerak.' });
-      }
-
-      const recipientIds = collectBroadcastRecipients(targetType);
-      if (!recipientIds.length) {
-        return sendJSON(res, 200, { ok: false, reason: 'Bu toifada hozircha hech kim yo\'q.' });
-      }
-
-      const { delivered, failed } = await sendBroadcastSequential(
-        recipientIds, textTrim, imageTrim || null, buttonTextTrim || null, buttonUrlTrim || null
-      );
-
-      const isBase64Img = isBase64ImageValue(imageTrim);
-      const broadcasts = loadBroadcasts();
-      const record = {
-        id: crypto.randomBytes(4).toString('hex'),
-        targetType,
-        text: textTrim,
-        imageUrl: isBase64Img ? null : (imageTrim || null),
-        hadImage: !!imageTrim,
-        buttonText: buttonTextTrim || null,
-        buttonUrl: buttonUrlTrim || null,
-        totalTargets: recipientIds.length,
-        deliveredCount: delivered,
-        failedCount: failed,
-        sentBy: userId,
-        sentAt: new Date().toISOString()
-      };
-      broadcasts.unshift(record);
-      if (broadcasts.length > 200) broadcasts.length = 200;
-      saveBroadcasts(broadcasts);
-
-      return sendJSON(res, 200, { ok: true, result: record });
-    });
-    return;
+  const recipientIds = collectBroadcastRecipients(targetType);
+  if (!recipientIds.length) {
+    return sendFail(res, 'Bu toifada hozircha hech kim yo\'q.');
   }
 
-  if (req.method === 'POST' && req.url === '/api/broadcast-history') {
+  const { delivered, failed } = await sendBroadcastSequential(
+    recipientIds, textTrim, imageTrim || null, buttonTextTrim || null, buttonUrlTrim || null
+  );
+
+  const isBase64Img = isBase64ImageValue(imageTrim);
+  const broadcasts = loadBroadcasts();
+  const record = {
+    id: crypto.randomBytes(4).toString('hex'),
+    targetType,
+    text: textTrim,
+    imageUrl: isBase64Img ? null : (imageTrim || null),
+    hadImage: !!imageTrim,
+    buttonText: buttonTextTrim || null,
+    buttonUrl: buttonUrlTrim || null,
+    totalTargets: recipientIds.length,
+    deliveredCount: delivered,
+    failedCount: failed,
+    sentBy: userId,
+    sentAt: new Date().toISOString()
+  };
+  broadcasts.unshift(record);
+  if (broadcasts.length > 200) broadcasts.length = 200;
+  saveBroadcasts(broadcasts);
+
+  return sendOk(res, { result: record });
+});
+
+authed('/api/broadcast-history', (payload, res, { userId }) => {
+  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin ko\'ra oladi');
+
+  return sendOk(res, { broadcasts: loadBroadcasts() });
+});
+
+function handleRequest(req, res) {
+  if (req.method === 'POST' && API_ROUTES.has(req.url)) {
+    const handler = API_ROUTES.get(req.url);
     readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: err && err.message === 'body_too_large' ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring." : 'noto\'g\'ri so\'rov' });
-      const check = verifyAuth(payload.initData);
-      if (!check.ok) return sendJSON(res, 200, { ok: false, reason: check.reason });
-      const userId = String(check.user && check.user.id);
-      if (!isAdminId(userId)) return sendJSON(res, 200, { ok: false, reason: 'Faqat admin ko\'ra oladi' });
-
-      return sendJSON(res, 200, { ok: true, broadcasts: loadBroadcasts() });
+      if (err) return sendJSON(res, 400, { ok: false, reason: bodyErrorReason(err) });
+      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return sendJSON(res, 400, { ok: false, reason: "noto'g'ri so'rov" });
+      Promise.resolve()
+        .then(() => handler(payload, res))
+        .catch(e => {
+          console.error(`API xatosi [${req.url}]:`, e);
+          if (!res.headersSent) sendJSON(res, 500, { ok: false, reason: 'Serverda kutilmagan xatolik. Qaytadan urinib ko\'ring.' });
+        });
     });
     return;
   }
