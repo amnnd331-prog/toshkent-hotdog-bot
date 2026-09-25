@@ -1,10866 +1,10638 @@
-const http = require('http');
-const https = require('https');
-const crypto = require('crypto');
-const fs = require('fs');
-const path = require('path');
+const tg = window.Telegram && window.Telegram.WebApp;
+  const appEl = document.getElementById('app');
 
-const BOT_TOKEN = process.env.BOT_TOKEN || 'BOT_TOKEN_BU_YERGA';
-const ADMIN_ID = process.env.ADMIN_ID || 'ADMIN_TELEGRAM_ID_BU_YERGA';
-const PORT = process.env.PORT || 3000;
-
-const BOT_USERNAME = (process.env.BOT_USERNAME || 'BOT_USERNAME_BU_YERGA')
-  .trim()
-  .replace(/^(https?:\/\/)?(www\.)?t\.me\//i, '')
-  .replace(/^@/, '')
-  .replace(/\/+$/, '');
-
-const PUBLIC_URL = process.env.PUBLIC_URL || '';
-
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';
-
-const DATA_DIR = process.env.DATA_DIR || __dirname;
-
-const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
-const AI_MODEL = process.env.AI_MODEL || 'claude-3-5-haiku-20241022';
-
-const SUBSCRIPTION_TRIAL_DAYS = parseInt(process.env.SUBSCRIPTION_TRIAL_DAYS, 10) || 14;
-const SUBSCRIPTION_GRACE_DAYS = parseInt(process.env.SUBSCRIPTION_GRACE_DAYS, 10) || 3;
-const OWNERS_FILE = path.join(DATA_DIR, 'owners.json');
-
-const ADMINS_FILE = path.join(DATA_DIR, 'admins.json');
-const INVITES_FILE = path.join(DATA_DIR, 'invites.json');
-const REQUESTS_FILE = path.join(DATA_DIR, 'requests.json');
-
-const PROFILES_FILE = path.join(DATA_DIR, 'profiles.json');
-
-const TARIFFS_FILE = path.join(DATA_DIR, 'tariffs.json');
-
-const PAYMENTS_FILE = path.join(DATA_DIR, 'payments.json');
-
-const ARCHIVED_ORDERS_FILE = path.join(DATA_DIR, 'archived_orders.json');
-
-const SUBSCRIPTION_PLANS_FILE = path.join(DATA_DIR, 'subscription_plans.json');
-
-const SETTINGS_FILE = path.join(DATA_DIR, 'settings.json');
-
-const BROADCASTS_FILE = path.join(DATA_DIR, 'broadcasts.json');
-const ADMIN_SUPPORT_FILE = path.join(DATA_DIR, 'admin_support.json');
-
-const SUBSCRIPTION_STATUS = {
-  PENDING_TRIAL: 'pending_trial',
-  ACTIVE: 'active',
-  BLOCKED: 'blocked'
-};
-
-function ensureSubscriptionFields(owner) {
-  if (!owner) return owner;
-  if (owner.subscriptionStatus === undefined) {
-    const stillValid = !owner.expiresAt || new Date(owner.expiresAt).getTime() > Date.now();
-    owner.subscriptionStatus = stillValid ? SUBSCRIPTION_STATUS.ACTIVE : SUBSCRIPTION_STATUS.BLOCKED;
+  function applyResponsiveViewport() {
+    const h = (tg && tg.viewportHeight) || window.innerHeight;
+    document.documentElement.style.setProperty('--app-vh', (h * 0.01) + 'px');
   }
-  if (owner.subscriptionUntil === undefined) {
-    owner.subscriptionUntil = owner.expiresAt || null;
-  }
-  if (owner.graceUntil === undefined) {
-    owner.graceUntil = null;
-  }
-  if (owner.trialGivenAt === undefined) {
-    owner.trialGivenAt = null;
+  applyResponsiveViewport();
+  window.addEventListener('resize', applyResponsiveViewport);
+  window.addEventListener('orientationchange', applyResponsiveViewport);
+  if (tg && typeof tg.onEvent === 'function') {
+    tg.onEvent('viewportChanged', applyResponsiveViewport);
   }
 
-  if (owner.blockedNotifiedAt === undefined) {
-    owner.blockedNotifiedAt = null;
+  const THEME_STORAGE_KEY = 'kitchenOsTheme';
+  function getStoredTheme() {
+    try { return localStorage.getItem(THEME_STORAGE_KEY); } catch (e) { return null; }
   }
-
-  if (owner.customerPaymentCard === undefined) {
-    owner.customerPaymentCard = { cardNumber: '', cardHolder: '' };
+  function currentActiveTheme() {
+    return getStoredTheme() || (tg && tg.colorScheme) || 'light';
   }
-
-  if (owner.activePlanDailyPrice === undefined) {
-    owner.activePlanDailyPrice = null;
-  }
-  if (owner.activePlanTariffId === undefined) {
-    owner.activePlanTariffId = owner.tariffId || null;
-  }
-  return owner;
-}
-
-// MUHIM: bu yerda ilgari standart namunaviy (demo) rejalar (1 oy/50 000 va
-// h.k.) avtomatik yaratilardi — bu owner tomonida admin hali sozlamagan
-// "notanish" raqamlar ko'rinishiga olib kelgan (chalkashlikka sabab bo'lgan
-// muammo shu edi). Endi bunday avtomatik demo-seed YO'Q: agar admin hali
-// birorta reja kiritmagan bo'lsa, ro'yxat shunchaki BO'SH bo'ladi va owner
-// "Obuna" bo'limida "hali rejalar sozlanmagan" ko'radi — hech qachon
-// tasodifiy/o'ylab topilgan narx ko'rsatilmaydi.
-function loadSubscriptionPlans() {
-  try {
-    if (!fs.existsSync(SUBSCRIPTION_PLANS_FILE)) {
-      return {};
+  function applyStoredTheme() {
+    const stored = getStoredTheme();
+    if (stored === 'dark' || stored === 'light') {
+      document.documentElement.setAttribute('data-theme', stored);
+    } else {
+      document.documentElement.removeAttribute('data-theme');
     }
-    const raw = fs.readFileSync(SUBSCRIPTION_PLANS_FILE, 'utf8');
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      return {};
+    // CSS'dagi 3D yorug'lik/soyalar joriy sxemaga moslashishi uchun
+    document.documentElement.setAttribute('data-scheme', currentActiveTheme());
+  }
+  applyStoredTheme();
+  if (tg && typeof tg.onEvent === 'function') tg.onEvent('themeChanged', applyStoredTheme);
+  function toggleTheme() {
+    const next = currentActiveTheme() === 'dark' ? 'light' : 'dark';
+    try { localStorage.setItem(THEME_STORAGE_KEY, next); } catch (e) {}
+    applyStoredTheme();
+    const btn = document.getElementById('appHeaderThemeBtn');
+    if (btn) btn.innerHTML = icon(next === 'dark' ? 'sun' : 'moon', 'icon-xs');
+  }
+
+  const OWNER_SESSION_STORAGE_KEY = 'kitchenOsOwnerSession';
+  let initData = (tg && tg.initData) || localStorage.getItem(OWNER_SESSION_STORAGE_KEY) || null;
+  let usingOwnerSession = !tg && !!initData;
+  let ownerHasTelegramLogin = false;
+
+  function ekran(html) {
+    appEl.innerHTML = html;
+  }
+
+  function promptCall(phone, tgUserId) {
+    if (!phone) return;
+    const callByPhone = () => { window.location.href = `tel:${phone}`; };
+    const callByTelegram = () => { openExternalLink(`tg://user?id=${tgUserId}`); };
+
+    if (tg && typeof tg.showPopup === 'function') {
+      const buttons = [{ id: 'phone', type: 'default', text: '📞 Telefondan' }];
+      if (tgUserId) buttons.push({ id: 'telegram', type: 'default', text: '✈️ Telegramdan' });
+      buttons.push({ id: 'cancel', type: 'cancel', text: 'Bekor qilish' });
+      tg.showPopup({ title: 'Qo\'ng\'iroq qilish', message: phone, buttons }, (buttonId) => {
+        if (buttonId === 'phone') callByPhone();
+        else if (buttonId === 'telegram') callByTelegram();
+      });
+      return;
     }
-    return parsed;
-  } catch (e) {
-    console.error('subscription_plans.json o\'qishda xatolik:', e.message);
-    return {};
-  }
-}
 
-function saveSubscriptionPlans(plans) {
-  try {
-    fs.writeFileSync(SUBSCRIPTION_PLANS_FILE, JSON.stringify(plans, null, 2));
-  } catch (e) {
-    console.error('subscription_plans.json yozishda xatolik:', e.message);
-  }
-}
-
-const DEFAULT_PAYMENT_REQUISITES = {
-  cardNumber: '**** **** **** ****',
-  cardHolder: 'ADMIN ISM FAMILIYA',
-  clickNumber: '+998 90 000 00 00',
-  paymeNumber: '+998 90 000 00 00'
-};
-
-function loadPaymentRequisites() {
-  try {
-    if (!fs.existsSync(SETTINGS_FILE)) {
-      const initial = { paymentRequisites: DEFAULT_PAYMENT_REQUISITES };
-      fs.writeFileSync(SETTINGS_FILE, JSON.stringify(initial, null, 2));
-      return Object.assign({}, DEFAULT_PAYMENT_REQUISITES);
+    if (tgUserId && confirm(`${phone}\n\nTelegramdan qo'ng'iroq qilinsinmi? (Bekor qilinsa — telefondan qo'ng'iroq qilinadi)`)) {
+      callByTelegram();
+    } else {
+      callByPhone();
     }
-    const raw = fs.readFileSync(SETTINGS_FILE, 'utf8');
-    const parsed = JSON.parse(raw);
-    return Object.assign({}, DEFAULT_PAYMENT_REQUISITES, (parsed && parsed.paymentRequisites) || {});
-  } catch (e) {
-    console.error('settings.json (paymentRequisites) o\'qishda xatolik:', e.message);
-    return Object.assign({}, DEFAULT_PAYMENT_REQUISITES);
   }
-}
 
-function savePaymentRequisites(requisites) {
-  let current = {};
-  try {
-    if (fs.existsSync(SETTINGS_FILE)) {
-      current = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')) || {};
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-call-phone]');
+    if (!btn) return;
+    e.preventDefault();
+    promptCall(btn.getAttribute('data-call-phone'), btn.getAttribute('data-call-tgid') || null);
+  });
+
+  let adminTargetOwnerId = null;
+  const ADMIN_TARGET_OWNER_ENDPOINTS = [
+    '/api/menu-list', '/api/menu-add', '/api/menu-update', '/api/menu-remove', '/api/menu-set-recipe',
+    '/api/category-list', '/api/category-add', '/api/category-remove', '/api/category-reorder',
+    '/api/stock-list', '/api/stock-add', '/api/stock-remove', '/api/stock-movements', '/api/stock-writeoff',
+    '/api/branch-list'
+  ];
+  // Har bir so'rovga joriy initData (yoki owner sessiya tokeni) avtomatik qo'shiladi.
+  async function apiPost(url, body) {
+    body = Object.assign({ initData }, body);
+    if (adminTargetOwnerId && ADMIN_TARGET_OWNER_ENDPOINTS.includes(url) && body && typeof body === 'object' && body.targetOwnerId === undefined) {
+      body = Object.assign({}, body, { targetOwnerId: adminTargetOwnerId });
     }
-  } catch (e) {
-    console.error('settings.json o\'qishda xatolik (saqlashdan oldin):', e.message);
-  }
-  current.paymentRequisites = Object.assign({}, DEFAULT_PAYMENT_REQUISITES, current.paymentRequisites || {}, requisites || {});
-  try {
-    fs.writeFileSync(SETTINGS_FILE, JSON.stringify(current, null, 2));
-  } catch (e) {
-    console.error('settings.json yozishda xatolik:', e.message);
-  }
-  return current.paymentRequisites;
-}
-
-function calcTariffUpgradeSurcharge(owner, plan) {
-  const result = { surcharge: 0, remainingDays: 0, isUpgrade: false, oldDailyPrice: 0, newDailyPrice: 0 };
-  if (!plan || !plan.tariffId || !plan.days) return result;
-
-  if (!owner.activePlanTariffId) return result;
-
-  if (owner.activePlanTariffId === plan.tariffId) return result;
-  const untilMs = owner.subscriptionUntil ? new Date(owner.subscriptionUntil).getTime() : NaN;
-  const remainingMs = (Number.isFinite(untilMs) && untilMs > Date.now()) ? (untilMs - Date.now()) : 0;
-  if (remainingMs <= 0) return result;
-  const remainingDays = Math.ceil(remainingMs / 86400000);
-  const oldDailyPrice = owner.activePlanDailyPrice || 0;
-  const newDailyPrice = plan.price / plan.days;
-  result.remainingDays = remainingDays;
-  result.oldDailyPrice = oldDailyPrice;
-  result.newDailyPrice = newDailyPrice;
-  const diffPerDay = newDailyPrice - oldDailyPrice;
-  if (diffPerDay > 0) {
-    result.isUpgrade = true;
-    result.surcharge = Math.round(diffPerDay * remainingDays);
-  }
-  return result;
-}
-
-function createSubscriptionPaymentRequest(owner, planId) {
-  const plans = loadSubscriptionPlans();
-  const plan = plans[planId];
-  if (!plan) return null;
-
-  let tariffLabel = null;
-  if (plan.tariffId) {
-    const tariff = loadTariffs().find(t => t.id === plan.tariffId);
-    tariffLabel = tariff ? tariff.name : null;
-  }
-  const upgrade = calcTariffUpgradeSurcharge(owner, plan);
-  owner.subscriptionPaymentRequest = {
-    id: crypto.randomBytes(6).toString('hex'),
-    planId: plan.id,
-    planLabel: plan.label,
-    baseAmount: plan.price,
-    upgradeSurcharge: upgrade.surcharge,
-    upgradeRemainingDays: upgrade.isUpgrade ? upgrade.remainingDays : 0,
-    amount: plan.price + upgrade.surcharge,
-    days: plan.days,
-    tariffId: plan.tariffId || null,
-    tariffLabel,
-    status: 'kutilmoqda_skrinshot',
-    screenshotFileId: null,
-    requestedAt: new Date().toISOString(),
-    screenshotSentAt: null,
-    decidedAt: null,
-    decidedBy: null
-  };
-  return owner.subscriptionPaymentRequest;
-}
-
-async function sendObunaPlansMenu(owner, chatId) {
-  const requisites = loadPaymentRequisites();
-  const plans = loadSubscriptionPlans();
-  const tariffs = loadTariffs();
-  const list = Object.values(plans).sort((a, b) => (a.order || 0) - (b.order || 0));
-  const planLines = list.map(p => {
-    const tariff = p.tariffId ? tariffs.find(t => t.id === p.tariffId) : null;
-    const tariffNote = tariff ? ` — tarif: ${escapeHtmlServer(tariff.name)}` : '';
-    const upgrade = calcTariffUpgradeSurcharge(owner, p);
-    const upgradeNote = upgrade.isUpgrade
-      ? ` <i>(+${fmtNum(upgrade.surcharge)} so'm ustama — qolgan ${upgrade.remainingDays} kun uchun tarif farqi, jami ${fmtNum(p.price + upgrade.surcharge)} so'm)</i>`
-      : '';
-    return `• <b>${escapeHtmlServer(p.label)}</b> — ${fmtNum(p.price)} so'm${p.discountNote ? ' (' + escapeHtmlServer(p.discountNote) + ')' : ''}${tariffNote}${upgradeNote}`;
-  }).join('\n');
-  const text = `💳 <b>Obuna tarifini tanlang</b>\n\n${planLines}\n\n` +
-    `To'lov rekvizitlari:\n💳 Karta: <code>${escapeHtmlServer(requisites.cardNumber)}</code>\n👤 Egasi: ${escapeHtmlServer(requisites.cardHolder)}\n\n` +
-    `Tarifni tanlang, so'ng shu summani ko'rsatilgan kartaga o'tkazib, TO'LOV CHEKI (skrinshot) ni shu botga rasm qilib yuboring.`;
-  const kb = { inline_keyboard: list.map(p => [{ text: `${p.label} — ${fmtNum(p.price)} so'm`, callback_data: `subplan:${p.id}` }]) };
-  await sendMessage(chatId, text, kb);
-}
-
-function decideSubscriptionPayment(owner, action, decidedByUserId, reasonText) {
-  const reqData = owner && owner.subscriptionPaymentRequest;
-  if (!reqData || reqData.status !== 'kutilmoqda_tasdiq') {
-    return { ok: false, reason: 'So\'rov topilmadi yoki allaqachon ko\'rib chiqilgan.' };
-  }
-
-  if (action === 'approve') {
-    const plans = loadSubscriptionPlans();
-    const plan = plans[reqData.planId];
-    const days = (plan && plan.days) || reqData.days || 30;
-
-    const baseMs = (owner.subscriptionUntil && new Date(owner.subscriptionUntil).getTime() > Date.now())
-      ? new Date(owner.subscriptionUntil).getTime()
-      : Date.now();
-    const newUntil = new Date(baseMs + days * 86400000);
-    owner.subscriptionUntil = newUntil.toISOString();
-    owner.expiresAt = owner.subscriptionUntil;
-    owner.subscriptionStatus = SUBSCRIPTION_STATUS.ACTIVE;
-    owner.graceUntil = null;
-    owner.blockedNotifiedAt = null;
-    owner.reminderSentAt = null;
-    owner.paid = true;
-    owner.paidAt = new Date().toISOString();
-
-    const grantedTariffId = plan ? (plan.tariffId || null) : null;
-    if (grantedTariffId) {
-      owner.tariffId = grantedTariffId;
-
-      owner.activePlanTariffId = grantedTariffId;
-      owner.activePlanDailyPrice = plan.days ? (plan.price / plan.days) : 0;
+    let r;
+    try {
+      r = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+    } catch (e) {
+      return {
+        ok: false,
+        networkError: true,
+        reason: (typeof navigator !== 'undefined' && navigator.onLine === false)
+          ? "Internet aloqasi yo'q. Tarmoqni tekshirib, qayta urinib ko'ring."
+          : "Serverga ulanib bo'lmadi. Birozdan so'ng qayta urinib ko'ring."
+      };
     }
-    reqData.status = 'tasdiqlandi';
-    reqData.decidedAt = new Date().toISOString();
-    reqData.decidedBy = decidedByUserId;
-    recordPayment(owner, reqData.amount, {
-      planId: reqData.planId, planLabel: reqData.planLabel, days,
-      baseAmount: reqData.baseAmount != null ? reqData.baseAmount : reqData.amount,
-      upgradeSurcharge: reqData.upgradeSurcharge || 0,
-      source: 'subscription'
-    });
-    const tariffNote = reqData.tariffLabel ? `\nTarif: ${escapeHtmlServer(reqData.tariffLabel)}` : '';
-    sendMessage(owner.id,
-      `✅ <b>Obuna to'lovingiz tasdiqlandi!</b>\nReja: ${escapeHtmlServer(reqData.planLabel)}${tariffNote}\n` +
-      `Yangi muddat: ${newUntil.toLocaleDateString('uz-UZ')}gacha.\nRahmat! 🙏`);
-    return { ok: true, newUntil: owner.subscriptionUntil };
+    try {
+      return await r.json();
+    } catch (e) {
+      return {
+        ok: false,
+        networkError: true,
+        reason: "Server javob bermadi. Qayta urinib ko'ring."
+      };
+    }
   }
 
-  if (action === 'reject') {
-    reqData.status = 'rad_etildi';
-    reqData.decidedAt = new Date().toISOString();
-    reqData.decidedBy = decidedByUserId;
-    const trimmedReason = reasonText ? String(reasonText).trim() : '';
-    reqData.rejectReason = trimmedReason || null;
-    const reasonLine = trimmedReason
-      ? `Sabab: ${escapeHtmlServer(trimmedReason)}`
-      : 'Skrinshot noto\'g\'ri yoki summa mos emas bo\'lishi mumkin.';
-    sendMessage(owner.id,
-      `❌ <b>Obuna to'lovingiz rad etildi.</b>\n${reasonLine}\n` +
-      `Qaytadan tarif tanlab urinib ko'ring yoki administrator bilan bog'laning.`);
-    return { ok: true };
+  function networkErrorMarkup(message) {
+    return `
+      <div class="network-error-state">
+        ${icon('wifi-off', 'network-error-icon')}
+        <div class="network-error-title">Aloqa yo'q</div>
+        <div class="network-error-desc">${escapeHtml(message || "Serverga ulanib bo'lmadi.")}</div>
+        <button type="button" class="btn network-error-retry-btn">${icon('refresh')}<span>Qayta urinish</span></button>
+      </div>
+    `;
   }
 
-  return { ok: false, reason: 'Noma\'lum amal.' };
-}
-
-function getOwnerSubscriptionAccess(owner) {
-  // 68-bosqich: obuna/tarif tekshiruvi butunlay o'chirildi — mavjud har
-  // qanday owner uchun har doim "faol" deb qaytariladi. Shu bir joyni
-  // o'zgartirish bilan butun tizimdagi barcha joylardagi tekshiruvlar
-  // (isOwnerAccessValid, checkSubscriptionAccess, getBlockedOwnerAccess,
-  // pruneExpiredOwners va h.k.) avtomatik ravishda hech kimni bloklamay
-  // qo'yadi — chunki ularning barchasi shu funksiya orqali ishlaydi.
-  if (!owner) return { allowed: false, status: 'unknown', daysLeft: null, inGrace: false };
-  return { allowed: true, status: SUBSCRIPTION_STATUS.ACTIVE, daysLeft: null, inGrace: false };
-}
-
-function checkSubscriptionAccess(userId, owners) {
-  if (isAdminId(userId)) {
-    return { allowed: true, status: 'admin', daysLeft: null, inGrace: false };
+  function renderNetworkErrorScreen(message, retryFn) {
+    ekran(networkErrorMarkup(message));
+    const btn = appEl.querySelector('.network-error-retry-btn');
+    if (btn) btn.addEventListener('click', () => { btn.disabled = true; retryFn(); });
   }
 
-  const list = owners || loadOwners();
-
-  const owner = findOwner(list, userId);
-  if (owner) return getOwnerSubscriptionAccess(owner);
-
-  const staffInfo = findStaffInfo(list, userId);
-  if (staffInfo) {
-    const staffOwner = list.find(o => String(o.id) === String(staffInfo.ownerId));
-    return getOwnerSubscriptionAccess(staffOwner);
+  function renderNetworkErrorInline(container, message, retryFn) {
+    if (!container) return;
+    container.innerHTML = networkErrorMarkup(message);
+    const btn = container.querySelector('.network-error-retry-btn');
+    if (btn) btn.addEventListener('click', () => { btn.disabled = true; retryFn(); });
   }
 
-  return { allowed: false, status: 'unknown', daysLeft: null, inGrace: false };
-}
-
-function getBlockedOwnerAccess(owners, userId) {
-  if (isAdminId(userId)) return null;
-
-  const owner = findOwner(owners, userId);
-  if (owner) {
-    const access = getOwnerSubscriptionAccess(owner);
-    return access.allowed ? null : access;
+  function featureBlockedMarkup(message) {
+    return `
+      <div class="feature-blocked-state">
+        ${icon('lock', 'feature-blocked-icon')}
+        <div class="feature-blocked-title">Bu funksiya yopilgan</div>
+        <div class="feature-blocked-desc">${escapeHtml(message || "Bu funksiya joriy tarifingizga kiritilmagan.")}</div>
+      </div>
+    `;
   }
 
-  const staffInfo = findStaffInfo(owners, userId);
-  if (staffInfo) {
-    const staffOwner = owners.find(o => String(o.id) === String(staffInfo.ownerId));
-    const access = getOwnerSubscriptionAccess(staffOwner);
-    return access.allowed ? null : access;
+  function renderFeatureBlockedInline(container, message) {
+    if (!container) return;
+    container.innerHTML = featureBlockedMarkup(message);
   }
 
-  return null;
-}
-
-// Egasi (yoki admin nomidan ish ko'rayotgan) kontekstmi?
-function isOwnerRole(ctx) { return !!ctx && ctx.role === 'egasi'; }
-// Kirish rad etilganda: obuna bloklangan bo'lsa maxsus ekran, aks holda sabab.
-function denyAccess(res, owners, userId, fallbackReason) {
-  return sendJSON(res, 200, subscriptionBlockedJSON(owners, userId, fallbackReason));
-}
-function sendFeatureBlocked(res, featureId) { return sendJSON(res, 200, featureBlockedResult(featureId)); }
-function subscriptionBlockedJSON(owners, userId, fallbackReason) {
-  const access = getBlockedOwnerAccess(owners, userId);
-  if (access) return { ok: false, reason: 'subscription_blocked', access };
-  return { ok: false, reason: fallbackReason };
-}
-
-async function sendSubscriptionBlockedScreen(chatId, access) {
-
-  if (access.status === SUBSCRIPTION_STATUS.PENDING_TRIAL) {
-    await sendMessage(chatId,
-      "🕓 <b>So'rovingiz hali ko'rib chiqilmoqda</b>\n" +
-      "Administrator tasdiqlagach, sizga xabar boradi va Mini App ochiladi.");
-    return;
-  }
-  const graceNote = access.inGrace ? '\n(Muhlat davri ham tugadi.)' : '';
-  await sendMessage(chatId,
-    `⛔ <b>Obunangiz tugagan</b>\nBotdagi va Mini App'dagi amallar vaqtincha bloklandi.${graceNote}\n` +
-    `Ma'lumotlaringiz (menyu, xodimlar, buyurtmalar tarixi) saqlanib qolyapti — obunani uzaytirsangiz, kirish avtomatik tiklanadi.`,
-    { inline_keyboard: [[{ text: '💳 Obunani uzaytirish', callback_data: 'obuna_menyu' }]] });
-}
-
-async function guardCallbackSubscription(cq, owners, ownerId) {
-  const owner = findOwner(owners, ownerId);
-  const access = getOwnerSubscriptionAccess(owner);
-  if (access.allowed) return false;
-  await answerCallbackQuery(cq.id, '⛔ Obuna muddati tugagan.', true);
-  await sendSubscriptionBlockedScreen(cq.from.id, access);
-  return true;
-}
-
-const SERVER_STARTED_AT = new Date().toISOString();
-const webhookStats = { received: 0, errors: 0, lastAt: null };
-
-function verifyTelegramInitData(initData, botToken) {
-  const params = new URLSearchParams(initData);
-  const hash = params.get('hash');
-  if (!hash) return { ok: false, reason: 'hash yo\'q' };
-  params.delete('hash');
-
-  const pairs = [];
-  for (const [key, value] of params.entries()) {
-    pairs.push(`${key}=${value}`);
-  }
-  pairs.sort();
-  const dataCheckString = pairs.join('\n');
-
-  const secretKey = crypto.createHmac('sha256', 'WebAppData').update(botToken).digest();
-  const computedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
-
-  if (computedHash !== hash) {
-    return { ok: false, reason: 'imzo mos emas (soxta so\'rov)' };
+  function showFeatureBlockedModal(message) {
+    const overlay = openOverlay(`
+      <div class="modal feature-blocked-modal" style="max-width:340px;">
+        <div class="feature-blocked-icon-wrap">${icon('lock')}</div>
+        <div class="feature-blocked-title">Bu funksiya yopilgan</div>
+        <div class="feature-blocked-desc">${escapeHtml(message || "Bu funksiya joriy tarifingizga kiritilmagan.")}</div>
+        <div class="btn-row"><button class="btn" id="featureBlockedOkBtn">Tushunarli</button></div>
+      </div>
+    `);
+    document.getElementById('featureBlockedOkBtn').onclick = () => overlay.remove();
   }
 
-  const authDate = parseInt(params.get('auth_date') || '0', 10);
-  const now = Math.floor(Date.now() / 1000);
-  if (now - authDate > 86400) {
-    return { ok: false, reason: 'sessiya eskirgan' };
-  }
-
-  const userRaw = params.get('user');
-  let user = null;
-  try { user = userRaw ? JSON.parse(userRaw) : null; } catch (e) {}
-
-  return { ok: true, user };
-}
-
-const SESSION_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
-
-function hashPassword(password) {
-  const salt = crypto.randomBytes(16).toString('hex');
-  const hash = crypto.scryptSync(String(password), salt, 64).toString('hex');
-  return `${salt}:${hash}`;
-}
-
-function verifyPassword(password, stored) {
-  if (!stored || typeof stored !== 'string' || !stored.includes(':')) return false;
-  const [salt, hash] = stored.split(':');
-  try {
-    const computed = crypto.scryptSync(String(password), salt, 64).toString('hex');
-    const a = Buffer.from(hash, 'hex');
-    const b = Buffer.from(computed, 'hex');
-    if (a.length !== b.length) return false;
-    return crypto.timingSafeEqual(a, b);
-  } catch (e) {
+  function handleFeatureBlocked(res) {
+    if (res && res.blockedFeature) { showFeatureBlockedModal(res.reason); return true; }
     return false;
   }
-}
 
-function normalizeLogin(login) {
-  return String(login || '').trim().toLowerCase();
-}
+  function icon(name, extraClass) {
+    return `<svg class="icon${extraClass ? ' ' + extraClass : ''}" aria-hidden="true"><use href="#icon-${name}"></use></svg>`;
+  }
 
-function verifyAuth(initData) {
-  if (typeof initData === 'string' && initData.startsWith('sess_')) {
-    const token = initData.slice('sess_'.length);
-    const owners = loadOwners();
-    const owner = owners.find(o => o.sessionToken === token);
-    if (!owner) return { ok: false, reason: 'Sessiya topilmadi. Iltimos, qaytadan login/parol bilan kiring.' };
-    if (!owner.sessionExpiresAt || new Date(owner.sessionExpiresAt).getTime() < Date.now()) {
-      return { ok: false, reason: 'Sessiya muddati tugagan. Iltimos, qaytadan login/parol bilan kiring.' };
+  const appHeaderEl = document.getElementById('appHeader');
+
+  function setAppHeader(logoUrl, name, roleLabel, onRoleSwitch) {
+    if (!name) { clearAppHeader(); return; }
+    appHeaderEl.innerHTML = `
+      ${logoUrl
+        ? `<img class="app-header-logo" src="${escapeHtml(logoUrl)}" onerror="this.outerHTML='<div class=&quot;app-header-logo-fallback&quot;>${icon('restaurant', 'icon-xs').replace(/"/g, '&quot;')}</div>'">`
+        : `<div class="app-header-logo-fallback">${icon('restaurant', 'icon-xs')}</div>`}
+      <div class="app-header-name">${escapeHtml(name)}</div>
+      ${roleLabel ? `<span class="app-header-role-badge">${escapeHtml(roleLabel)}</span>` : ''}
+      ${onRoleSwitch ? `<button type="button" class="app-header-role-switch-btn" id="appHeaderRoleSwitchBtn" title="Rol almashtirish">${icon('refresh', 'icon-xs')}</button>` : ''}
+      <button type="button" class="app-header-theme-btn" id="appHeaderThemeBtn" title="Tungi/kunduzgi rejim">${icon(currentActiveTheme() === 'dark' ? 'sun' : 'moon', 'icon-xs')}</button>
+    `;
+    appHeaderEl.classList.remove('hidden');
+    if (onRoleSwitch) {
+      const btn = document.getElementById('appHeaderRoleSwitchBtn');
+      if (btn) btn.addEventListener('click', onRoleSwitch);
     }
-    return {
-      ok: true,
-      user: {
-        id: owner.id,
-        username: owner.username || owner.login || null,
-        first_name: (owner.profile && owner.profile.name) || owner.login || 'Egasi'
-      }
+    document.getElementById('appHeaderThemeBtn').addEventListener('click', toggleTheme);
+  }
+  function clearAppHeader() {
+    appHeaderEl.classList.add('hidden');
+    appHeaderEl.innerHTML = '';
+  }
+
+  // Modal oynani (overlay) yaratib, sahifaga qo'shadi va elementni qaytaradi.
+  function openOverlay(html) {
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay';
+    overlay.innerHTML = html;
+    document.body.appendChild(overlay);
+    return overlay;
+  }
+
+  // Forma ostidagi holat xabari. kind: '' (jarayon) | 'ok' | 'err'.
+  // Natija bo'lsa Telegram tebranishi (haptic) ham beriladi.
+  function setMsg(el, text, kind) {
+    if (!el) return;
+    el.textContent = text;
+    el.className = kind ? 'xabar ' + kind : 'xabar';
+    if (kind && tg && tg.HapticFeedback) {
+      try { tg.HapticFeedback.notificationOccurred(kind === 'ok' ? 'success' : 'error'); } catch (e) {}
+    }
+  }
+
+  function escapeHtml(str) {
+    return String(str).replace(/[&<>"']/g, c => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+  }
+
+  function fmtNum(n) {
+    return Number(n || 0).toLocaleString('ru-RU').replace(/,/g, ' ');
+  }
+
+  // Bitta taomning bir nechta narxi (masalan: Kichik/Katta) bo'lsa, savat
+  // kaliti "itemId__priceId" ko'rinishida bo'ladi; oddiy taomlarda esa
+  // kalit shunchaki itemId (eski xatti-harakat o'zgarmagan).
+  function cartKeyFor(itemId, priceId) {
+    return priceId ? `${itemId}__${priceId}` : itemId;
+  }
+  function cartKeyParts(key) {
+    const idx = key.indexOf('__');
+    if (idx === -1) return { itemId: key, priceId: null };
+    return { itemId: key.slice(0, idx), priceId: key.slice(idx + 2) };
+  }
+  function menuItemPriceForCartKey(menuList, key) {
+    const { itemId, priceId } = cartKeyParts(key);
+    const m = (menuList || []).find(x => x.id === itemId);
+    if (!m) return 0;
+    if (priceId && Array.isArray(m.prices)) {
+      const opt = m.prices.find(p => p.id === priceId);
+      return opt ? opt.price : 0;
+    }
+    return m.price;
+  }
+  function menuItemNameForCartKey(menuList, key) {
+    const { itemId, priceId } = cartKeyParts(key);
+    const m = (menuList || []).find(x => x.id === itemId);
+    if (!m) return '';
+    if (priceId && Array.isArray(m.prices)) {
+      const idx = m.prices.findIndex(p => p.id === priceId);
+      const opt = m.prices[idx];
+      return opt ? `${m.name} (${variantLabel(opt, idx)})` : m.name;
+    }
+    return m.name;
+  }
+  function menuPriceFromLabel(m) {
+    if (Array.isArray(m.prices) && m.prices.length) {
+      const min = Math.min(...m.prices.map(p => p.price));
+      return `${fmtNum(min)} so'm dan`;
+    }
+    return `${fmtNum(m.price)} so'm`;
+  }
+
+  function isUzPhone(str) {
+    const cleaned = String(str || '').trim().replace(/[\s\-()]/g, '');
+    // Faqat O'zbekiston raqamlarini qabul qilamiz: +998 (yoki 998) va undan keyin 9 ta raqam
+    return /^\+?998\d{9}$/.test(cleaned);
+  }
+
+  // Standart brend rangi — "Pulsar" o'zining rasmiy ko'k rangi (logotipdagi
+  // to'q ko'k/qora fonga mos). Owner hali o'zining brend rangini
+  // tanlamagan bo'lsa, mijozlar/xodimlar ilovasida shu rang ishlatiladi.
+  // Owner keyinchalik xohlagan rangni tanlasa (pastdagi BRAND_COLOR_PRESETS
+  // yoki o'ziniki), o'sha rang uning XODIMLARI VA MIJOZLARI uchun ham
+  // qo'llaniladi (qarang: applyBrandColor — bu owner profilidan kelgan
+  // brandColor asosida chaqiriladi, xodim/mijoz ekranlarida ham xuddi shu
+  // owner.profile.brandColor ishlatiladi).
+  const BRAND_COLOR_PRESETS = ['#1E4FD8', '#E4232A', '#E67E22', '#1E8A55', '#12897E', '#7B3FE4', '#D63384', '#2B2E33'];
+  const DEFAULT_BRAND_COLOR = '#1E4FD8';
+
+  function isValidHexColor(hex) {
+    return typeof hex === 'string' && /^#[0-9A-Fa-f]{6}$/.test(hex);
+  }
+  function hexToRgb(hex) {
+    const h = hex.replace('#', '');
+    const num = parseInt(h, 16);
+    return { r: (num >> 16) & 255, g: (num >> 8) & 255, b: num & 255 };
+  }
+  function rgbToHex({ r, g, b }) {
+    const clamp = v => Math.max(0, Math.min(255, Math.round(v)));
+    return '#' + [r, g, b].map(v => clamp(v).toString(16).padStart(2, '0')).join('');
+  }
+  function relativeLuminance({ r, g, b }) {
+    const chan = v => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+    return 0.2126 * chan(r) + 0.7152 * chan(g) + 0.0722 * chan(b);
+  }
+  function contrastRatio(hexA, hexB) {
+    const lA = relativeLuminance(hexToRgb(hexA));
+    const lB = relativeLuminance(hexToRgb(hexB));
+    const [lighter, darker] = lA > lB ? [lA, lB] : [lB, lA];
+    return (lighter + 0.05) / (darker + 0.05);
+  }
+
+  function pickOnColor(hex) {
+    return contrastRatio(hex, '#FFFFFF') >= contrastRatio(hex, '#000000') ? '#FFFFFF' : '#000000';
+  }
+  function mixColor(hex, towardHex, amount) {
+    const a = hexToRgb(hex), b = hexToRgb(towardHex);
+    return rgbToHex({ r: a.r + (b.r - a.r) * amount, g: a.g + (b.g - a.g) * amount, b: a.b + (b.b - a.b) * amount });
+  }
+
+  function deriveBrandShades(base) {
+    let darkAmt = 0.18, lightAmt = 0.90;
+    let dark = mixColor(base, '#000000', darkAmt);
+    let light = mixColor(base, '#FFFFFF', lightAmt);
+    let guard = 0;
+    while (contrastRatio(light, dark) < 4.5 && guard < 60) {
+      if (darkAmt < 0.85) darkAmt += 0.025;
+      if (lightAmt < 0.97) lightAmt += 0.01;
+      dark = mixColor(base, '#000000', darkAmt);
+      light = mixColor(base, '#FFFFFF', lightAmt);
+      guard++;
+    }
+    return { dark, light };
+  }
+
+  function brandContrastInfoHtml(hex) {
+    const base = isValidHexColor(hex) ? hex : DEFAULT_BRAND_COLOR;
+    const onColor = pickOnColor(base);
+    const ratio = contrastRatio(base, onColor);
+    const ok = ratio >= 4.5;
+    return `
+      <div class="brand-preview-contrast ${ok ? 'ok' : 'warn'}">
+        ${icon(ok ? 'check' : 'warning', 'icon-xs')}
+        Kontrast nisbati: ${ratio.toFixed(1)}:1 — ${ok ? "matn yaxshi o'qiladi (WCAG AA)" : "past, matn qiyin o'qilishi mumkin"}
+      </div>
+    `;
+  }
+
+  function applyBrandColor(hex) {
+    const base = isValidHexColor(hex) ? hex : DEFAULT_BRAND_COLOR;
+    const { dark, light } = deriveBrandShades(base);
+    const root = document.documentElement.style;
+    root.setProperty('--brand-primary', base);
+    root.setProperty('--brand-primary-dark', dark);
+    root.setProperty('--brand-primary-light', light);
+    root.setProperty('--brand-on-primary', pickOnColor(base));
+  }
+
+  function resetBrandColor() {
+    const root = document.documentElement.style;
+    root.removeProperty('--brand-primary');
+    root.removeProperty('--brand-primary-dark');
+    root.removeProperty('--brand-primary-light');
+    root.removeProperty('--brand-on-primary');
+  }
+
+  function brandSwatchesHtml(current, shopName) {
+    const cur = isValidHexColor(current) ? current.toUpperCase() : DEFAULT_BRAND_COLOR;
+    const isPreset = BRAND_COLOR_PRESETS.map(c => c.toUpperCase()).includes(cur);
+    const name = shopName ? escapeHtml(shopName) : "Sizning oshxonangiz";
+    return `
+      <div class="brand-color-swatches" id="brandSwatches">
+        ${BRAND_COLOR_PRESETS.map(c => `
+          <button type="button" class="brand-swatch ${cur === c.toUpperCase() ? 'selected' : ''}" data-brand-color="${c}" style="background:${c};" aria-label="${c}">
+            ${cur === c.toUpperCase() ? icon('check', 'icon-xs') : ''}
+          </button>
+        `).join('')}
+        <label class="brand-swatch brand-swatch-custom ${!isPreset ? 'selected' : ''}" style="${!isPreset ? `background:${cur};` : ''}" title="Boshqa rang">
+          <input type="color" id="brandColorCustom" value="${cur}">
+          ${!isPreset ? icon('check', 'icon-xs') : ''}
+        </label>
+      </div>
+      <div class="brand-color-preview" id="brandColorPreview">
+        <span class="brand-preview-label">Namuna ko'rinish — o'zgarishlar darhol, saqlashdan oldin ham ko'rinadi:</span>
+        <div class="brand-preview-header">
+          <span class="brand-preview-logo">${icon('restaurant', 'icon-xs')}</span>
+          <span class="brand-preview-shop-name">${name}</span>
+          <span class="role-badge">Egasi</span>
+        </div>
+        <div class="brand-preview-row">
+          <button type="button" class="btn">Buyurtma berish</button>
+          <button type="button" class="btn ikkinchi">Bekor qilish</button>
+        </div>
+        <div class="brand-preview-row">
+          <span class="badge paid">Bonus: 120 ball</span>
+          <span class="badge warning">Kutilmoqda</span>
+        </div>
+        <div id="brandPreviewContrast">${brandContrastInfoHtml(cur)}</div>
+      </div>
+    `;
+  }
+
+  function attachBrandSwatchHandlers(onChange) {
+    const wrap = document.getElementById('brandSwatches');
+    if (!wrap) return;
+    const updateContrast = (hex) => {
+      const el = document.getElementById('brandPreviewContrast');
+      if (el) el.innerHTML = brandContrastInfoHtml(hex);
     };
-  }
-  return verifyTelegramInitData(initData, BOT_TOKEN);
-}
-
-try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch (e) {}
-
-function loadJSONArray(file) {
-  try {
-    const raw = fs.readFileSync(file, 'utf8');
-    const arr = JSON.parse(raw);
-    return Array.isArray(arr) ? arr : [];
-  } catch (e) {
-    return [];
-  }
-}
-
-function saveJSONArray(file, arr) {
-  fs.writeFileSync(file, JSON.stringify(arr, null, 2), 'utf8');
-}
-
-function loadOwners() { return loadJSONArray(OWNERS_FILE).map(ensureSubscriptionFields); }
-function saveOwners(owners) { saveJSONArray(OWNERS_FILE, owners); }
-
-// Oshxonaning standart (zaxira) ish vaqti (Toshkent bo'yicha): 10:00 dan 03:00 gacha.
-// Har bir owner o'z profilida (Sozlamalar -> Ish vaqti) "09:00 - 23:00" ko'rinishida
-// vaqt kiritsa, aynan o'sha vaqt ishlatiladi; aks holda shu standart qiymat qo'llanadi.
-const KITCHEN_WORK_HOURS = { openHour: 10, openMinute: 0, closeHour: 3, closeMinute: 0 };
-const KITCHEN_TZ_OFFSET_MS = 5 * 60 * 60 * 1000; // Toshkent = UTC+5
-
-function kitchenTashkentDate(input) {
-  const d = (input instanceof Date) ? input : new Date(input || Date.now());
-  return new Date(d.getTime() + KITCHEN_TZ_OFFSET_MS);
-}
-
-// "09:00 - 23:00", "9:00-23:00", "9-23", "9:00 dan 23:00 gacha" kabi matnni
-// { openHour, openMinute, closeHour, closeMinute } ko'rinishiga o'giradi.
-// Noto'g'ri/bo'sh bo'lsa null qaytaradi. Daqiqa ko'rsatilmasa 00 deb olinadi,
-// ajratuvchi sifatida "-", "–", "—" yoki so'zlashuv uslubidagi "dan...gacha" qabul qilinadi.
-function parseWorkHoursRange(str) {
-  if (!str) return null;
-  const m = String(str).match(/(\d{1,2})(?:[:.](\d{2}))?\s*(?:[-–—]|dan)\s*(\d{1,2})(?:[:.](\d{2}))?\s*(?:gacha)?/i);
-  if (!m) return null;
-  const openHour = parseInt(m[1], 10), openMinute = m[2] !== undefined ? parseInt(m[2], 10) : 0;
-  const closeHour = parseInt(m[3], 10), closeMinute = m[4] !== undefined ? parseInt(m[4], 10) : 0;
-  if ([openHour, closeHour].some(h => h < 0 || h > 23)) return null;
-  if ([openMinute, closeMinute].some(mm => mm < 0 || mm > 59)) return null;
-  return { openHour, openMinute, closeHour, closeMinute };
-}
-
-// Owner uchun amaldagi ish vaqtini qaytaradi: profilida kiritilgan bo'lsa o'shani,
-// bo'lmasa yoki noto'g'ri formatda bo'lsa standart KITCHEN_WORK_HOURS ni.
-function getOwnerWorkHours(owner) {
-  const raw = owner && owner.profile && owner.profile.workHours;
-  return parseWorkHoursRange(raw) || KITCHEN_WORK_HOURS;
-}
-
-function isKitchenOpenNow(hours) {
-  const wh = hours || KITCHEN_WORK_HOURS;
-  const now = kitchenTashkentDate();
-  const nowMin = now.getUTCHours() * 60 + now.getUTCMinutes();
-  const openMin = wh.openHour * 60 + (wh.openMinute || 0);
-  const closeMin = wh.closeHour * 60 + (wh.closeMinute || 0);
-  if (openMin === closeMin) return true; // 24 soat ochiq
-  if (openMin < closeMin) return nowMin >= openMin && nowMin < closeMin;
-  return nowMin >= openMin || nowMin < closeMin;
-}
-
-// Keyingi ochilish vaqtini haqiqiy (UTC) Date sifatida qaytaradi.
-function nextKitchenOpenAt(hours) {
-  const wh = hours || KITCHEN_WORK_HOURS;
-  const tashkentNow = kitchenTashkentDate();
-  const target = new Date(tashkentNow);
-  target.setUTCHours(wh.openHour, wh.openMinute || 0, 0, 0);
-  if (target <= tashkentNow) target.setUTCDate(target.getUTCDate() + 1);
-  return new Date(target.getTime() - KITCHEN_TZ_OFFSET_MS);
-}
-
-const KITCHEN_REMINDERS_FILE = path.join(DATA_DIR, 'kitchen_reminders.json');
-function loadKitchenReminders() { return loadJSONArray(KITCHEN_REMINDERS_FILE); }
-function saveKitchenReminders(list) { saveJSONArray(KITCHEN_REMINDERS_FILE, list); }
-
-// Oshxona ochilganda kutayotgan mijozlarga botdan avtomatik xabar yuboradi.
-// Har bir owner o'zining (sozlamalardagi) ish vaqtiga qarab tekshiriladi.
-setInterval(() => {
-  const reminders = loadKitchenReminders();
-  if (!reminders.length) return;
-  const owners = loadOwners();
-  const remaining = [];
-  reminders.forEach(r => {
-    const owner = findOwner(owners, r.ownerId);
-    const hours = getOwnerWorkHours(owner);
-    if (!isKitchenOpenNow(hours)) { remaining.push(r); return; }
-    const restaurantName = (owner && owner.profile && owner.profile.name) || 'Toshkent Hot-Dog';
-    const menuUrl = PUBLIC_URL ? `${PUBLIC_URL.replace(/\/$/, '')}/?customer=${encodeURIComponent(r.ownerId)}` : null;
-    sendMessage(r.userId,
-      `🔓 <b>Ochildik!</b>\n${escapeHtmlServer(restaurantName)} hozir buyurtmalarni qabul qilmoqda.`,
-      menuUrl ? { inline_keyboard: [[{ text: '🍽 Menyuni ochish', web_app: { url: menuUrl } }]] } : null);
-  });
-  if (remaining.length !== reminders.length) saveKitchenReminders(remaining);
-}, 30 * 1000);
-
-// Smena (ish smenasi) boshlash/tugatishni avtomatik ravishda oshxonaning
-// ish vaqtiga to'g'irlab turadi: ish vaqti boshlanganda (oshxona ochilganda)
-// egasi va tegishli xodimlarning (kassir/oshpaz/egasi-hamkor) smenasi
-// avtomatik boshlanadi, ish vaqti tugaganda (oshxona yopilganda) avtomatik
-// tugatiladi va shiftHistory'ga yoziladi. Xodim/egasi istalgan payt
-// qo'lda ham "Tugatish"/"Boshlash" tugmasini bosib, keyingi chegaragacha
-// buni o'zgartirishi mumkin — bu faqat ochilish/yopilish lahzasida ishlaydi.
-const kitchenOpenStateByOwner = new Map();
-
-function autoSyncShiftsForOwner(owner) {
-  const hours = getOwnerWorkHours(owner);
-  const open = isKitchenOpenNow(hours);
-  const hasPrev = kitchenOpenStateByOwner.has(owner.id);
-  const prevOpen = hasPrev ? kitchenOpenStateByOwner.get(owner.id) : open;
-  kitchenOpenStateByOwner.set(owner.id, open);
-  // Server yangi ishga tushganda holatni shunchaki eslab qoladi, lekin
-  // ommaviy smena boshlash/tugatishni ishga tushirmaydi (faqat haqiqiy
-  // ochilish/yopilish lahzasida ishlaydi).
-  if (!hasPrev || open === prevOpen) return false;
-
-  const now = new Date().toISOString();
-  const targets = [owner, ...((owner.staff || []).filter(s =>
-    staffHasRole(s, 'kassir') || staffHasRole(s, 'oshpaz') || staffHasRole(s, 'egasi')
-  ))];
-  let changed = false;
-
-  targets.forEach(target => {
-    const isOwnerTarget = target === owner;
-    const role = isOwnerTarget ? 'egasi' : (normalizeStaffRoles(target)[0] || 'xodim');
-    if (open) {
-      if (!target.shiftActive) {
-        target.shiftActive = true;
-        target.shiftStartedAt = now;
-        logStaffAction(owner, { userId: target.id, role, action: 'smena_boshladi', note: 'Ish vaqti boshlanishi bilan smena avtomatik boshlandi' });
-        changed = true;
-      }
-    } else if (target.shiftActive) {
-      if (!owner.shiftHistory) owner.shiftHistory = [];
-      owner.shiftHistory.unshift({
-        id: crypto.randomBytes(4).toString('hex'),
-        userId: target.id,
-        role,
-        startedAt: target.shiftStartedAt || now,
-        endedAt: now
-      });
-      if (owner.shiftHistory.length > 1000) owner.shiftHistory.length = 1000;
-      target.shiftActive = false;
-      target.shiftStartedAt = null;
-      logStaffAction(owner, { userId: target.id, role, action: 'smena_tugatdi', note: 'Ish vaqti tugashi bilan smena avtomatik tugatildi' });
-      changed = true;
-    }
-  });
-
-  return changed;
-}
-
-setInterval(() => {
-  const owners = loadOwners();
-  let anyChanged = false;
-  owners.forEach(owner => {
-    if (autoSyncShiftsForOwner(owner)) anyChanged = true;
-  });
-  if (anyChanged) saveOwners(owners);
-}, 60 * 1000);
-
-function loadAdminSupportMessages() { return loadJSONArray(ADMIN_SUPPORT_FILE); }
-function saveAdminSupportMessages(msgs) { saveJSONArray(ADMIN_SUPPORT_FILE, msgs); }
-
-function loadInvites() { return loadJSONArray(INVITES_FILE); }
-function saveInvites(invites) { saveJSONArray(INVITES_FILE, invites); }
-
-function loadRequests() { return loadJSONArray(REQUESTS_FILE); }
-function saveRequests(reqs) { saveJSONArray(REQUESTS_FILE, reqs); }
-
-function loadPayments() { return loadJSONArray(PAYMENTS_FILE); }
-function savePayments(list) { saveJSONArray(PAYMENTS_FILE, list); }
-
-function loadBroadcasts() { return loadJSONArray(BROADCASTS_FILE); }
-function saveBroadcasts(list) { saveJSONArray(BROADCASTS_FILE, list); }
-
-function recordPayment(owner, amount, extra) {
-  const amountVal = Number(amount) || 0;
-  if (amountVal <= 0) return;
-  const payments = loadPayments();
-  payments.push({
-    id: crypto.randomBytes(6).toString('hex'),
-    ownerId: owner.id,
-    ownerLabel: owner.username ? '@' + owner.username : String(owner.id),
-    amount: amountVal,
-    tariffId: owner.tariffId || null,
-
-    planId: (extra && extra.planId) || null,
-    planLabel: (extra && extra.planLabel) || null,
-    days: (extra && extra.days) || null,
-    source: (extra && extra.source) || null,
-
-    baseAmount: (extra && extra.baseAmount != null) ? extra.baseAmount : null,
-    upgradeSurcharge: (extra && extra.upgradeSurcharge) || 0,
-    at: new Date().toISOString()
-  });
-  savePayments(payments);
-}
-
-function loadArchivedOrders() { return loadJSONArray(ARCHIVED_ORDERS_FILE); }
-function saveArchivedOrders(list) { saveJSONArray(ARCHIVED_ORDERS_FILE, list); }
-function archiveOwnerOrders(owner) {
-  const orders = owner && owner.orders;
-  if (!orders || !orders.length) return;
-  const archive = loadArchivedOrders();
-  archive.push({
-    type: 'owner_removed',
-    ownerId: owner.id,
-    ownerLabel: owner.username ? '@' + owner.username : String(owner.id),
-    removedAt: new Date().toISOString(),
-    orders
-  });
-  saveArchivedOrders(archive);
-}
-
-const ORDERS_RETENTION_DAYS = parseInt(process.env.ORDERS_RETENTION_DAYS, 10) || 120;
-const ORDERS_ARCHIVE_HOUR = 4;
-let lastOrdersArchiveDateKey = null;
-
-function archiveOldOrdersAcrossOwners() {
-  const owners = loadOwners();
-  const cutoffTime = Date.now() - ORDERS_RETENTION_DAYS * 24 * 60 * 60 * 1000;
-  const archive = loadArchivedOrders();
-  let ownersChanged = false;
-  let archiveChanged = false;
-  let totalArchived = 0;
-
-  for (const owner of owners) {
-    const orders = owner.orders;
-    if (!orders || !orders.length) continue;
-    const keep = [];
-    const old = [];
-    for (const o of orders) {
-      const t = new Date(o.createdAt).getTime();
-
-      if (Number.isFinite(t) && t < cutoffTime) old.push(o);
-      else keep.push(o);
-    }
-    if (old.length) {
-      archive.push({
-        type: 'retention',
-        ownerId: owner.id,
-        ownerLabel: owner.username ? '@' + owner.username : String(owner.id),
-        archivedAt: new Date().toISOString(),
-        retentionDays: ORDERS_RETENTION_DAYS,
-        count: old.length,
-        orders: old
-      });
-      owner.orders = keep;
-      ownersChanged = true;
-      archiveChanged = true;
-      totalArchived += old.length;
-    }
-  }
-
-  if (archiveChanged) saveArchivedOrders(archive);
-  if (ownersChanged) saveOwners(owners);
-  return totalArchived;
-}
-
-setInterval(() => {
-  try {
-    if (aiDirTashkentHour(new Date()) !== ORDERS_ARCHIVE_HOUR) return;
-    const todayKey = aiDirDateKey(new Date());
-    if (lastOrdersArchiveDateKey === todayKey) return;
-    lastOrdersArchiveDateKey = todayKey;
-    const count = archiveOldOrdersAcrossOwners();
-    if (count > 0) console.log(`[buyurtmalar arxivlandi] ${count} ta eski buyurtma owners.json'dan archived_orders.json'ga ko'chirildi.`);
-  } catch (err) {
-    console.error('[buyurtmalar arxivlash xatosi]', err && err.message);
-  }
-}, 10 * 60 * 1000);
-
-const TRASH_FILE = path.join(DATA_DIR, 'trash.json');
-const TRASH_LOG_FILE = path.join(DATA_DIR, 'trash_log.json');
-const TRASH_AUTO_PURGE_DAYS = 3;
-
-function loadTrash() { return loadJSONArray(TRASH_FILE); }
-function saveTrash(list) { saveJSONArray(TRASH_FILE, list); }
-function loadTrashLog() { return loadJSONArray(TRASH_LOG_FILE); }
-function saveTrashLog(list) { saveJSONArray(TRASH_LOG_FILE, list); }
-
-function logTrashEvent(action, owner, extra) {
-  const log = loadTrashLog();
-  log.push(Object.assign({
-    id: crypto.randomBytes(6).toString('hex'),
-    action,
-    ownerId: owner ? owner.id : null,
-    ownerLabel: owner ? ownerLabel(owner) : null,
-    at: new Date().toISOString()
-  }, extra || {}));
-  saveTrashLog(log);
-}
-
-function moveOwnerToTrash(owner, trashedByUserId) {
-  const trash = loadTrash();
-  const trashedAt = new Date();
-  const autoPurgeAt = new Date(trashedAt.getTime() + TRASH_AUTO_PURGE_DAYS * 86400000);
-  trash.push({
-    id: crypto.randomBytes(6).toString('hex'),
-    ownerSnapshot: owner,
-    trashedAt: trashedAt.toISOString(),
-    autoPurgeAt: autoPurgeAt.toISOString(),
-    trashedBy: trashedByUserId ? String(trashedByUserId) : null,
-    restoreStatus: 'none',
-    restoreRequestedAt: null
-  });
-  saveTrash(trash);
-  logTrashEvent('trashed', owner, { trashedBy: trashedByUserId ? String(trashedByUserId) : null });
-}
-
-function findTrashEntry(trash, trashId) {
-  return trash.find(t => t.id === trashId);
-}
-
-function findTrashEntryByOwnerId(trash, ownerId) {
-  return trash.find(t => String(t.ownerSnapshot && t.ownerSnapshot.id) === String(ownerId));
-}
-
-function restoreOwnerFromTrash(trashEntry) {
-  const owners = loadOwners();
-  if (findOwner(owners, trashEntry.ownerSnapshot.id)) {
-    return { ok: false, reason: 'Bu ID bilan allaqachon boshqa do\'kon egasi mavjud.' };
-  }
-  owners.push(trashEntry.ownerSnapshot);
-  saveOwners(owners);
-  return { ok: true };
-}
-
-async function checkTrashAutoPurge() {
-  const trash = loadTrash();
-  const now = Date.now();
-  const remaining = [];
-  let purgedAny = false;
-  for (const entry of trash) {
-    if (new Date(entry.autoPurgeAt).getTime() <= now) {
-      purgedAny = true;
-      archiveOwnerOrders(entry.ownerSnapshot);
-      logTrashEvent('purged', entry.ownerSnapshot, { reason: 'auto_3_kun' });
-    } else {
-      remaining.push(entry);
-    }
-  }
-  if (purgedAny) saveTrash(remaining);
-}
-
-function loadProfiles() { return loadJSONArray(PROFILES_FILE); }
-function saveProfiles(list) { saveJSONArray(PROFILES_FILE, list); }
-function findProfile(userId) { return loadProfiles().find(p => String(p.id) === String(userId)); }
-function isRegisteredUser(userId) {
-  const p = findProfile(userId);
-  return !!(p && p.registeredAt);
-}
-
-function loadTariffs() { return loadJSONArray(TARIFFS_FILE); }
-function saveTariffs(list) { saveJSONArray(TARIFFS_FILE, list); }
-
-const FEATURE_GROUPS = [
-  { id: 'boshqaruv', name: "Boshqaruv va xodimlar" },
-  { id: 'menyu', name: "Menyu va mahsulotlar" },
-  { id: 'buyurtma', name: "Buyurtmalar va yetkazish" },
-  { id: 'ombor_moliya', name: "Ombor va moliya" },
-  { id: 'statistika', name: "Statistika va AI" },
-  { id: 'mijoz', name: "Mijozlar (mini-ilova)" },
-  { id: 'tizim', name: "Tizim va xavfsizlik" }
-];
-const FEATURE_CATALOG = [
-
-  { id: 'cashier-panel', name: "Kassir paneli", group: 'boshqaruv' },
-  { id: 'staff-invite', name: "Xodim taklifnomalari", group: 'boshqaruv' },
-  { id: 'staff-roles', name: "Xodim rollari va huquqlari", group: 'boshqaruv' },
-  { id: 'branch-manage', name: "Filiallar boshqaruvi", group: 'boshqaruv' },
-  { id: 'shift-toggle', name: "Smena boshlash/tugatish", group: 'boshqaruv' },
-
-  { id: 'menu-manage', name: "Menyu boshqaruvi", group: 'menyu' },
-  { id: 'category-manage', name: "Kategoriyalar boshqaruvi", group: 'menyu' },
-  { id: 'combo-manage', name: "Combo boshqaruvi", group: 'menyu' },
-  { id: 'promo-manage', name: "Aksiya/promo boshqaruvi", group: 'menyu' },
-  { id: 'banner-manage', name: "Reklama banner boshqaruvi", group: 'menyu' },
-
-  { id: 'orders-manage', name: "Buyurtmalarni boshqarish", group: 'buyurtma' },
-  { id: 'delivery-group', name: "Dostavka guruh xabarnomasi", group: 'buyurtma' },
-  { id: 'kitchen-group', name: "Oshxona guruh xabarnomasi", group: 'buyurtma' },
-
-  { id: 'stock-manage', name: "Ombor boshqaruvi", group: 'ombor_moliya' },
-  { id: 'expense-manage', name: "Xarajatlar", group: 'ombor_moliya' },
-  { id: 'cashflow', name: "Kassa oqimi", group: 'ombor_moliya' },
-  { id: 'z-report', name: "Z-hisobot", group: 'ombor_moliya' },
-  { id: 'bonus-settings', name: "Bonus sozlamalari", group: 'ombor_moliya' },
-
-  { id: 'dashboard', name: "Boshqaruv paneli (Dashboard)", group: 'statistika' },
-  { id: 'staff-performance', name: "Xodimlar statistikasi", group: 'statistika' },
-  { id: 'ai-analytics', name: "AI tahlil", group: 'statistika' },
-  { id: 'ai-director', name: "AI Direktor", group: 'statistika' },
-  { id: 'audit', name: "Auditlar", group: 'statistika' },
-
-  { id: 'customer-menu', name: "Mijoz uchun menyu va buyurtma", group: 'mijoz' },
-  { id: 'customer-account', name: "Mijoz profili va tarixi", group: 'mijoz' },
-  { id: 'support-chat', name: "Tezkor qo'llab-quvvatlash chat", group: 'mijoz' },
-  { id: 'ai-waiter', name: "AI ofitsiant (tavsiyalar va sevimlilar)", group: 'mijoz' },
-
-  { id: 'restaurant-brand', name: "Restoran brendi (logo, nom)", group: 'tizim' },
-  { id: 'system-status', name: "Tizim holati paneli", group: 'tizim' },
-  { id: 'notification-log', name: "Xatolik jurnali", group: 'tizim' }
-];
-function getFeatureCatalogGrouped() {
-  return FEATURE_GROUPS.map(g => ({
-    id: g.id,
-    name: g.name,
-    features: FEATURE_CATALOG.filter(f => f.group === g.id).map(f => ({ id: f.id, name: f.name }))
-  }));
-}
-
-function ownerCanUseFeature(owner, featureId) {
-  // 68-bosqich: tarif asosidagi funksiya cheklovi o'chirildi — barcha
-  // funksiyalar har doim ochiq.
-  return true;
-}
-
-function featureBlockedResult(featureId) {
-  const feature = FEATURE_CATALOG.find(f => f.id === featureId);
-  const label = feature ? feature.name : 'Bu funksiya';
-  return {
-    ok: false,
-    reason: `"${label}" joriy tarifingizga kiritilmagan. Kengaytirish uchun administrator bilan bog'laning.`,
-    blockedFeature: true,
-    featureId
-  };
-}
-
-// Tarif rejasida "Filiallar soni" cheklovi (admin panelidagi Tariflar
-// bo'limida sozlanadi — qarang: /api/tariff-add, /api/tariff-rename).
-// maxBranches: null yoki 0 — cheklanmagan (owner istagancha filial ocha
-// oladi). Owner'ga tarif biriktirilmagan bo'lsa ham cheklanmagan.
-function ownerMaxBranches(owner) {
-  // 68-bosqich: tarif asosidagi filiallar soni cheklovi o'chirildi.
-  return null;
-}
-
-function loadAdmins() { return loadJSONArray(ADMINS_FILE); }
-function saveAdmins(admins) {
-  saveJSONArray(ADMINS_FILE, admins);
-  reloadAdminsCache(admins);
-}
-
-let EXTRA_ADMIN_IDS = new Set();
-function reloadAdminsCache(admins) {
-  const list = admins || loadAdmins();
-  EXTRA_ADMIN_IDS = new Set(list.map(a => String(a.id)));
-}
-
-function addExtraAdmin(id, addedBy) {
-  const idStr = String(id);
-  if (idStr === String(ADMIN_ID)) return loadAdmins();
-  const admins = loadAdmins();
-  if (admins.some(a => String(a.id) === idStr)) return admins;
-  admins.push({ id: idStr, addedAt: new Date().toISOString(), addedBy: addedBy ? String(addedBy) : null });
-  saveAdmins(admins);
-  return admins;
-}
-function removeExtraAdmin(id) {
-  const idStr = String(id);
-  const admins = loadAdmins().filter(a => String(a.id) !== idStr);
-  saveAdmins(admins);
-  return admins;
-}
-
-function isAdminId(userId) {
-  // Bitta-do'kon rejimi: alohida "admin" roli o'chirilgan — ADMIN_ID endi
-  // oddiy owner sifatida ishlaydi (qarang: ensureAdminIsOwner() pastda).
-  // Shu tufayli /api/verify va boshqa joylardagi barcha "admin" tekshiruvlari
-  // avtomatik false qaytaradi va Mini App to'g'ridan-to'g'ri owner panelini ochadi.
-  return false;
-}
-
-function allAdminIds() {
-  return Array.from(new Set([String(ADMIN_ID), ...EXTRA_ADMIN_IDS]));
-}
-
-function findOwner(owners, userId) {
-  return owners.find(o => String(o.id) === String(userId));
-}
-
-function isOwnerAccessValid(owner) {
-  return getOwnerSubscriptionAccess(owner).allowed;
-}
-
-function pruneExpiredOwners() {
-  const owners = loadOwners();
-  let changed = false;
-  owners.forEach(owner => {
-    if (owner.subscriptionStatus === SUBSCRIPTION_STATUS.PENDING_TRIAL) return;
-    const nextStatus = getOwnerSubscriptionAccess(owner).allowed
-      ? SUBSCRIPTION_STATUS.ACTIVE
-      : SUBSCRIPTION_STATUS.BLOCKED;
-    if (owner.subscriptionStatus !== nextStatus) {
-      owner.subscriptionStatus = nextStatus;
-      changed = true;
-    }
-  });
-  if (changed) saveOwners(owners);
-  return owners;
-}
-
-const STAFF_ROLES = {
-  kassir: 'Kassir',
-  // 69-bosqich: "Egasi (hamkor)" — asosiy egasi ID/username yoki havola
-  // orqali boshqa odamga TO'LIQ egasi huquqini (menyu, sklad, xodimlar,
-  // buyurtmalar, hisobotlar) berishi mumkin. Bu — alohida "owner" yozuvi
-  // emas, owner.staff ichidagi rol="egasi" bo'lgan yozuv; resolveOwnerContext
-  // orqali ular xuddi asosiy egasi kabi ishlaydi. Faqat ba'zi juda nozik
-  // amallar (masalan, o'zini xodimlar ro'yxatidan o'chirish yoki hisob
-  // sozlamalarining ba'zi qismlari) hali ham faqat asl egasiga tegishli
-  // bo'lishi mumkin — chunki ular owner.id bilan to'g'ridan-to'g'ri ishlaydi.
-  egasi: 'Egasi (hamkor)'
-};
-
-const ROLE_PANEL_FEATURE = {
-  kassir: 'cashier-panel'
-};
-
-function allowedStaffRoles(owner, roles) {
-  return (roles || []).filter(r => {
-    const featureId = ROLE_PANEL_FEATURE[r];
-    if (!featureId) return true;
-    return ownerCanUseFeature(owner, featureId);
-  });
-}
-
-function findBranch(owner, branchId) {
-  return (owner.branches || []).find(b => String(b.id) === String(branchId));
-}
-
-function generateBranchId() {
-  return crypto.randomBytes(6).toString('hex');
-}
-
-// Buyurtma qaysi guruhlarga (dostavka/oshxona) yuborilishi kerakligini
-// aniqlaydi: agar buyurtma bir filialga tegishli bo'lsa va o'sha filialning
-// o'ZINING guruhi ulangan bo'lsa — shu guruh ishlatiladi; aks holda markaziy
-// (owner darajasidagi) guruhga tushadi. Shu tarzda har bir filial o'z
-// alohida guruhiga ega bo'lishi mumkin, lekin ulanmagan filiallar markaziy
-// guruhdan foydalanishda davom etadi.
-function resolveOrderGroupIds(owner, order) {
-  const branch = order && order.branchId ? findBranch(owner, order.branchId) : null;
-  const deliveryGroupId = (branch && branch.deliveryGroupId) || owner.deliveryGroupId || null;
-  const deliveryGroupThreadId = (branch && branch.deliveryGroupId) ? (branch.deliveryGroupThreadId || null) : (owner.deliveryGroupThreadId || null);
-  const kitchenGroupId = (branch && branch.kitchenGroupId) || owner.kitchenGroupId || null;
-  const kitchenGroupThreadId = (branch && branch.kitchenGroupId) ? (branch.kitchenGroupThreadId || null) : (owner.kitchenGroupThreadId || null);
-  return { deliveryGroupId, deliveryGroupThreadId, kitchenGroupId, kitchenGroupThreadId };
-}
-
-function resolveStockPool(owner, branchId) {
-  if (!branchId) return owner;
-  const branch = findBranch(owner, branchId);
-  if (!branch) return null;
-  if (!branch.stock) branch.stock = [];
-  if (!branch.stockMovements) branch.stockMovements = [];
-  return branch;
-}
-
-function findStockItem(pool, id) {
-  return (pool.stock || []).find(s => s.id === id);
-}
-
-// 1-bosqich: har bir filial o'zining mustaqil menyusiga ega. Filial
-// qo'shilganda markaziy menyu (va bo'limlar) unga boshlang'ich nuqta
-// sifatida nusxalanadi (bu nusxalash /api/branch-add ichida sodir bo'ladi).
-// Shu funksiya "pool" — ya'ni markaziy (owner) yoki tanlangan filialning
-// menyu/bo'lim massivlarini o'z ichiga olgan obyektni qaytaradi.
-// Eski (bu funksiyadan oldin yaratilgan) filiallarda menu/categories
-// hali bo'lmasligi mumkin — shunday holatda ham markaziy menyudan
-// boshlang'ich nusxa olib, keyingi tahrirlar mustaqil davom etadi.
-function resolveMenuPool(owner, branchId) {
-  if (!branchId) return owner;
-  const branch = findBranch(owner, branchId);
-  if (!branch) return null;
-  if (!Array.isArray(branch.menu)) branch.menu = JSON.parse(JSON.stringify(owner.menu || []));
-  if (!Array.isArray(branch.categories)) branch.categories = JSON.parse(JSON.stringify(ensureOwnerCategories(owner)));
-  return branch;
-}
-
-function addStockMovement(pool, entry) {
-  if (!pool.stockMovements) pool.stockMovements = [];
-  pool.stockMovements.unshift(Object.assign({
-    id: crypto.randomBytes(4).toString('hex'),
-    createdAt: new Date().toISOString()
-  }, entry));
-  if (pool.stockMovements.length > 500) pool.stockMovements.length = 500;
-}
-
-function checkLowStockAlert(owner, item, excludeUserId, branchId) {
-  if (item.minQty === null || item.minQty === undefined) return;
-  if (item.qty <= item.minQty) {
-    if (!item.lowStockAlertSent) {
-      item.lowStockAlertSent = true;
-      const text = `⚠️ <b>Kam qoldi:</b> ${escapeHtmlServer(item.name)} — ${item.qty} ${escapeHtmlServer(item.unit)} qoldi (chegara: ${item.minQty} ${escapeHtmlServer(item.unit)}).`;
-      const ownerMuted = isNotificationCategoryMuted(owner, 'lowStock');
-      const targets = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'sklad') && (s.branchId || null) === (branchId || null)).map(s => s.id))];
-      for (const t of new Set(targets)) {
-        if (String(t) === String(excludeUserId)) continue;
-        if (ownerMuted && String(t) === String(owner.id)) continue;
-        sendMessage(t, text);
-      }
-    }
-  } else {
-    item.lowStockAlertSent = false;
-  }
-}
-
-const EXPENSE_CATEGORIES = {
-  ijara: 'Ijara',
-  maosh: 'Maosh',
-  kommunal: 'Kommunal',
-  mahsulot: 'Mahsulot xaridi',
-
-  sklad_xarid: 'Sklad xaridlari',
-  spisaniya: 'Spisaniya (isrof)',
-  boshqa: 'Boshqa'
-};
-
-function ensureOwnerCategories(owner) {
-  if (!Array.isArray(owner.categories)) {
-    const seen = new Set();
-    const migrated = [];
-    (owner.menu || []).forEach(item => {
-      const name = String(item.category || '').trim();
-      const key = name.toLowerCase();
-      if (name && !seen.has(key)) {
-        seen.add(key);
-        migrated.push({ id: crypto.randomBytes(4).toString('hex'), name, order: migrated.length });
-      }
-    });
-    owner.categories = migrated;
-  }
-  return owner.categories;
-}
-
-function sortedOwnerCategories(owner) {
-  return ensureOwnerCategories(owner).slice().sort((a, b) => a.order - b.order);
-}
-
-function findCombo(owner, id) {
-  return (owner.combos || []).find(c => c.id === id);
-}
-
-function comboAutoPrice(owner, itemIds) {
-  return (itemIds || []).reduce((sum, entry) => {
-    const menuItem = (owner.menu || []).find(m => m.id === entry.menuItemId);
-    return sum + (menuItem ? menuItem.price * entry.qty : 0);
-  }, 0);
-}
-
-// Bitta taomning bir nechta narxi (masalan: kichik/katta) bo'lishi mumkin.
-// menuItem.prices — [{ id, label, price }] massivi. Agar u mavjud bo'lsa,
-// buyurtma vaqtida mijoz/kassir aynan qaysi narx variantini tanlaganini
-// (priceId) ko'rsatishi shart.
-function resolveMenuItemPriceOption(menuItem, priceId) {
-  const options = Array.isArray(menuItem.prices) ? menuItem.prices : [];
-  if (!options.length) {
-    return { ok: true, price: menuItem.price, label: null, priceId: null };
-  }
-  const wanted = priceId !== undefined && priceId !== null ? String(priceId) : null;
-  const found = wanted ? options.find(p => p.id === wanted) : (options.length === 1 ? options[0] : null);
-  if (!found) {
-    return { ok: false, reason: `"${menuItem.name}" uchun narx variantini tanlang.` };
-  }
-  return { ok: true, price: found.price, label: found.label, priceId: found.id };
-}
-
-// Admin panel'dan kelgan "bir nechta narx" ro'yxatini tekshiradi va tozalaydi.
-// Kutilayotgan format: [{ label, price, id? }, ...]
-function normalizeMenuItemPrices(rawPrices) {
-  if (rawPrices === undefined || rawPrices === null || rawPrices === '') {
-    return { ok: true, list: [] };
-  }
-  let arr = rawPrices;
-  if (typeof arr === 'string') {
-    try { arr = JSON.parse(arr); } catch (e) { return { ok: false, reason: 'Narxlar ro\'yxati noto\'g\'ri.' }; }
-  }
-  if (!Array.isArray(arr)) return { ok: false, reason: 'Narxlar ro\'yxati noto\'g\'ri.' };
-  if (!arr.length) return { ok: true, list: [] };
-  if (arr.length < 2) return { ok: false, reason: 'Kamida 2 ta narx variantini kiriting yoki bittalik narxdan foydalaning.' };
-
-  const list = [];
-  const seenLabels = new Set();
-  for (const raw of arr) {
-    const label = String((raw && raw.label) || '').trim();
-    const priceNum = Number(raw && raw.price);
-    if (!Number.isFinite(priceNum) || priceNum <= 0) return { ok: false, reason: `${label ? '"' + label + '"' : 'Narx varianti'} uchun narxni to\'g\'ri kiriting.` };
-    if (label) {
-      const labelKey = label.toLowerCase();
-      if (seenLabels.has(labelKey)) return { ok: false, reason: `"${label}" nomi takrorlangan — har bir variant nomi boshqacha bo\'lsin.` };
-      seenLabels.add(labelKey);
-    }
-    list.push({
-      id: (raw && raw.id && String(raw.id)) || crypto.randomBytes(4).toString('hex'),
-      label,
-      price: priceNum
+    wrap.querySelectorAll('[data-brand-color]').forEach(btn => btn.addEventListener('click', () => {
+      wrap.querySelectorAll('.brand-swatch').forEach(el => { el.classList.remove('selected'); el.innerHTML = ''; });
+      btn.classList.add('selected');
+      btn.innerHTML = icon('check', 'icon-xs');
+      const hex = btn.getAttribute('data-brand-color');
+      onChange(hex);
+      updateContrast(hex);
+    }));
+    const customInput = document.getElementById('brandColorCustom');
+    if (customInput) customInput.addEventListener('input', (e) => {
+      const hex = e.target.value;
+      wrap.querySelectorAll('.brand-swatch').forEach(el => { el.classList.remove('selected'); el.innerHTML = ''; });
+      const label = customInput.closest('.brand-swatch-custom');
+      label.classList.add('selected');
+      label.style.background = hex;
+      onChange(hex);
+      updateContrast(hex);
     });
   }
-  return { ok: true, list };
-}
 
-function comboStockNeeds(owner, combo, comboQty) {
-  const needs = [];
-  for (const entry of ((combo && combo.itemIds) || [])) {
-    const menuItem = (owner.menu || []).find(m => m.id === entry.menuItemId);
-    if (!menuItem) continue;
-    const unitsNeeded = entry.qty * comboQty;
-    if (menuItem.directStockId) {
-      needs.push({ stockId: menuItem.directStockId, qty: Math.round(unitsNeeded * 1000) / 1000, viaName: menuItem.name });
-      continue;
-    }
-    const recipe = Array.isArray(menuItem.recipe) ? menuItem.recipe : [];
-    for (const ing of recipe) {
-      needs.push({ stockId: ing.stockId, qty: Math.round(ing.qty * unitsNeeded * 1000) / 1000, viaName: menuItem.name });
-    }
-  }
-  return needs;
-}
-
-function menuItemOutOfStock(owner, menuItem) {
-  if (!menuItem) return false;
-  if (menuItem.directStockId) {
-    const stockItem = (owner.stock || []).find(s => s.id === menuItem.directStockId);
-    if (!stockItem) return false;
-    return stockItem.qty < 1;
-  }
-  const recipe = Array.isArray(menuItem.recipe) ? menuItem.recipe : [];
-  if (!recipe.length) return false;
-  return recipe.some(ing => {
-    const stockItem = (owner.stock || []).find(s => s.id === ing.stockId);
-    if (!stockItem) return false;
-    return stockItem.qty < ing.qty;
-  });
-}
-
-function comboOutOfStock(owner, combo) {
-  if (!combo) return false;
-  const needs = comboStockNeeds(owner, combo, 1);
-  return needs.some(need => {
-    const stockItem = (owner.stock || []).find(s => s.id === need.stockId);
-    if (!stockItem) return false;
-    return stockItem.qty < need.qty;
-  });
-}
-
-const CARD_ONLY_AFTER_CANCELLED_DELIVERIES = 2;
-function customerCancelledDeliveryCount(owner, userId) {
-  return (owner.orders || []).filter(o =>
-    String(o.customerId) === String(userId) &&
-    o.orderType === 'dostavka' &&
-    o.status === 'bekor_qilindi'
-  ).length;
-}
-function customerIsCardOnlyRestricted(owner, userId) {
-
-  if ((owner.cardOnlyOverrides || []).some(id => String(id) === String(userId))) return false;
-  return customerCancelledDeliveryCount(owner, userId) >= CARD_ONLY_AFTER_CANCELLED_DELIVERIES;
-}
-
-function ownerRatedOrders(owner) {
-  return (owner.orders || []).filter(o => Number.isFinite(o.customerRating));
-}
-function ownerAverageRating(owner) {
-  const rated = ownerRatedOrders(owner);
-  if (!rated.length) return { avg: null, count: 0 };
-  const sum = rated.reduce((s, o) => s + o.customerRating, 0);
-  return { avg: Math.round((sum / rated.length) * 10) / 10, count: rated.length };
-}
-
-const STOCK_UNITS = { kg: 'kg', g: 'g', l: 'l', ml: 'ml', dona: 'dona' };
-// Sklad mahsuloti buzilib/isrof bo'lib spisaniya qilinganda tanlanadigan sabablar
-// (masalan: katlet kuysa, non qotib qolsa yoki yirtilsa).
-const WRITEOFF_REASONS = {
-  kuydi: 'Kuydi (kuyib qoldi)',
-  qotib_qoldi: 'Qotib qoldi',
-  yirtildi: 'Yirtildi / shikastlandi',
-  tushib_ketdi: "Tushib ketdi / to'kildi",
-  muddati_otdi: "Muddati o'tdi / buzilgan",
-  boshqa: 'Boshqa sabab'
-};
-const ORDER_TYPES = { olib_ketish: 'Olib ketish', dostavka: 'Dostavka', zal: 'Zal', tashqari: 'Tashqari' };
-// "zal" turi faqat kassir/ega tomonidan (zalda o'tirgan mijoz uchun) yaratiladi —
-// mijozning botdagi buyurtma oynasida bu tur ko'rsatilmaydi (pastda CUSTOMER_ORDER_TYPES'ga qarang).
-const CUSTOMER_ORDER_TYPES = { olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
-const PAYMENT_TYPES = { naqd: 'Naqd', karta: 'Karta', click: 'Click', dostavka_orqali: 'Naqd' };
-
-// Har bir taom NOMI uchun tayyorlanish vaqti (daqiqada) — oshxona guruhidagi
-// jonli taymer shu vaqtga qarab yashil/sariq/qizil rangda ko'rsatiladi.
-// Solishtirish katta-kichik harf va bo'sh joylarga sezgir emas, shuningdek
-// narx varianti qo'shimchasini ("Nomi (200gr)" kabi) e'tiborga olmaydi.
-const PREP_TIME_MINUTES = {
-  'SALAT': 5,
-  'QAZILI': 10,
-  'HOT-LET': 10,
-  'ASSORTI': 15,
-  'SHASHLIK ASSORTI': 20,
-  'GAMBURGER': 10
-};
-const PREP_TIME_MINUTES_NORMALIZED = Object.fromEntries(
-  Object.entries(PREP_TIME_MINUTES).map(([k, v]) => [k.trim().toLowerCase(), v])
-);
-// Sariq -> qizilga o'tish chegarasi: belgilangan vaqtdan necha barobar
-// oshsa qizil bo'lib qoladi (0 dan target gacha yashil, target dan
-// target*RED gacha sariq, undan keyin qizil).
-const PREP_TIME_RED_MULTIPLIER = 1.5;
-const KITCHEN_TIMER_UPDATE_MS = 20000;
-
-// Buyurtmadagi har bir taom nomidan narx varianti qo'shimchasini
-// ("Nomi (200gr)" -> "Nomi") olib tashlab, solishtirish uchun tayyorlaydi.
-function normalizeItemNameForPrepMatch(name) {
-  return String(name || '').replace(/\s*\([^)]*\)\s*$/, '').trim().toLowerCase();
-}
-
-// Menyuda alohida ko'rsatilmagan taomlar uchun standart tayyorlanish
-// vaqti (daqiqada). Shu tufayli taymer HAR BIR buyurtma uchun ishlaydi,
-// hatto uning taomi PREP_TIME_MINUTES ro'yxatida bo'lmasa ham.
-const DEFAULT_PREP_TIME_MINUTES = 10;
-
-// Buyurtma tarkibidagi taomlar nomiga qarab eng uzoq tayyorlanish
-// vaqtini (soniyada) topadi. Nomi PREP_TIME_MINUTES'da yo'q taomlar
-// hisobga olinmaydi; hech biri mos kelmasa DEFAULT_PREP_TIME_MINUTES
-// ishlatiladi (taymer baribir ko'rsatiladi va sanaydi).
-function orderPrepTargetSeconds(order) {
-  let maxMinutes = 0;
-  for (const it of (order.items || [])) {
-    const key = normalizeItemNameForPrepMatch(it.name);
-    const minutes = PREP_TIME_MINUTES_NORMALIZED[key];
-    if (minutes && minutes > maxMinutes) maxMinutes = minutes;
-  }
-  if (maxMinutes === 0) maxMinutes = DEFAULT_PREP_TIME_MINUTES;
-  return maxMinutes * 60;
-}
-
-
-
-function fmtMmSs(totalSeconds) {
-  const s = Math.max(0, Math.floor(totalSeconds));
-  const mm = Math.floor(s / 60);
-  const ss = s % 60;
-  return `${String(mm).padStart(2, '0')}:${String(ss).padStart(2, '0')}`;
-}
-
-// Buyurtma yaratilgan paytdan boshlab o'tgan vaqtga qarab holatni
-// aniqlaydi: 'green' (vaqt ichida), 'yellow' (vaqtdan oshdi),
-// 'red' (ancha oshdi). targetSec bo'lmasa (mos taom topilmagan) null.
-function kitchenTimerStatus(order) {
-  const targetSec = orderPrepTargetSeconds(order);
-  if (targetSec === null) return null;
-  const elapsedSec = Math.max(0, (Date.now() - new Date(order.createdAt).getTime()) / 1000);
-  let color = 'green';
-  if (elapsedSec > targetSec * PREP_TIME_RED_MULTIPLIER) color = 'red';
-  else if (elapsedSec > targetSec) color = 'yellow';
-  return { color, targetSec, elapsedSec };
-}
-
-const KITCHEN_TIMER_LABELS = {
-  green: { emoji: '🟢', text: 'Vaqt ichida' },
-  yellow: { emoji: '🟡', text: 'Vaqtdan oshdi' },
-  red: { emoji: '🔴', text: 'Ancha kechikdi' }
-};
-
-// Xabarga qo'shiladigan taymer qatori. O'tgan vaqt (elapsed) / maqsad
-// vaqti ko'rinishida ko'rsatiladi va har KITCHEN_TIMER_UPDATE_MS
-// millisekundda (quyidagi setInterval) xabar qayta tahrirlanib, sekundlar
-// yangilanib turadi.
-function kitchenTimerLine(order) {
-  const status = kitchenTimerStatus(order);
-  if (!status) return null;
-  const label = KITCHEN_TIMER_LABELS[status.color];
-  return `${label.emoji} ${label.text} (${fmtMmSs(status.elapsedSec)} / ${fmtMmSs(status.targetSec)})`;
-}
-
-function orderIncomeAmount(o) {
-  if (o.status === 'bekor_qilindi') return 0;
-  if (o.paymentProofStatus === 'kutilmoqda' || o.paymentProofStatus === 'rad_etildi') return 0;
-  return o.total || 0;
-}
-
-const ORDER_STATUSES = { yangi: 'Yangi', tayyorlanmoqda: 'Tayyorlanmoqda', tayyor: 'Tayyor' };
-
-const ORDER_DELAY_THRESHOLD_MINUTES = 20;
-
-const ORDER_REQUEST_CACHE_TTL_MS = 10 * 60 * 1000;
-const orderRequestCache = new Map();
-
-function getCachedOrderResponse(ownerId, userId, requestId) {
-  if (!requestId) return null;
-  const key = `${ownerId}:${userId}:${requestId}`;
-  const entry = orderRequestCache.get(key);
-  if (!entry) return null;
-  if (entry.expiresAt < Date.now()) {
-    orderRequestCache.delete(key);
-    return null;
-  }
-  return entry.response;
-}
-
-function setCachedOrderResponse(ownerId, userId, requestId, response) {
-  if (!requestId) return;
-  const key = `${ownerId}:${userId}:${requestId}`;
-  orderRequestCache.set(key, { response, expiresAt: Date.now() + ORDER_REQUEST_CACHE_TTL_MS });
-}
-
-setInterval(() => {
-  const now = Date.now();
-  for (const [key, entry] of orderRequestCache) {
-    if (entry.expiresAt < now) orderRequestCache.delete(key);
-  }
-}, 5 * 60 * 1000);
-
-function isValidRole(role) {
-  return Object.prototype.hasOwnProperty.call(STAFF_ROLES, role);
-}
-
-const MAX_MENU_IMAGE_BASE64_CHARS = 3_000_000;
-function isValidImageValue(value) {
-  if (!value) return true;
-  if (/^https?:\/\//i.test(value)) return true;
-  if (/^data:image\/(png|jpe?g|webp);base64,/i.test(value)) {
-    return value.length <= MAX_MENU_IMAGE_BASE64_CHARS;
-  }
-  return false;
-}
-
-function normalizeStaffRoles(staff) {
-  if (!staff) return [];
-  if (Array.isArray(staff.roles) && staff.roles.length) {
-    return staff.roles.filter(isValidRole);
-  }
-  if (staff.role && isValidRole(staff.role)) return [staff.role];
-  return [];
-}
-
-function staffHasRole(staff, role) {
-  return normalizeStaffRoles(staff).includes(role);
-}
-
-function ctxHasRole(ctx, role) {
-  if (!ctx) return false;
-  if (ctx.role === 'egasi') return role === 'egasi';
-  return Array.isArray(ctx.roles) ? ctx.roles.includes(role) : ctx.role === role;
-}
-
-function ctxHasAnyRole(ctx, roles) {
-  return roles.some(r => ctxHasRole(ctx, r));
-}
-
-// Avtomatik hisobotlar (kunlik, haftalik, AI direktor) kimlarga yuborilishi
-// kerakligini aniqlaydi: asosiy egasi + "Egasi (hamkor)" roli berilgan barcha
-// xodimlar (havola orqali qo'shilganlar ham shular qatorida — chunki ular
-// ham owner.staff ichida rol="egasi" bilan saqlanadi).
-function ownerReportRecipientIds(owner) {
-  const staffEgasi = (owner.staff || []).filter(s => staffHasRole(s, 'egasi')).map(s => s.id);
-  return Array.from(new Set([owner.id, ...staffEgasi].map(String)));
-}
-
-function rolesLabel(roles) {
-  return (roles || []).map(r => STAFF_ROLES[r] || r).join(', ') || '—';
-}
-
-function findStaffInfo(owners, userId) {
-  for (const owner of owners) {
-    const staff = (owner.staff || []).find(s => String(s.id) === String(userId));
-    if (staff) {
-      const rawRoles = normalizeStaffRoles(staff);
-      const roles = allowedStaffRoles(owner, rawRoles);
-      return {
-        ownerId: owner.id,
-        ownerName: (owner.profile && owner.profile.name) || null,
-        ownerLogoUrl: (owner.profile && owner.profile.logoUrl) || null,
-        ownerBrandColor: (owner.profile && owner.profile.brandColor) || null,
-        role: roles[0] || null,
-        roles,
-        rawRoles,
-        staff
-      };
-    }
-  }
-  return null;
-}
-
-function resolveOwnerContext(owners, userId, opts) {
-
-  if (opts && opts.targetOwnerId && isAdminId(userId)) {
-    const targetOwner = findOwner(owners, opts.targetOwnerId);
-    if (!targetOwner) return null;
-    return { owner: targetOwner, role: 'egasi', roles: ['egasi'], branchId: null, isAdminActing: true };
-  }
-  const owner = findOwner(owners, userId);
-  if (isOwnerAccessValid(owner)) return { owner, role: 'egasi', roles: ['egasi'], branchId: null };
-
-  const staffInfo = findStaffInfo(owners, userId);
-  if (staffInfo) {
-    const staffOwner = owners.find(o => String(o.id) === String(staffInfo.ownerId));
-    if (staffOwner) {
-      return {
-        owner: staffOwner,
-        role: staffInfo.role,
-        roles: staffInfo.roles,
-        branchId: staffInfo.staff.branchId || null
-      };
-    }
-  }
-  return null;
-}
-
-function findCustomer(owner, userId) {
-  return (owner.customers || []).find(c => String(c.id) === String(userId));
-}
-
-function findOrCreateCustomer(owner, userId, tgUser) {
-  if (!owner.customers) owner.customers = [];
-  let c = findCustomer(owner, userId);
-  if (!c) {
-    c = {
-      id: String(userId),
-      username: (tgUser && tgUser.username) || null,
-      firstName: (tgUser && tgUser.first_name) || null,
-      favorites: [],
-      addresses: [],
-      bonusPoints: 0,
-      ordersCount: 0,
-      totalSpent: 0,
-      createdAt: new Date().toISOString()
-    };
-    owner.customers.push(c);
-  } else {
-    if (tgUser && tgUser.username) c.username = tgUser.username;
-    if (tgUser && tgUser.first_name) c.firstName = tgUser.first_name;
-
-    if (!Array.isArray(c.addresses)) c.addresses = [];
-  }
-  return c;
-}
-
-function buildAiWaiterRecommendations(owner, userId, availableMenu) {
-  const customer = findCustomer(owner, userId);
-  const empty = { favorites: [], similar: [] };
-  if (!customer || !customer.itemFrequency || customer.ordersCount < 1) return empty;
-
-  const freqEntries = Object.entries(customer.itemFrequency).sort((a, b) => b[1] - a[1]);
-  if (!freqEntries.length) return empty;
-
-  const favorites = [];
-  for (const [itemId, count] of freqEntries) {
-    const item = availableMenu.find(m => m.id === itemId);
-    if (item) favorites.push(Object.assign({}, item, { orderedCount: count }));
-    if (favorites.length >= 4) break;
-  }
-  if (!favorites.length) return empty;
-
-  const triedIds = new Set(freqEntries.map(([id]) => id));
-  const topCategories = [...new Set(favorites.slice(0, 2).map(f => f.category).filter(Boolean))];
-  const similar = [];
-  if (topCategories.length) {
-    for (const item of availableMenu) {
-      if (triedIds.has(item.id)) continue;
-      if (!item.category || !topCategories.includes(item.category)) continue;
-      similar.push(item);
-      if (similar.length >= 4) break;
-    }
-  }
-
-  return { favorites, similar };
-}
-
-const MAX_CUSTOMER_ADDRESSES = 15;
-
-function findCustomerAddress(customer, addressId) {
-  return (customer.addresses || []).find(a => a.id === addressId);
-}
-
-function findActivePromo(owner, promoId) {
-  if (!promoId) return null;
-  const promo = (owner.promotions || []).find(p => p.id === promoId && p.active);
-  return promo || null;
-}
-
-function applyPromoDiscount(owner, promoId, subtotal) {
-  const promo = findActivePromo(owner, promoId);
-  if (!promo) return { promo: null, discountAmount: 0 };
-  if (promo.minTotal && subtotal < promo.minTotal) return { promo: null, discountAmount: 0 };
-  const discountAmount = Math.round(subtotal * (promo.discountPercent / 100));
-  return { promo, discountAmount };
-}
-
-// Har juma kuni (Toshkent vaqti bo'yicha) avtomatik ishlaydigan "4+1"
-// aksiyasi: ichimliklardan tashqari BARCHA mahsulotlarga tegishli — bir xil
-// mahsulotdan (bir xil taom + bir xil narx varianti) har 5 tasi uchun 1 tasi
-// bepul bo'ladi (4 tasi pullanadi). Owner qo'lda tanlaydigan oddiy
-// foizli promo (promoId) bilan bir vaqtda ham ishlashi mumkin — ikkalasi
-// ham subtotal'dan ayriladi. Ichimlik ekanligi mahsulot kategoriyasi
-// nomida "ichim" so'zi borligiga qarab aniqlanadi (masalan "Ichimliklar").
-function isDrinkCategoryName(category) {
-  return !!category && /ichim/i.test(String(category));
-}
-
-function isTashkentFridayNow() {
-  return kitchenTashkentDate().getUTCDay() === 5;
-}
-
-function computeBuy4Get1FreePromo(orderItems) {
-  if (!isTashkentFridayNow()) return { discountAmount: 0, noteHtml: null };
-  const groups = new Map();
-  (orderItems || []).forEach(it => {
-    if (isDrinkCategoryName(it.category)) return;
-    if (!it.qty || !it.price) return;
-    const key = `${it.isCombo ? 'combo:' : 'item:'}${it.id}:${it.priceId || ''}`;
-    const g = groups.get(key);
-    if (g) { g.qty += it.qty; } else { groups.set(key, { qty: it.qty, price: it.price, name: it.name }); }
-  });
-  let discountAmount = 0;
-  const freeLines = [];
-  groups.forEach(g => {
-    const freeUnits = Math.floor(g.qty / 5);
-    if (freeUnits > 0) {
-      discountAmount += freeUnits * g.price;
-      freeLines.push(`${escapeHtmlServer(g.name)} x${freeUnits} bepul`);
-    }
-  });
-  if (!discountAmount) return { discountAmount: 0, noteHtml: null };
-  return { discountAmount, noteHtml: `🎁 <b>4+1 aksiya (juma)</b>: ${freeLines.join(', ')}` };
-}
-
-function logStaffAction(owner, entry) {
-  if (!owner.staffActionLog) owner.staffActionLog = [];
-  owner.staffActionLog.unshift(Object.assign({
-    id: crypto.randomBytes(4).toString('hex'),
-    errorCount: 0,
-    createdAt: new Date().toISOString()
-  }, entry));
-  if (owner.staffActionLog.length > 2000) owner.staffActionLog.length = 2000;
-}
-
-const TELEGRAM_TIMEOUT_MS = 15000;
-function telegramApi(method, params) {
-  return new Promise((resolve, reject) => {
-    // POST (form-urlencoded): uzun xabarlar URL uzunligi chegarasiga urilmaydi
-    const body = new URLSearchParams(params || {}).toString();
-    const req = https.request(`https://api.telegram.org/bot${BOT_TOKEN}/${method}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(body) }
-    }, res => {
-      let data = '';
-      res.on('data', chunk => { data += chunk; });
-      res.on('end', () => {
-        try { resolve(JSON.parse(data)); }
-        catch (e) { reject(e); }
-      });
-    });
-    req.setTimeout(TELEGRAM_TIMEOUT_MS, () => req.destroy(new Error(`Telegram ${method} timeout`)));
-    req.on('error', reject);
-    req.end(body);
-  });
-}
-
-function telegramApiUploadPhoto(chatId, buffer, mimeType, fields) {
-  return new Promise((resolve, reject) => {
-    const boundary = '----uzbotBoundary' + crypto.randomBytes(16).toString('hex');
-    const CRLF = '\r\n';
-    const chunks = [];
-    const pushField = (name, value) => {
-      if (value === undefined || value === null || value === '') return;
-      chunks.push(Buffer.from(
-        `--${boundary}${CRLF}Content-Disposition: form-data; name="${name}"${CRLF}${CRLF}${String(value)}${CRLF}`, 'utf8'
-      ));
-    };
-    pushField('chat_id', chatId);
-    Object.keys(fields || {}).forEach(k => pushField(k, fields[k]));
-    const ext = (mimeType.split('/')[1] || 'jpg').replace('jpeg', 'jpg');
-    chunks.push(Buffer.from(
-      `--${boundary}${CRLF}Content-Disposition: form-data; name="photo"; filename="broadcast.${ext}"${CRLF}Content-Type: ${mimeType}${CRLF}${CRLF}`, 'utf8'
-    ));
-    chunks.push(buffer);
-    chunks.push(Buffer.from(`${CRLF}--${boundary}--${CRLF}`, 'utf8'));
-    const body = Buffer.concat(chunks);
-
-    const req = https.request({
-      hostname: 'api.telegram.org',
-      path: `/bot${BOT_TOKEN}/sendPhoto`,
-      method: 'POST',
-      headers: {
-        'Content-Type': `multipart/form-data; boundary=${boundary}`,
-        'Content-Length': body.length
+  function readImageFileAsCompressedDataUrl(file, maxSize = 800, quality = 0.72) {
+    return new Promise((resolve, reject) => {
+      if (!file) return resolve(null);
+      if (!file.type || !file.type.startsWith('image/')) {
+        return reject(new Error('Fayl rasm emas.'));
       }
-    }, res => {
-      let data = '';
-      res.on('data', chunk => { data += chunk; });
-      res.on('end', () => {
-        try { resolve(JSON.parse(data)); }
-        catch (e) { reject(e); }
-      });
-    });
-    req.on('error', reject);
-    req.write(body);
-    req.end();
-  });
-}
-
-function sendMessage(chatId, text, replyMarkup, threadId) {
-  const params = { chat_id: chatId, text, parse_mode: 'HTML' };
-  if (replyMarkup) params.reply_markup = JSON.stringify(replyMarkup);
-  if (threadId) params.message_thread_id = threadId;
-  return telegramApi('sendMessage', params).then(result => {
-    if (!result || !result.ok) {
-      const reason = (result && result.description) || 'noma\'lum xatolik';
-      console.error(`[sendMessage xato] chat_id=${chatId}: ${reason}`);
-    }
-    return result;
-  }).catch(err => {
-    console.error(`[sendMessage tarmoq xatosi] chat_id=${chatId}: ${(err && err.message) || err}`);
-    return null;
-  });
-}
-
-function notifyStaffList(owner, targetIds, text, context, category) {
-
-  const ownerMuted = category && isNotificationCategoryMuted(owner, category);
-  const uniqueIds = [...new Set((targetIds || []).map(String))]
-    .filter(id => !(ownerMuted && id === String(owner.id)));
-  const promises = uniqueIds.map(targetId => sendMessage(targetId, text).then(result => {
-    if (!result || !result.ok) {
-      const reason = (result && result.description) || 'yuborilmadi (tarmoq xatosi)';
-      const staff = (owner.staff || []).find(s => String(s.id) === String(targetId));
-      if (!owner.notificationErrors) owner.notificationErrors = [];
-      owner.notificationErrors.unshift({
-        id: crypto.randomBytes(4).toString('hex'),
-        targetId,
-        targetName: staff ? staffDisplayName(staff) : (String(targetId) === String(owner.id) ? 'Egasi' : `ID: ${targetId}`),
-        reason,
-        context: context || null,
-        createdAt: new Date().toISOString()
-      });
-      if (owner.notificationErrors.length > 50) owner.notificationErrors.length = 50;
-    }
-  }));
-  return Promise.all(promises);
-}
-
-const NOTIFICATION_CATEGORIES = {
-  newOrder: 'Yangi buyurtma xabarlari',
-  lowStock: 'Ombordagi kam qoldiq ogohlantirishlari'
-};
-
-function isNotificationCategoryMuted(owner, category) {
-  return !!(owner && owner.notificationPrefs && owner.notificationPrefs[category] === false);
-}
-
-function answerCallbackQuery(callbackId, text, showAlert) {
-  const params = { callback_query_id: callbackId };
-  if (text) params.text = text;
-  if (showAlert) params.show_alert = 'true';
-  return telegramApi('answerCallbackQuery', params).catch(() => {});
-}
-
-function editMessageText(chatId, messageId, text, replyMarkup) {
-  const params = { chat_id: chatId, message_id: messageId, text, parse_mode: 'HTML' };
-  if (replyMarkup) params.reply_markup = JSON.stringify(replyMarkup);
-  else params.reply_markup = JSON.stringify({ inline_keyboard: [] });
-  return telegramApi('editMessageText', params).catch(() => {});
-}
-
-function editMessageCaption(chatId, messageId, caption, replyMarkup) {
-  const params = { chat_id: chatId, message_id: messageId, caption, parse_mode: 'HTML' };
-  if (replyMarkup) params.reply_markup = JSON.stringify(replyMarkup);
-  else params.reply_markup = JSON.stringify({ inline_keyboard: [] });
-  return telegramApi('editMessageCaption', params).catch(() => {});
-}
-
-function copyMessageWithKeyboard(targetChatId, fromChatId, messageId, caption, replyMarkup) {
-  const params = {
-    chat_id: targetChatId, from_chat_id: fromChatId, message_id: messageId,
-    caption, parse_mode: 'HTML'
-  };
-  if (replyMarkup) params.reply_markup = JSON.stringify(replyMarkup);
-  return telegramApi('copyMessage', params).catch(() => {});
-}
-
-function locationMapsLink(location) {
-  if (!location || typeof location.lat !== 'number' || typeof location.lng !== 'number') return null;
-  return `https://maps.google.com/?q=${location.lat},${location.lng}`;
-}
-
-// --- Dostavka xizmat zonasi (geofencing) ---
-// Filial markazidan belgilangan radiusdan tashqaridagi joylashuvlarga
-// (masalan Samarqand, Xorazm va h.k.) dostavka buyurtmasi berilishining
-// oldini olish uchun. Markaz koordinatasi — Zafar shaharchasi, Bekobod
-// tumani, Toshkent viloyati.
-const DELIVERY_ZONE_CENTER = { lat: 40.37639, lng: 69.25139 };
-const DELIVERY_ZONE_RADIUS_KM = 10;
-
-function distanceKm(lat1, lng1, lat2, lng2) {
-  const R = 6371; // Yer radiusi (km)
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLng = (lng2 - lng1) * Math.PI / 180;
-  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-    Math.sin(dLng / 2) * Math.sin(dLng / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-  return R * c;
-}
-
-function isWithinDeliveryZone(location) {
-  if (!location || typeof location.lat !== 'number' || typeof location.lng !== 'number') return false;
-  return distanceKm(location.lat, location.lng, DELIVERY_ZONE_CENTER.lat, DELIVERY_ZONE_CENTER.lng) <= DELIVERY_ZONE_RADIUS_KM;
-}
-
-function displayName(user) {
-  if (!user) return 'Noma\'lum';
-  const name = [user.first_name, user.last_name].filter(Boolean).join(' ');
-  return name || (user.username ? '@' + user.username : String(user.id));
-}
-
-function customerDisplayName(userId, tgUser) {
-  const profile = findProfile(userId);
-  if (profile && profile.firstName) {
-    return [profile.firstName, profile.lastName].filter(Boolean).join(' ');
-  }
-  return displayName(tgUser);
-}
-
-function orderCustomerContactLabel(order) {
-  const lines = [`Mijoz: ${escapeHtmlServer(order.customerName)}`];
-  if (order.customerPhone) lines.push(`Tel: ${escapeHtmlServer(order.customerPhone)}`);
-  return lines.join('\n');
-}
-
-// Har bir buyurtma yakunlangach (mijoz oldi / kuryer yetkazdi / avtomatik
-// yopilgan bo'lsa ham) — mijozga yulduzcha bilan baholash so'raladi.
-// Uch joyda ham (dostavka, stol/olib ketish qo'lda, 2 soatlik avtomatik
-// yopilish) bir xil xabar yuborilishi uchun bitta umumiy funksiya.
-function sendOrderRatingRequest(owner, order) {
-  if (!order.customerId || order.customerRating) return;
-  const ratingKeyboard = {
-    inline_keyboard: [[
-      { text: '1⭐️', callback_data: `rate:${owner.id}:${order.id}:1` },
-      { text: '2⭐️', callback_data: `rate:${owner.id}:${order.id}:2` },
-      { text: '3⭐️', callback_data: `rate:${owner.id}:${order.id}:3` },
-      { text: '4⭐️', callback_data: `rate:${owner.id}:${order.id}:4` },
-      { text: '5⭐️', callback_data: `rate:${owner.id}:${order.id}:5` }
-    ]]
-  };
-  sendMessage(order.customerId, '✅ Buyurtmangiz uchun rahmat!\n\nXizmatimizni qanday baholaysiz?', ratingKeyboard);
-}
-
-function staffDisplayName(staff) {
-  if (!staff) return null;
-  const profile = findProfile(staff.id);
-  if (profile && profile.firstName) {
-    return [profile.firstName, profile.lastName].filter(Boolean).join(' ');
-  }
-  return staff.username ? '@' + staff.username : `ID: ${staff.id}`;
-}
-
-function fmtNum(n) {
-  const num = Math.round(Number(n) || 0);
-  return num.toLocaleString('ru-RU').replace(/,/g, ' ');
-}
-
-function escapeHtmlServer(str) {
-  return String(str).replace(/[&<>"']/g, c => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-  }[c]));
-}
-
-function orderItemsTextWithPrices(order) {
-  return order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
-}
-
-function notifyDeliveryGroup(owner, order, creatorLabel) {
-  const groups = resolveOrderGroupIds(owner, order);
-  if (!groups.deliveryGroupId) return;
-  if (!ownerCanUseFeature(owner, 'delivery-group')) return;
-  const itemsText = orderItemsTextWithPrices(order);
-  const mapsLink = locationMapsLink(order.location);
-  const addressLines = [
-    mapsLink ? `📍 Joylashuv: ${mapsLink}` : null,
-    order.addressNote ? `📝 Manzil izohi: ${escapeHtmlServer(order.addressNote)}` : null,
-    order.extraPhone ? `📞 Qo'shimcha tel: ${escapeHtmlServer(order.extraPhone)}` : null,
-    order.comment ? `💬 Izoh: ${escapeHtmlServer(order.comment)}` : null,
-  ].filter(Boolean).join('\n');
-  const typeLabel = ORDER_TYPES[order.orderType] || order.orderType;
-  const headerEmoji = order.orderType === 'dostavka' ? '🚚' : '🥡';
-  const text = `${headerEmoji} <b>Yangi buyurtma</b> (${typeLabel})${creatorLabel ? '\n' + creatorLabel : ''}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm\nTo'lov: ${PAYMENT_TYPES[order.paymentType] || order.paymentType}` +
-    (addressLines ? `\n\n${addressLines}` : '');
-  sendMessage(groups.deliveryGroupId, text, {
-    inline_keyboard: [[
-      { text: '✅ Qabul qilish', callback_data: `dgaccept:${owner.id}:${order.id}` },
-      { text: '✅ Tayyor', callback_data: `dgready:${owner.id}:${order.id}` }
-    ]]
-  }, groups.deliveryGroupThreadId).then(result => {
-    if (result && result.ok && result.result && result.result.message_id) {
-      const owners2 = loadOwners();
-      const o2 = findOwner(owners2, owner.id);
-      const ord2 = o2 && (o2.orders || []).find(x => x.id === order.id);
-      if (ord2) {
-        ord2.deliveryGroupMsgId = result.result.message_id;
-        saveOwners(owners2);
-      }
-    }
-  }).catch(err => {
-    console.error(`[notifyDeliveryGroup xatosi] owner=${owner.id} order=${order.id}: ${(err && err.message) || err}`);
-  });
-}
-
-// Oshxona guruhidagi buyurtma xabarining o'zgarmas (taymersiz) qismi —
-// dastlabki yuborishda ham, keyingi jonli taymer yangilanishlarida ham
-// shundan foydalaniladi.
-function kitchenGroupBaseText(order, creatorLabel) {
-  const itemsText = orderItemsTextWithPrices(order);
-  const typeLabel = ORDER_TYPES[order.orderType] || order.orderType;
-  const commentLine = order.comment ? `\n💬 Izoh: ${escapeHtmlServer(order.comment)}` : '';
-  const autoPromoLine = order.autoPromoNote ? `\n${order.autoPromoNote}` : '';
-  const mapsLink = locationMapsLink(order.location);
-  // Alohida dostavka guruhi endi ishlatilmaydi — shuning uchun dostavka
-  // buyurtmalari uchun kerak bo'lgan barcha ma'lumotlar (mijoz, manzil,
-  // to'lov turi) ham shu bitta oshxona guruh xabariga qo'shiladi.
-  const addressLines = [
-    mapsLink ? `📍 Joylashuv: ${mapsLink}` : null,
-    order.addressNote ? `📝 Manzil izohi: ${escapeHtmlServer(order.addressNote)}` : null,
-    order.extraPhone ? `📞 Qo'shimcha tel: ${escapeHtmlServer(order.extraPhone)}` : null,
-  ].filter(Boolean).join('\n');
-  const headerEmoji = order.orderType === 'dostavka' ? '🚚' : '👨‍🍳';
-  return `${headerEmoji} <b>Yangi buyurtma</b> (${typeLabel})${creatorLabel ? '\n' + creatorLabel : ''}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm\nTo'lov: ${PAYMENT_TYPES[order.paymentType] || order.paymentType}${commentLine}${autoPromoLine}` +
-    (addressLines ? `\n\n${addressLines}` : '');
-}
-
-function kitchenGroupFullText(order) {
-  const base = order.kitchenBaseText || kitchenGroupBaseText(order, order.kitchenCreatorLabel);
-  const timerLine = kitchenTimerLine(order);
-  return timerLine ? `⏱ ${timerLine}\n\n${base}` : base;
-}
-
-// Buyurtma "tayyor" yoki "bekor qilindi" holatiga o'tgach (ilova orqali
-// bo'lsa ham, guruhdagi tugma orqali bo'lsa ham) — endi tebranib turadigan
-// ⏱ taймer o'rniga QOTGAN (frozen) yakuniy qator ko'rsatiladi: nechi
-// daqiqa-soniyada tayyor bo'lganini darhol ko'rsatadi, keyingi 20 soniyalik
-// siklni kutmaydi (chunki tsikl faqat 'yangi'/'tayyorlanmoqda' holatidagi
-// buyurtmalarni ko'rib chiqadi va bu buyurtmaga endi umuman tegmaydi).
-function kitchenGroupFinalText(order) {
-  const base = order.kitchenBaseText || kitchenGroupBaseText(order, order.kitchenCreatorLabel);
-  if (order.status === 'tayyor') {
-    const readyAt = order.readyAt || order.updatedAt;
-    const ms = readyAt ? (new Date(readyAt).getTime() - new Date(order.createdAt).getTime()) : null;
-    const durationText = ms !== null ? ` (${fmtMmSs(ms / 1000)} da)` : '';
-    return `✅ Tayyor${durationText}\n\n${base}`;
-  }
-  if (order.status === 'bekor_qilindi') {
-    return `❌ Bekor qilindi\n\n${base}`;
-  }
-  return kitchenGroupFullText(order);
-}
-
-function notifyKitchenGroup(owner, order, creatorLabel) {
-  const groups = resolveOrderGroupIds(owner, order);
-  if (!groups.kitchenGroupId) return;
-  if (!ownerCanUseFeature(owner, 'kitchen-group')) return;
-  try {
-    order.kitchenCreatorLabel = creatorLabel || null;
-    order.kitchenBaseText = kitchenGroupBaseText(order, creatorLabel);
-    const text = kitchenGroupFullText(order);
-    sendMessage(groups.kitchenGroupId, text, {
-      inline_keyboard: [[
-        { text: '✅ Tayyor', callback_data: `kgready:${owner.id}:${order.id}` }
-      ]]
-    }, groups.kitchenGroupThreadId).then(result => {
-      if (result && result.ok && result.result && result.result.message_id) {
-        const owners2 = loadOwners();
-        const o2 = findOwner(owners2, owner.id);
-        const ord2 = o2 && (o2.orders || []).find(x => x.id === order.id);
-        if (ord2) {
-          ord2.kitchenGroupMsgId = result.result.message_id;
-          ord2.kitchenCreatorLabel = order.kitchenCreatorLabel;
-          ord2.kitchenBaseText = order.kitchenBaseText;
-          const initialStatus = kitchenTimerStatus(ord2);
-          ord2.kitchenTimerColor = initialStatus ? initialStatus.color : null;
-          saveOwners(owners2);
-        }
-      }
-    }).catch(err => {
-      console.error(`[notifyKitchenGroup xatosi] owner=${owner.id} order=${order.id}: ${(err && err.message) || err}`);
-    });
-  } catch (err) {
-    console.error(`[notifyKitchenGroup kutilmagan xatosi] owner=${owner.id} order=${order.id}: ${(err && err.message) || err}`);
-  }
-}
-
-// Har KITCHEN_TIMER_UPDATE_MS millisekundda — oshxona guruhida hali
-// "tayyor" deb belgilanmagan buyurtmalarning xabari AVTOMATIK tahrirlanadi
-// (har tikda, holat o'zgarmagan bo'lsa ham) — shu tarzda taymer va
-// rang (🟢/🟡/🔴) doim yangilanib turadi.
-//
-// Eski, uzoq vaqt "Tayyor" bosilmagan buyurtmalar (masalan sinov
-// uchun qolib ketgan) MAX_TIMER_AGE_MS'dan oshsa — taymer ularga
-// UMUMAN tegmaydi (chunki ular haqiqiy faol buyurtma emas, va
-// ko'plab shunday eski xabar bir vaqtda tahrirlanib, flood control'ni
-// keltirib chiqarishi mumkin edi).
-//
-// Qo'shimcha ehtiyot chorasi: bir tikda ko'pi bilan MAX_EDITS_PER_TICK
-// ta xabar tahrirlanadi — qolganlari navbatdagi tikka qoladi, shunday
-// qilib guruhga bir vaqtning o'zida ko'p so'rov ketmaydi.
-const MAX_TIMER_AGE_MS = 3 * 60 * 60 * 1000; // 3 soatdan eski buyurtmalarga tegilmaydi
-const MAX_EDITS_PER_TICK = 5;
-const kitchenTimerBackoffUntil = new Map();
-// Barcha oshxona guruh xabarlari (turli egalar/filiallar) o'rtasida
-// navbat bilan (round-robin) yangilash uchun ko'rsatkich. MUHIM: avvalgi
-// versiyada har tikda ro'yxat DOIM boshidan boshlab tekshirilib,
-// birinchi topilgan MAX_EDITS_PER_TICK ta buyurtma yangilanardi va
-// ortig'iga navbat yetmasa shu tikda tashlab ketilardi. Agar bitta
-// (asosiy) filialda doim MAX_EDITS_PER_TICK'dan ko'p faol buyurtma bo'lsa,
-// ro'yxatda undan keyin turgan boshqa filiallarning buyurtmalari HECH
-// QACHON navbatga yetmay, taymeri butunlay yangilanmay qolardi (aynan
-// "boshqa filialda taymer ishlamayabdi / bir marta ishlab keyin to'xtadi"
-// muammosi shundan edi). Endi navbat oldingi to'xtagan joydan davom
-// etadi — shu bilan hamma buyurtma, band bo'lsa ham, ertami-kechmi
-// o'z yangilanish navbatini oladi.
-let kitchenTimerRRIndex = 0;
-setInterval(() => {
-  const owners = loadOwners();
-  let ownersChanged = false;
-
-  const candidates = [];
-  for (const owner of owners) {
-    const hasAnyKitchenGroup = !!owner.kitchenGroupId || (owner.branches || []).some(b => b.kitchenGroupId);
-    if (!hasAnyKitchenGroup) continue;
-    if (!ownerCanUseFeature(owner, 'kitchen-group')) continue;
-    for (const order of (owner.orders || [])) {
-      // Bitta buyurtmadagi kutilmagan xato (masalan noto'g'ri/yetishmayotgan
-      // maydon) endi FAQAT shu buyurtmani o'tkazib yuboradi — avvalgi
-      // versiyada bunday xato butun tsiklni (shu owner'dan keyingi barcha
-      // owner/filiallarni) shu tikda to'xtatib qo'yishi mumkin edi.
-      try {
-        if (order.status !== 'yangi' && order.status !== 'tayyorlanmoqda') continue;
-        if (!order.kitchenGroupMsgId) continue;
-        const ageMs = Date.now() - new Date(order.createdAt).getTime();
-        if (ageMs > MAX_TIMER_AGE_MS) continue;
-        const groups = resolveOrderGroupIds(owner, order);
-        if (!groups.kitchenGroupId) continue;
-        if (Date.now() < (kitchenTimerBackoffUntil.get(groups.kitchenGroupId) || 0)) continue;
-        const status = kitchenTimerStatus(order);
-        if (!status) continue;
-        candidates.push({ owner, order, groups, status });
-      } catch (err) {
-        console.error(`[kitchen-timer] buyurtmani tekshirishda xato: owner=${owner.id} order=${order && order.id}: ${(err && err.message) || err}`);
-      }
-    }
-  }
-
-  if (candidates.length > 0) {
-    const startIdx = kitchenTimerRRIndex % candidates.length;
-    const batchSize = Math.min(MAX_EDITS_PER_TICK, candidates.length);
-    for (let i = 0; i < batchSize; i++) {
-      const { owner, order, groups, status } = candidates[(startIdx + i) % candidates.length];
-      try {
-        order.kitchenTimerColor = status.color;
-        ownersChanged = true;
-        const text = kitchenGroupFullText(order);
-        const keyboard = { inline_keyboard: [[{ text: '✅ Tayyor', callback_data: `kgready:${owner.id}:${order.id}` }]] };
-        editMessageText(groups.kitchenGroupId, order.kitchenGroupMsgId, text, keyboard).then(result => {
-          if (result && result.error_code === 429) {
-            const retryAfterSec = Math.max((result.parameters && result.parameters.retry_after) || 30, 60);
-            kitchenTimerBackoffUntil.set(groups.kitchenGroupId, Date.now() + retryAfterSec * 1000 + 2000);
-            console.error(`[kitchen-timer] flood control (429): chat=${groups.kitchenGroupId} retry_after=${retryAfterSec}s — taymer vaqtincha to'xtatildi`);
-          } else if (!result || result.ok === false) {
-            console.error(`[kitchen-timer] tahrirlash muvaffaqiyatsiz: chat=${groups.kitchenGroupId} order=${order.id} javob=${result ? JSON.stringify(result.description || result) : 'tarmoq xatosi'}`);
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('Faylni o\'qib bo\'lmadi.'));
+      reader.onload = () => {
+        const img = new Image();
+        img.onerror = () => reject(new Error('Rasmni ochib bo\'lmadi.'));
+        img.onload = () => {
+          let { width, height } = img;
+          if (width > height && width > maxSize) {
+            height = Math.round(height * (maxSize / width));
+            width = maxSize;
+          } else if (height > maxSize) {
+            width = Math.round(width * (maxSize / height));
+            height = maxSize;
           }
-        }).catch(err => {
-          console.error(`[kitchen-timer] editMessageText va'da xatosi: owner=${owner.id} order=${order.id}: ${(err && err.message) || err}`);
-        });
-      } catch (err) {
-        console.error(`[kitchen-timer] xabarni tahrirlashda xato: owner=${owner.id} order=${order.id}: ${(err && err.message) || err}`);
-      }
-    }
-    kitchenTimerRRIndex = (startIdx + batchSize) % candidates.length;
-  }
-
-  if (ownersChanged) saveOwners(owners);
-}, KITCHEN_TIMER_UPDATE_MS);
-
-
-// Dostavka buyurtmalarida — oshpaz "Tayyor" deb belgilagach, ENDI dostavka
-// guruhiga xabar boradi (avvalroq emas). Bu yerda tugma yo'q — chunki
-// kuryerning o'zi "Yetkazildi"/"Mijoz qabul qilmadi" amallarini mini-ilova
-// orqali (kuryer taxtasidan) bajaradi, shu sabab bu shunchaki xabar beruvchi
-// (informatsion) xabar.
-function notifyDeliveryGroupOrderReady(owner, order) {
-  const groups = resolveOrderGroupIds(owner, order);
-  if (!groups.deliveryGroupId) return;
-  if (!ownerCanUseFeature(owner, 'delivery-group')) return;
-  if (order.orderType !== 'dostavka') return;
-  const itemsText = orderItemsTextWithPrices(order);
-  const text = `🚚 <b>Buyurtma tayyor — yetkazishga oling</b>\n${orderCustomerContactLabel(order)}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm\nTo'lov: ${PAYMENT_TYPES[order.paymentType] || order.paymentType}`;
-  sendMessage(groups.deliveryGroupId, text, {
-    inline_keyboard: [[
-      { text: '✅ Yetkazildi', callback_data: `dgdelivered:${owner.id}:${order.id}` }
-    ]]
-  }, groups.deliveryGroupThreadId).then(result => {
-    if (result && result.ok && result.result && result.result.message_id) {
-      const owners2 = loadOwners();
-      const o2 = findOwner(owners2, owner.id);
-      const ord2 = o2 && (o2.orders || []).find(x => x.id === order.id);
-      if (ord2) {
-        ord2.deliveryReadyGroupMsgId = result.result.message_id;
-        saveOwners(owners2);
-      }
-    }
-  }).catch(err => {
-    console.error(`[notifyDeliveryGroupOrderReady xatosi] owner=${owner.id} order=${order.id}: ${(err && err.message) || err}`);
-  });
-}
-
-function syncGroupMessagesForOrder(owner, order, opts) {
-  const skipKitchenTextFinalize = !!(opts && opts.skipKitchenTextFinalize);
-  const groups = resolveOrderGroupIds(owner, order);
-  const targets = [
-    { chatId: groups.deliveryGroupId, msgId: order.deliveryGroupMsgId, prefix: 'dg' },
-    { chatId: groups.kitchenGroupId, msgId: order.kitchenGroupMsgId, prefix: 'kg' }
-  ].filter(t => t.chatId && t.msgId);
-  if (!targets.length) return;
-
-  for (const t of targets) {
-    let kb = { inline_keyboard: [] };
-    if (t.prefix === 'kg') {
-      // Oshpazlar guruhida "Qabul qilish" bosqichi yo'q — buyurtma "yangi"
-      // yoki "tayyorlanmoqda" bo'lishidan qat'i nazar, faqat "Tayyor"
-      // tugmasi ko'rinadi (bosilganda ikkalasi ham bir yo'la bajariladi).
-      if (order.status === 'yangi' || order.status === 'tayyorlanmoqda') {
-        kb = { inline_keyboard: [[{ text: '✅ Tayyor', callback_data: `kgready:${owner.id}:${order.id}` }]] };
-      }
-    } else if (order.status === 'yangi') {
-      kb = { inline_keyboard: [[
-        { text: '✅ Qabul qilish', callback_data: `${t.prefix}accept:${owner.id}:${order.id}` },
-        { text: '✅ Tayyor', callback_data: `${t.prefix}ready:${owner.id}:${order.id}` }
-      ]] };
-    } else if (order.status === 'tayyorlanmoqda') {
-      kb = { inline_keyboard: [[{ text: '✅ Tayyor', callback_data: `${t.prefix}ready:${owner.id}:${order.id}` }]] };
-    }
-
-    // Oshxona guruhidagi buyurtma "tayyor" yoki "bekor qilindi" bo'lib
-    // qolgan bo'lsa — bu terminal holat, va 20 soniyalik davriy taймer
-    // endi bu buyurtmaga umuman tegmaydi (faqat 'yangi'/'tayyorlanmoqda'
-    // buyurtmalarni ko'rib chiqadi). Shu sabab bu yerda, DARHOL, xabar
-    // MATNINI ham (nafaqat tugmalarni) yakuniy holatga yangilaymiz — aks
-    // holda eski ⏱ taймer qatori abadiy o'sha qiymatda "qotib" qolardi.
-    if (t.prefix === 'kg' && !skipKitchenTextFinalize && (order.status === 'tayyor' || order.status === 'bekor_qilindi')) {
-      editMessageText(t.chatId, t.msgId, kitchenGroupFinalText(order), kb.inline_keyboard.length ? kb : null).catch(err => {
-        console.error(`[syncGroupMessagesForOrder xatosi] owner=${owner.id} order=${order.id} chat=${t.chatId}: ${(err && err.message) || err}`);
-      });
-      continue;
-    }
-
-    telegramApi('editMessageReplyMarkup', {
-      chat_id: t.chatId, message_id: t.msgId,
-      reply_markup: JSON.stringify(kb)
-    }).catch(err => {
-      console.error(`[syncGroupMessagesForOrder xatosi] owner=${owner.id} order=${order.id} chat=${t.chatId}: ${(err && err.message) || err}`);
-    });
-  }
-}
-
-const EXPIRY_CHECK_INTERVAL_MS = 60 * 60 * 1000;
-
-const DEFAULT_REMINDER_DAYS = 1;
-
-function ownerLabel(owner) {
-  return owner.username ? '@' + owner.username : `ID: ${owner.id}`;
-}
-
-function ownerReminderBeforeMs(owner) {
-  let reminderDays = DEFAULT_REMINDER_DAYS;
-  if (owner.tariffId) {
-    const tariff = loadTariffs().find(t => t.id === owner.tariffId);
-    if (tariff && Number.isFinite(tariff.reminderDays) && tariff.reminderDays > 0) {
-      reminderDays = tariff.reminderDays;
-    }
-  }
-  return reminderDays * 24 * 60 * 60 * 1000;
-}
-
-async function checkOwnerExpirations() {
-  const owners = loadOwners();
-  let changed = false;
-
-  for (const owner of owners) {
-
-    if (owner.subscriptionStatus === SUBSCRIPTION_STATUS.PENDING_TRIAL) continue;
-
-    const access = getOwnerSubscriptionAccess(owner);
-
-    if (!access.allowed) {
-      if (owner.subscriptionStatus !== SUBSCRIPTION_STATUS.BLOCKED) {
-        owner.subscriptionStatus = SUBSCRIPTION_STATUS.BLOCKED;
-        changed = true;
-      }
-      if (!owner.blockedNotifiedAt) {
-        owner.blockedNotifiedAt = new Date().toISOString();
-        changed = true;
-        await sendMessage(ADMIN_ID,
-          `⏰ <b>Obuna muddati tugadi</b>\n${ownerLabel(owner)} (ID: <code>${owner.id}</code>) uchun Mini App'ga kirish bloklandi.\nMa'lumotlari (menyu, xodimlar, buyurtmalar) saqlanib qolyapti — obuna uzaytirilsa, kirish avtomatik tiklanadi.`);
-        await sendMessage(owner.id,
-          `⏰ Sizning obuna muddatingiz tugadi, Mini App'ga kirish bloklandi.\nMa'lumotlaringiz saqlanib qolyapti — obunani uzaytirsangiz, kirish avtomatik tiklanadi.\nUzaytirish uchun Mini App'dagi "💳 Obuna" bo'limini oching yoki quyidagi tugmani bosing.`,
-          { inline_keyboard: [[{ text: '💳 Obunani uzaytirish', callback_data: 'obuna_menyu' }]] });
-      }
-      continue;
-    }
-
-    if (owner.subscriptionStatus !== SUBSCRIPTION_STATUS.ACTIVE) {
-      owner.subscriptionStatus = SUBSCRIPTION_STATUS.ACTIVE;
-      changed = true;
-    }
-    if (owner.blockedNotifiedAt) {
-      owner.blockedNotifiedAt = null;
-      changed = true;
-    }
-
-    if (owner.subscriptionUntil && !owner.reminderSentAt) {
-      const expiresMs = new Date(owner.subscriptionUntil).getTime();
-      const now = Date.now();
-      if (Number.isFinite(expiresMs) && expiresMs > now && expiresMs - now <= ownerReminderBeforeMs(owner)) {
-        changed = true;
-        owner.reminderSentAt = new Date().toISOString();
-        const daysLeft = Math.max(1, Math.ceil((expiresMs - now) / 86400000));
-        await sendMessage(ADMIN_ID,
-          `🔔 <b>Obuna tugashiga oz qoldi</b>\n${ownerLabel(owner)} (ID: <code>${owner.id}</code>) — taxminan ${daysLeft} kundan keyin tugaydi.`);
-        await sendMessage(owner.id,
-          `🔔 Sizning obunangiz tez orada tugaydi (taxminan ${daysLeft} kun qoldi).\nUzaytirish uchun Mini App'dagi "💳 Obuna" bo'limini oching yoki quyidagi tugmani bosing.`,
-          { inline_keyboard: [[{ text: '💳 Obunani uzaytirish', callback_data: 'obuna_menyu' }]] });
-      }
-    }
-  }
-
-  if (changed) saveOwners(owners);
-}
-
-function createInvite() {
-  const token = crypto.randomBytes(16).toString('hex');
-  const invites = loadInvites();
-  invites.push({ token, createdAt: new Date().toISOString(), used: false, usedBy: null, usedAt: null });
-  saveInvites(invites);
-  return token;
-}
-
-function findInvite(token) {
-  const invites = loadInvites();
-  return invites.find(i => i.token === token);
-}
-
-function markInviteUsed(token, userId) {
-  const invites = loadInvites();
-  const inv = invites.find(i => i.token === token);
-  if (inv) { inv.used = true; inv.usedBy = String(userId); inv.usedAt = new Date().toISOString(); saveInvites(invites); }
-}
-
-function createRequest(user, token) {
-  const reqId = crypto.randomBytes(4).toString('hex');
-  const reqs = loadRequests();
-  reqs.push({
-    reqId,
-    token,
-    userId: String(user.id),
-    username: user.username || null,
-    firstName: user.first_name || null,
-    createdAt: new Date().toISOString()
-  });
-  saveRequests(reqs);
-  return reqId;
-}
-
-function findRequest(reqId) {
-  return loadRequests().find(r => r.reqId === reqId);
-}
-
-function removeRequest(reqId) {
-  const reqs = loadRequests().filter(r => r.reqId !== reqId);
-  saveRequests(reqs);
-}
-
-const DAY_LABELS = { '1': '1 kun', '7': '7 kun', '30': '30 kun', 'p': 'Doimiy' };
-
-function daysKeyboard(reqId) {
-  return {
-    inline_keyboard: [
-      [
-        { text: '1 kun', callback_data: `apr:${reqId}:1` },
-        { text: '7 kun', callback_data: `apr:${reqId}:7` },
-        { text: '30 kun', callback_data: `apr:${reqId}:30` }
-      ],
-      [{ text: 'Doimiy ruxsat', callback_data: `apr:${reqId}:p` }],
-      [{ text: '✏️ Boshqa son (kun kiritish)', callback_data: `custom:${reqId}` }],
-      [{ text: '❌ Rad etish', callback_data: `rej:${reqId}` }]
-    ]
-  };
-}
-
-const AWAITING_FILE = path.join(DATA_DIR, 'awaiting.json');
-
-const BACKUP_FILE_DEFS = [
-  { key: 'owners', file: OWNERS_FILE },
-  { key: 'admins', file: ADMINS_FILE },
-  { key: 'invites', file: INVITES_FILE },
-  { key: 'requests', file: REQUESTS_FILE },
-  { key: 'profiles', file: PROFILES_FILE },
-  { key: 'tariffs', file: TARIFFS_FILE },
-  { key: 'payments', file: PAYMENTS_FILE },
-  { key: 'archived_orders', file: ARCHIVED_ORDERS_FILE },
-  { key: 'subscription_plans', file: SUBSCRIPTION_PLANS_FILE },
-  { key: 'settings', file: SETTINGS_FILE },
-  { key: 'broadcasts', file: BROADCASTS_FILE },
-  { key: 'trash', file: TRASH_FILE },
-  { key: 'trash_log', file: TRASH_LOG_FILE },
-  { key: 'awaiting', file: AWAITING_FILE }
-];
-const BACKUP_FORMAT_VERSION = 1;
-
-const PRE_RESTORE_BACKUP_DIR = path.join(DATA_DIR, 'pre_restore_backups');
-
-const pendingBackupRestores = new Map();
-const BACKUP_RESTORE_TOKEN_TTL_MS = 10 * 60 * 1000;
-
-function readJSONFileRaw(file) {
-  try {
-    if (!fs.existsSync(file)) return { present: false, value: null };
-    const raw = fs.readFileSync(file, 'utf8');
-    return { present: true, value: JSON.parse(raw) };
-  } catch (e) {
-    return { present: false, value: null, error: e.message };
-  }
-}
-
-function buildBackupSnapshot(adminId) {
-  const files = {};
-  const counts = {};
-  for (const def of BACKUP_FILE_DEFS) {
-    const r = readJSONFileRaw(def.file);
-    files[def.key] = r.present ? r.value : (Array.isArray(r.value) ? [] : null);
-    counts[def.key] = Array.isArray(files[def.key]) ? files[def.key].length
-      : (files[def.key] && typeof files[def.key] === 'object' ? Object.keys(files[def.key]).length : 0);
-  }
-  return {
-    version: BACKUP_FORMAT_VERSION,
-    exportedAt: new Date().toISOString(),
-    exportedBy: String(adminId),
-    counts,
-    files
-  };
-}
-
-function writeJSONFileAtomic(file, value) {
-  const tmp = file + '.tmp' + crypto.randomBytes(4).toString('hex');
-  fs.writeFileSync(tmp, JSON.stringify(value, null, 2), 'utf8');
-  fs.renameSync(tmp, file);
-}
-
-function applyBackupSnapshot(snapshot) {
-  const applied = [];
-  for (const def of BACKUP_FILE_DEFS) {
-    if (!snapshot.files || !(def.key in snapshot.files)) continue;
-    const value = snapshot.files[def.key];
-    if (value === null || value === undefined) continue;
-    writeJSONFileAtomic(def.file, value);
-    applied.push(def.key);
-  }
-  reloadAdminsCache();
-  return applied;
-}
-
-function savePreRestoreSafetySnapshot(adminId) {
-  try {
-    fs.mkdirSync(PRE_RESTORE_BACKUP_DIR, { recursive: true });
-    const snapshot = buildBackupSnapshot(adminId);
-    const filename = `pre_restore_${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
-    const filePath = path.join(PRE_RESTORE_BACKUP_DIR, filename);
-    fs.writeFileSync(filePath, JSON.stringify(snapshot, null, 2), 'utf8');
-
-    const files = fs.readdirSync(PRE_RESTORE_BACKUP_DIR).filter(f => f.startsWith('pre_restore_')).sort();
-    while (files.length > 10) {
-      const old = files.shift();
-      try { fs.unlinkSync(path.join(PRE_RESTORE_BACKUP_DIR, old)); } catch (e) {}
-    }
-    return filename;
-  } catch (e) {
-    console.error('pre-restore xavfsizlik nusxasini saqlashda xatolik:', e.message);
-    return null;
-  }
-}
-
-setInterval(() => {
-  const now = Date.now();
-  for (const [token, entry] of pendingBackupRestores.entries()) {
-    if (now - entry.createdAt > BACKUP_RESTORE_TOKEN_TTL_MS) pendingBackupRestores.delete(token);
-  }
-}, 5 * 60 * 1000);
-
-function getAwaitingCustom() {
-  try {
-    const raw = fs.readFileSync(AWAITING_FILE, 'utf8');
-    return JSON.parse(raw);
-  } catch (e) {
-    return null;
-  }
-}
-
-function setAwaitingCustom(reqId, promptMessageId) {
-  fs.writeFileSync(AWAITING_FILE, JSON.stringify({ kind: 'approve_days', reqId, promptMessageId }), 'utf8');
-}
-
-function setAwaitingSubRejectReason(ownerId, chatId, messageId, hasPhoto, originalContent) {
-  fs.writeFileSync(AWAITING_FILE, JSON.stringify({ kind: 'sub_reject_reason', ownerId, chatId, messageId, hasPhoto, originalContent }), 'utf8');
-}
-
-function clearAwaitingCustom() {
-  try { fs.unlinkSync(AWAITING_FILE); } catch (e) {}
-}
-
-function isPlausiblePhone(str) {
-  const cleaned = String(str).replace(/[\s\-()]/g, '');
-  // Faqat O'zbekiston raqamlarini qabul qilamiz: +998 (yoki 998) va undan keyin 9 ta raqam
-  return /^\+?998\d{9}$/.test(cleaned);
-}
-
-function approveRequest(reqInfo, days) {
-  const expiresAt = days === null ? null : new Date(Date.now() + days * 86400000).toISOString();
-  const owners = loadOwners();
-  const already = findOwner(owners, reqInfo.userId);
-  if (already) {
-    already.expiresAt = expiresAt;
-    already.username = reqInfo.username || already.username;
-    already.reminderSentAt = null;
-  } else {
-    owners.push({
-      id: reqInfo.userId,
-      username: reqInfo.username || null,
-      addedAt: new Date().toISOString(),
-      expiresAt,
-      price: 0,
-      paid: false,
-      paidAt: null
-    });
-  }
-  saveOwners(owners);
-  removeRequest(reqInfo.reqId);
-  const label = days === null ? 'Doimiy' : `${days} kun`;
-  return label;
-}
-
-const pendingSelfRegistration = new Set();
-
-// Ro'yxatdan o'tish jarayonini boshlaydi ("Oshxonangiz nomini yozing" deb
-// so'raydi). Ikki joydan chaqiriladi: (1) inline tugma (self_register_start
-// callback — pastda), (2) Mini App ichidagi "Hamkor bo'lish" havolasi orqali
-// kelgan /start owner_register (handleStartCommand ichida) — mantiq ikki
-// joyda takrorlanmasin deb bitta manbaga jamlandi.
-async function beginSelfRegistration(userId) {
-  if (isAdminId(userId)) {
-    await sendMessage(userId, 'Siz administratorsiz, ro\'yxatdan o\'tishning hojati yo\'q.');
-    return;
-  }
-  const owners = loadOwners();
-  if (findOwner(owners, userId)) {
-    await sendMessage(userId, 'Siz allaqachon ro\'yxatdan o\'tgansiz. Mini App tugmasi orqali oching.');
-    return;
-  }
-  if (findStaffInfo(owners, userId)) {
-    await sendMessage(userId, 'Siz allaqachon boshqa oshxonaning xodimisiz, alohida ega sifatida ro\'yxatdan o\'ta olmaysiz.');
-    return;
-  }
-  pendingSelfRegistration.add(String(userId));
-  await sendMessage(userId, 'Oshxonangiz nomini yozib yuboring (masalan: "Sardor Osh Markazi").');
-}
-
-const pendingReviewComments = new Map();
-const REVIEW_COMMENT_WINDOW_MS = 30 * 60 * 1000;
-
-async function handleStartCommand(chatId, from, text) {
-  const parts = text.split(' ');
-  const payload = parts.length > 1 ? parts[1].trim() : '';
-
-  if (!payload) {
-    if (isAdminId(from.id)) {
-      await sendMessage(chatId, 'Salom, admin! Mini App tugmasi orqali boshqaruv panelini oching.');
-      return;
-    }
-    const owners = loadOwners();
-    if (findOwner(owners, from.id) || findStaffInfo(owners, from.id)) {
-      const skCtx = skResolveCtx(owners, from.id);
-      if (skCtx) {
-        await sendMessage(chatId, "Salom! Mini App tugmasi orqali boshqaruv panelini oching.\n\n📦 Ostatka, 📖 retsept va 🧮 audit uchun quyidagi tugmani bosing:",
-          { inline_keyboard: [[{ text: '🗄 Sklad (ostatka / retsept / audit)', callback_data: 'sk:menu' }]] });
-        return;
-      }
-      await sendMessage(chatId, 'Salom! Mini App tugmasi orqali boshqaruv panelini oching.');
-      return;
-    }
-
-    const trash = loadTrash();
-    const trashEntry = findTrashEntryByOwnerId(trash, from.id);
-    if (trashEntry) {
-      if (trashEntry.restoreStatus === 'pending') {
-        await sendMessage(chatId,
-          '🕓 Oshxonangizni tiklash so\'rovingiz allaqachon adminga yuborilgan, tasdiqlanishini kuting.');
-        return;
-      }
-      const daysLeft = Math.max(0, Math.ceil((new Date(trashEntry.autoPurgeAt).getTime() - Date.now()) / 86400000));
-      await sendMessage(chatId,
-        `⚠️ Oshxonangiz o'chirilgan (Savatchada saqlanmoqda, ${daysLeft} kun ichida tiklash mumkin).\n` +
-        `Barcha ma'lumotlaringiz (menyu, xodimlar, sozlamalar) saqlanib turibdi. Tiklashni so'rasangiz, so'rovingiz administratorga yuboriladi.`,
-        { inline_keyboard: [[{ text: '🔄 Tiklashni so\'rash', callback_data: `request_restore:${trashEntry.id}` }]] });
-      return;
-    }
-
-    if (!PUBLIC_URL) {
-      await sendMessage(chatId,
-        `👋 <b>Pulsar</b>ga xush kelibsiz!\n` +
-        `Bu — oshxonangiz uchun buyurtma qabul qilish va boshqarish tizimi (menyu, xodimlar, sklad, hisobotlar).\n\n` +
-        `O'z oshxonangizni ro'yxatdan o'tkazish uchun quyidagi tugmani bosing:`,
-        { inline_keyboard: [[{ text: "📝 Ro'yxatdan o'tish", callback_data: 'self_register_start' }]] });
-      return;
-    }
-
-    const entryMenuUrl = `${PUBLIC_URL.replace(/\/$/, '')}/`;
-    await sendMessage(chatId,
-      `👋 <b>Pulsar</b>ga xush kelibsiz!\n` +
-      `Buyurtma berish uchun quyidagi tugmani bosing:`,
-      { inline_keyboard: [
-        [{ text: '🍽 Menyuni ochish', web_app: { url: entryMenuUrl } }]
-      ] });
-    return;
-  }
-
-  // Mini App ichidagi "Siz ham oshxona egasimisiz? Hamkor bo'ling" havolasi
-  // shu payload bilan botga qaytaradi (qarang: /api/partner-register-link
-  // va renderCustomerEntry ichidagi "Hamkor bo'lish" tugmasi). Ilgari bu
-  // tugma HAR BIR yangi mijozga /start xabarida ko'rsatilardi va ular
-  // "oshxona egasimisiz?" deb so'ralgandek tuyular edi — endi mijozlar
-  // to'g'ridan-to'g'ri menyuga o'tadi, hamkorlik esa ilova ichida (kamroq
-  // ko'zga tashlanadigan joyda) taklif qilinadi.
-  if (payload === 'owner_register') {
-    await beginSelfRegistration(from.id);
-    return;
-  }
-
-  if (payload.startsWith('menu_')) {
-    const ownerId = payload.replace(/^menu_/, '').trim();
-    const owners = pruneExpiredOwners();
-    const owner = findOwner(owners, ownerId);
-    if (!owner || !isOwnerAccessValid(owner)) {
-      await sendMessage(chatId, 'Kechirasiz, bu oshxona menyusi hozircha mavjud emas.');
-      return;
-    }
-    if (!PUBLIC_URL) {
-      await sendMessage(chatId, 'Menyu havolasi hozircha sozlanmagan. Iltimos, oshxona bilan bog\'laning.');
-      return;
-    }
-    const restaurantName = (owner.profile && owner.profile.name) || 'Oshxona';
-    const menuUrl = `${PUBLIC_URL.replace(/\/$/, '')}/?customer=${encodeURIComponent(owner.id)}`;
-    const welcomeText = `🍽 <b>${escapeHtmlServer(restaurantName)}</b> menyusiga xush kelibsiz!`;
-    await sendMessage(chatId, welcomeText, {
-      inline_keyboard: [[{ text: '🍽 Menyuni ochish', web_app: { url: menuUrl } }]]
-    });
-    return;
-  }
-
-  if (payload.startsWith('staffinv_')) {
-    const rest = payload.replace(/^staffinv_/, '');
-    const sepIdx = rest.indexOf('_');
-    const ownerId = sepIdx >= 0 ? rest.slice(0, sepIdx) : '';
-    const token = sepIdx >= 0 ? rest.slice(sepIdx + 1) : '';
-
-    const owners = pruneExpiredOwners();
-    const owner = findOwner(owners, ownerId);
-    const invite = owner && (owner.staffInvites || []).find(i => i.token === token);
-
-    if (!owner || !invite || invite.used || new Date(invite.expiresAt) <= new Date()) {
-      await sendMessage(chatId, 'Bu havola yaroqsiz yoki allaqachon ishlatilgan. Iltimos, menejerdan yangi havola so\'rang.');
-      return;
-    }
-    if (isAdminId(from.id)) {
-      await sendMessage(chatId, 'Siz administratorsiz, xodim bo\'la olmaysiz.');
-      return;
-    }
-    if (findOwner(owners, from.id)) {
-      await sendMessage(chatId, 'Siz allaqachon oshxona egasisiz, xodim bo\'la olmaysiz.');
-      return;
-    }
-    const existingStaff = findStaffInfo(owners, from.id);
-    if (existingStaff) {
-      await sendMessage(chatId, existingStaff.ownerId === owner.id
-        ? 'Siz allaqachon shu oshxonaning xodimisiz. Mini App tugmasi orqali oching.'
-        : 'Siz boshqa oshxonada xodim sifatida ro\'yxatdasiz.');
-      return;
-    }
-
-    invite.used = true;
-    invite.usedBy = String(from.id);
-    invite.usedAt = new Date().toISOString();
-
-    if (!owner.staff) owner.staff = [];
-    owner.staff.push({
-      id: String(from.id),
-      username: from.username || null,
-      role: invite.roles[0],
-      roles: invite.roles,
-      branchId: invite.branchId || null,
-      addedAt: new Date().toISOString()
-    });
-    saveOwners(owners);
-
-    await sendMessage(chatId,
-      `👋 Siz <b>${escapeHtmlServer((owner.profile && owner.profile.name) || 'oshxona')}</b> jamoasiga <b>${escapeHtmlServer(rolesLabel(invite.roles))}</b> sifatida qo\'shildingiz.\nMini App tugmasi orqali oching.`);
-    sendMessage(owner.id, `✅ ${escapeHtmlServer(displayName(from))}${from.username ? ' (@' + escapeHtmlServer(from.username) + ')' : ''} taklif havolasi orqali <b>${escapeHtmlServer(rolesLabel(invite.roles))}</b> sifatida jamoaga qo\'shildi.`);
-    return;
-  }
-
-  const token = payload.replace(/^inv_/, '');
-  const invite = findInvite(token);
-
-  if (isAdminId(from.id)) {
-    await sendMessage(chatId, 'Siz allaqachon administratorsiz.');
-    return;
-  }
-
-  if (!invite || invite.used) {
-    await sendMessage(chatId, 'Bu havola yaroqsiz yoki allaqachon ishlatilgan. Iltimos, admindan yangi havola so\'rang.');
-    return;
-  }
-
-  const owners = pruneExpiredOwners();
-  const existing = findOwner(owners, from.id);
-  if (existing && isOwnerAccessValid(existing)) {
-    markInviteUsed(token, from.id);
-    await sendMessage(chatId, 'Sizda allaqachon kirish huquqi mavjud. Mini App tugmasi orqali oching.');
-    return;
-  }
-
-  markInviteUsed(token, from.id);
-  const reqId = createRequest(from, token);
-
-  await sendMessage(chatId, 'So\'rovingiz adminga yuborildi. Iltimos, tasdiqlanishini kuting.');
-
-  const infoText = `🆕 <b>Yangi do'kon egasi so'rovi</b>\n` +
-    `Ism: ${displayName(from)}\n` +
-    (from.username ? `Username: @${from.username}\n` : '') +
-    `ID: <code>${from.id}</code>\n\n` +
-    `Necha kunga ruxsat berasiz?`;
-  await sendMessage(ADMIN_ID, infoText, daysKeyboard(reqId));
-}
-
-// ==========================================================================
-// SKLAD BOT-MENYU: "Retsept qo'shish", "Ostatka qo'shish" va "Audit"
-// funksiyalarini oshxona egasi (yoki "Egasi (hamkor)" xodimi) uchun
-// to'g'ridan-to'g'ri Telegram bot ichida, tugmalar orqali, sodda va tez
-// bajarish imkonini beradi. Bu — Mini App'dagi shu funksiyalarning O'RNINI
-// bosmaydi, faqat qo'shimcha tezkor yo'l: Mini App'dagi "Sklad", "Retsept"
-// va "Audit" bo'limlari avvalgidek to'liq ishlab turadi.
-// Holat (foydalanuvchi qaysi bosqichda ekani) userId bo'yicha xotirada
-// saqlanadi — bir nechta ega/hamkor bir vaqtda alohida-alohida foydalana oladi.
-// ==========================================================================
-const botFlowState = new Map();
-
-function skClearState(userId) {
-  botFlowState.delete(String(userId));
-}
-
-function skResolveCtx(owners, userId) {
-  const ctx = resolveOwnerContext(owners, userId);
-  if (!ctx || !ctxHasAnyRole(ctx, ['egasi', 'sklad'])) return null;
-  return ctx;
-}
-
-function skPool(ctx) {
-  return resolveStockPool(ctx.owner, ctx.role === 'egasi' ? null : ctx.branchId);
-}
-
-async function sendSkladMenu(chatId, userId) {
-  skClearState(userId);
-  await sendMessage(chatId,
-    "📋 <b>Sklad bo'limi</b>\nKerakli amalni tanlang:",
-    { inline_keyboard: [
-      [{ text: "📦 Ostatka qo'shish", callback_data: 'sk:stockadd' }],
-      [{ text: '📖 Retseptga mahsulot qo\'shish', callback_data: 'sk:recipe' }],
-      [{ text: '🧮 Audit topshirish', callback_data: 'sk:audit' }]
-    ] });
-}
-
-function skBackCancelRow() {
-  return [
-    [{ text: '⬅️ Sklad menyusi', callback_data: 'sk:menu' }],
-    [{ text: '❌ Bekor qilish', callback_data: 'sk:cancel' }]
-  ];
-}
-
-async function sendStockAddMenu(ctx, chatId) {
-  const pool = skPool(ctx);
-  const items = (pool ? (pool.stock || []) : []).slice().sort((a, b) => a.name.localeCompare(b.name, 'uz'));
-  const rows = items.slice(0, 40).map(it => ([{ text: `${it.name} (${it.qty} ${it.unit})`, callback_data: `sk:stockadd:pick:${it.id}` }]));
-  rows.push([{ text: "➕ Yangi mahsulot qo'shish", callback_data: 'sk:stockadd:new' }]);
-  rows.push(...skBackCancelRow());
-  await sendMessage(chatId, "📦 <b>Ostatka qo'shish</b>\nQaysi mahsulotga qo'shasiz? Yoki yangi mahsulot yarating:", { inline_keyboard: rows });
-}
-
-async function sendRecipeMenuList(ctx, chatId) {
-  const menu = (ctx.owner.menu || []).filter(m => !m.directStockId).slice().sort((a, b) => a.name.localeCompare(b.name, 'uz'));
-  if (!menu.length) {
-    await sendMessage(chatId, "Hozircha retsept belgilash mumkin bo'lgan taom yo'q. Avval Mini App orqali menyuga taom qo'shing.", { inline_keyboard: skBackCancelRow() });
-    return;
-  }
-  const rows = menu.slice(0, 40).map(m => {
-    const count = Array.isArray(m.recipe) ? m.recipe.length : 0;
-    return [{ text: `${m.name}${count ? ` (${count} ta ingredient)` : ''}`, callback_data: `sk:recipe:item:${m.id}` }];
-  });
-  rows.push(...skBackCancelRow());
-  await sendMessage(chatId, "📖 <b>Retseptga mahsulot qo'shish</b>\nQaysi taom uchun retsept belgilaysiz?", { inline_keyboard: rows });
-}
-
-async function sendRecipeIngredientList(ctx, chatId, menuItem) {
-  const pool = skPool(ctx);
-  const stock = (pool ? (pool.stock || []) : []).slice().sort((a, b) => a.name.localeCompare(b.name, 'uz'));
-  if (!stock.length) {
-    await sendMessage(chatId, "Skladda hali mahsulot yo'q. Avval \"Ostatka qo'shish\" orqali sklad mahsulotini qo'shing.", { inline_keyboard: skBackCancelRow() });
-    return;
-  }
-  const recipe = Array.isArray(menuItem.recipe) ? menuItem.recipe : [];
-  const rows = stock.slice(0, 40).map(s => {
-    const existing = recipe.find(r => r.stockId === s.id);
-    const label = existing ? `${s.name} ✅ (${existing.qty} ${s.unit})` : `${s.name} (${s.unit})`;
-    return [{ text: label, callback_data: `sk:recipe:ing:${menuItem.id}:${s.id}` }];
-  });
-  rows.push([{ text: '✅ Tugatish', callback_data: `sk:recipe:done:${menuItem.id}` }]);
-  rows.push(...skBackCancelRow());
-  await sendMessage(chatId, `📖 <b>${escapeHtmlServer(menuItem.name)}</b>\nQaysi sklad mahsulotini retseptga qo'shasiz? (✅ — retseptda allaqachon bor)`, { inline_keyboard: rows });
-}
-
-function skAuditPromptText(state) {
-  const cur = state.items[state.index];
-  return `🧮 <b>Audit</b> (${state.index + 1}/${state.items.length})\n` +
-    `${escapeHtmlServer(cur.name)} — hozir tizimda: <b>${cur.qty} ${escapeHtmlServer(cur.unit)}</b>\n\n` +
-    `Haqiqiy (ko'zdan kechirib o'lchangan) miqdorni yozing:`;
-}
-
-function skAuditKeyboard() {
-  return { inline_keyboard: [
-    [{ text: "⏭ O'tkazib yuborish", callback_data: 'sk:audit:skip' }],
-    [{ text: '✅ Shu yergacha yakunlash', callback_data: 'sk:audit:finish' }],
-    [{ text: '❌ Bekor qilish', callback_data: 'sk:cancel' }]
-  ] };
-}
-
-async function sendAuditPrompt(chatId, state) {
-  await sendMessage(chatId, skAuditPromptText(state), skAuditKeyboard());
-}
-
-async function finalizeAudit(userId, chatId) {
-  const state = botFlowState.get(String(userId));
-  if (!state || state.kind !== 'audit') return;
-  skClearState(userId);
-
-  if (!state.entries.length) {
-    await sendMessage(chatId, "Audit bekor qilindi — hech qanday mahsulot uchun miqdor kiritilmadi.");
-    return;
-  }
-
-  const owners = loadOwners();
-  const ctx = skResolveCtx(owners, userId);
-  if (!ctx) { await sendMessage(chatId, 'Ruxsatingiz yo\'q.'); return; }
-  const pool = resolveStockPool(ctx.owner, state.branchId);
-  if (!pool) { await sendMessage(chatId, "Bunday filial topilmadi."); return; }
-
-  const auditEntries = [];
-  for (const e of state.entries) {
-    const stockItem = findStockItem(pool, e.stockId);
-    if (!stockItem) continue;
-    const systemQty = stockItem.qty;
-    const diff = Math.round((e.actualQty - systemQty) * 1000) / 1000;
-    auditEntries.push({ stockId: stockItem.id, name: stockItem.name, unit: stockItem.unit, systemQty, actualQty: e.actualQty, diff });
-    if (diff !== 0) {
-      addStockMovement(pool, {
-        stockId: stockItem.id, stockName: stockItem.name, type: 'audit_tuzatish',
-        qty: diff, unit: stockItem.unit,
-        note: diff > 0 ? 'Audit: ortiqcha topildi' : 'Audit: kamomad topildi',
-        userId
-      });
-    }
-    stockItem.qty = e.actualQty;
-    checkLowStockAlert(ctx.owner, stockItem, userId, state.branchId);
-  }
-
-  if (!auditEntries.length) {
-    await sendMessage(chatId, "Hech qanday mos mahsulot topilmadi.");
-    return;
-  }
-
-  if (!pool.audits) pool.audits = [];
-  const audit = {
-    id: crypto.randomBytes(4).toString('hex'),
-    date: new Date().toISOString().slice(0, 10),
-    branchId: state.branchId,
-    entries: auditEntries,
-    createdBy: String(userId),
-    createdAt: new Date().toISOString()
-  };
-  pool.audits.unshift(audit);
-  if (pool.audits.length > 60) pool.audits.length = 60;
-
-  const kamomadCount = auditEntries.filter(e => e.diff < 0).length;
-  const ortiqchaCount = auditEntries.filter(e => e.diff > 0).length;
-  logStaffAction(ctx.owner, {
-    userId, role: ctx.role, action: 'audit_topshirdi',
-    note: `${auditEntries.length} mahsulot tekshirildi (bot orqali)${kamomadCount ? `, ${kamomadCount} ta kamomad` : ''}${ortiqchaCount ? `, ${ortiqchaCount} ta ortiqcha` : ''}`,
-    errorCount: kamomadCount
-  });
-
-  saveOwners(owners);
-
-  const lines = auditEntries.map(e => {
-    const mark = e.diff === 0 ? '✅' : (e.diff > 0 ? '➕' : '➖');
-    const diffText = e.diff !== 0 ? ` (${e.diff > 0 ? '+' : ''}${e.diff})` : '';
-    return `${mark} ${escapeHtmlServer(e.name)}: ${e.systemQty} → ${e.actualQty} ${escapeHtmlServer(e.unit)}${diffText}`;
-  }).join('\n');
-  await sendMessage(chatId, `✅ <b>Audit yakunlandi</b>\n${lines}`, { inline_keyboard: [[{ text: '⬅️ Sklad menyusi', callback_data: 'sk:menu' }]] });
-}
-
-// Foydalanuvchidan matn kutilayotgan bosqichlarni qayta ishlaydi (miqdor,
-// narx, yangi mahsulot nomi va h.k.). true qaytarsa — xabar shu yerda
-// to'liq ishlov berilgan (boshqa handlerlar ishga tushmasin).
-async function handleSkTextInput(from, chatId, text) {
-  const userId = String(from.id);
-  const state = botFlowState.get(userId);
-  if (!state) return false;
-
-  const owners = loadOwners();
-  const ctx = skResolveCtx(owners, userId);
-  if (!ctx) {
-    skClearState(userId);
-    await sendMessage(chatId, 'Ruxsatingiz yo\'q.');
-    return true;
-  }
-
-  const parseNum = (t) => {
-    const n = Number(String(t).trim().replace(',', '.'));
-    return n;
-  };
-
-  if (state.kind === 'stock_qty') {
-    const qtyNum = parseNum(text);
-    if (!Number.isFinite(qtyNum) || qtyNum <= 0) {
-      await sendMessage(chatId, "Iltimos, musbat son yuboring (masalan: 5 yoki 2.5). Bekor qilish uchun /bekor yozing.");
-      return true;
-    }
-    const pool = skPool(ctx);
-    const item = pool && findStockItem(pool, state.stockId);
-    if (!item) { skClearState(userId); await sendMessage(chatId, "Mahsulot topilmadi."); return true; }
-
-    item.qty = Math.round((item.qty + qtyNum) * 1000) / 1000;
-    addStockMovement(pool, { stockId: item.id, stockName: item.name, type: 'kirim', qty: qtyNum, unit: item.unit, note: "Bot orqali kiritildi", userId });
-    checkLowStockAlert(ctx.owner, item, userId, ctx.role === 'egasi' ? null : ctx.branchId);
-    logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'sklad_kirim', note: `${item.name}: +${qtyNum} ${item.unit} (bot)` });
-
-    if (item.price) {
-      if (!ctx.owner.expenses) ctx.owner.expenses = [];
-      ctx.owner.expenses.unshift({
-        id: crypto.randomBytes(4).toString('hex'),
-        amount: Math.round(qtyNum * item.price * 100) / 100,
-        category: 'sklad_xarid',
-        note: `${item.name} — ${qtyNum} ${item.unit} (bot)`,
-        createdAt: new Date().toISOString(),
-        createdBy: userId,
-        source: 'stock',
-        stockId: item.id
-      });
-      if (ctx.owner.expenses.length > 500) ctx.owner.expenses.length = 500;
-    }
-    saveOwners(owners);
-    skClearState(userId);
-    await sendMessage(chatId, `✅ <b>${escapeHtmlServer(item.name)}</b>: +${qtyNum} ${escapeHtmlServer(item.unit)}\nYangi qoldiq: ${item.qty} ${escapeHtmlServer(item.unit)}`,
-      { inline_keyboard: [[{ text: "📦 Yana ostatka qo'shish", callback_data: 'sk:stockadd' }], [{ text: '⬅️ Sklad menyusi', callback_data: 'sk:menu' }]] });
-    return true;
-  }
-
-  if (state.kind === 'stock_new_name') {
-    const nameTrim = String(text || '').trim();
-    if (nameTrim.length < 2 || nameTrim.length > 60) {
-      await sendMessage(chatId, "Iltimos, mahsulot nomini 2-60 belgi oralig'ida yozing. Bekor qilish uchun /bekor yozing.");
-      return true;
-    }
-    state.kind = 'stock_new_unit';
-    state.name = nameTrim;
-    await sendMessage(chatId, `Birlikni tanlang — <b>${escapeHtmlServer(nameTrim)}</b>:`, {
-      inline_keyboard: [
-        [{ text: 'kg', callback_data: 'sk:stockadd:unit:kg' }, { text: 'g', callback_data: 'sk:stockadd:unit:g' }],
-        [{ text: 'l', callback_data: 'sk:stockadd:unit:l' }, { text: 'ml', callback_data: 'sk:stockadd:unit:ml' }],
-        [{ text: 'dona', callback_data: 'sk:stockadd:unit:dona' }],
-        [{ text: '❌ Bekor qilish', callback_data: 'sk:cancel' }]
-      ]
-    });
-    return true;
-  }
-
-  if (state.kind === 'stock_new_qty') {
-    const qtyNum = parseNum(text);
-    if (!Number.isFinite(qtyNum) || qtyNum <= 0) {
-      await sendMessage(chatId, "Iltimos, musbat son yuboring (masalan: 10). Bekor qilish uchun /bekor yozing.");
-      return true;
-    }
-    state.qty = qtyNum;
-    state.kind = 'stock_new_price';
-    await sendMessage(chatId, `1 ${escapeHtmlServer(state.unit)} narxini yozing (so'm, masalan: 15000):`);
-    return true;
-  }
-
-  if (state.kind === 'stock_new_price') {
-    const priceNum = parseNum(text);
-    if (!Number.isFinite(priceNum) || priceNum <= 0) {
-      await sendMessage(chatId, "Iltimos, narxni musbat son bilan yozing (masalan: 15000). Bekor qilish uchun /bekor yozing.");
-      return true;
-    }
-    const pool = skPool(ctx);
-    if (!pool) { skClearState(userId); await sendMessage(chatId, 'Filial topilmadi.'); return true; }
-    if (!pool.stock) pool.stock = [];
-
-    let item = pool.stock.find(s => s.name.toLowerCase() === state.name.toLowerCase() && s.unit === state.unit);
-    if (item) {
-      item.qty = Math.round((item.qty + state.qty) * 1000) / 1000;
-      item.price = priceNum;
-    } else {
-      item = {
-        id: crypto.randomBytes(4).toString('hex'),
-        name: state.name,
-        qty: state.qty,
-        unit: state.unit,
-        price: priceNum,
-        minQty: null,
-        lowStockAlertSent: false,
-        addedAt: new Date().toISOString()
-      };
-      pool.stock.push(item);
-    }
-
-    addStockMovement(pool, { stockId: item.id, stockName: item.name, type: 'kirim', qty: state.qty, unit: item.unit, note: "Bot orqali kiritildi (yangi)", userId });
-    checkLowStockAlert(ctx.owner, item, userId, ctx.role === 'egasi' ? null : ctx.branchId);
-    logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'sklad_kirim', note: `${item.name}: +${state.qty} ${item.unit} (bot, yangi)` });
-
-    if (!ctx.owner.expenses) ctx.owner.expenses = [];
-    ctx.owner.expenses.unshift({
-      id: crypto.randomBytes(4).toString('hex'),
-      amount: Math.round(state.qty * priceNum * 100) / 100,
-      category: 'sklad_xarid',
-      note: `${item.name} — ${state.qty} ${item.unit} (bot)`,
-      createdAt: new Date().toISOString(),
-      createdBy: userId,
-      source: 'stock',
-      stockId: item.id
-    });
-    if (ctx.owner.expenses.length > 500) ctx.owner.expenses.length = 500;
-
-    saveOwners(owners);
-    skClearState(userId);
-    await sendMessage(chatId, `✅ <b>${escapeHtmlServer(item.name)}</b> skladga qo'shildi: ${item.qty} ${escapeHtmlServer(item.unit)} (narxi: ${fmtNum(priceNum)} so'm)`,
-      { inline_keyboard: [[{ text: "📦 Yana ostatka qo'shish", callback_data: 'sk:stockadd' }], [{ text: '⬅️ Sklad menyusi', callback_data: 'sk:menu' }]] });
-    return true;
-  }
-
-  if (state.kind === 'recipe_qty') {
-    const qtyNum = parseNum(text);
-    if (!Number.isFinite(qtyNum) || qtyNum <= 0) {
-      await sendMessage(chatId, "Iltimos, musbat son yuboring (masalan: 0.05). Bekor qilish uchun /bekor yozing.");
-      return true;
-    }
-    const menuItem = (ctx.owner.menu || []).find(m => m.id === state.menuId);
-    if (!menuItem) { skClearState(userId); await sendMessage(chatId, "Taom topilmadi."); return true; }
-    if (!Array.isArray(menuItem.recipe)) menuItem.recipe = [];
-    const existing = menuItem.recipe.find(r => r.stockId === state.stockId);
-    if (existing) existing.qty = qtyNum;
-    else menuItem.recipe.push({ stockId: state.stockId, qty: qtyNum });
-    saveOwners(owners);
-
-    await sendMessage(chatId, `✅ <b>${escapeHtmlServer(menuItem.name)}</b> retseptiga qo'shildi: ${qtyNum} ${escapeHtmlServer(state.unit)} — ${escapeHtmlServer(state.stockName)}`);
-    skClearState(userId);
-    await sendRecipeIngredientList(ctx, chatId, menuItem);
-    return true;
-  }
-
-  if (state.kind === 'audit') {
-    const cur = state.items[state.index];
-    if (!cur) { await finalizeAudit(userId, chatId); return true; }
-    const qtyNum = parseNum(text);
-    if (!Number.isFinite(qtyNum) || qtyNum < 0) {
-      await sendMessage(chatId, "Iltimos, 0 yoki musbat son yuboring (masalan: 3.5). Yoki quyidagi tugmalardan birini bosing.", skAuditKeyboard());
-      return true;
-    }
-    state.entries.push({ stockId: cur.id, actualQty: qtyNum });
-    state.index += 1;
-    if (state.index < state.items.length) {
-      await sendAuditPrompt(chatId, state);
-    } else {
-      await finalizeAudit(userId, chatId);
-    }
-    return true;
-  }
-
-  // Holat mavjud, lekin hozirgi bosqich tugma bosishni kutmoqda (masalan,
-  // birlik tanlash) — matnli javob unga mos kelmaydi.
-  await sendMessage(chatId, "Iltimos, yuqoridagi tugmalardan birini tanlang. Bekor qilish uchun /bekor yozing.");
-  return true;
-}
-
-async function handleTelegramUpdate(update) {
-  if (update.message && update.message.text) {
-    const msg = update.message;
-    const text = msg.text.trim();
-    const from = msg.from;
-    const chatId = msg.chat.id;
-
-    if (msg.chat.type === 'private' && (text === '/bekor') && botFlowState.has(String(from.id))) {
-      skClearState(from.id);
-      await sendMessage(chatId, 'Bekor qilindi.');
-      return;
-    }
-
-    if (msg.chat.type === 'private' && (text === '/sklad' || text.startsWith('/sklad@'))) {
-      const owners = pruneExpiredOwners();
-      const ctx = skResolveCtx(owners, from.id);
-      if (!ctx) {
-        await sendMessage(chatId, "Bu buyruq faqat oshxona egasi (yoki uning hamkori) uchun mavjud.");
-        return;
-      }
-      await sendSkladMenu(chatId, from.id);
-      return;
-    }
-
-    if (msg.chat.type === 'private' && !text.startsWith('/') && botFlowState.has(String(from.id))) {
-      const handled = await handleSkTextInput(from, chatId, text);
-      if (handled) return;
-    }
-
-    // /biriktir va /oshpaz_biriktir buyruqlari ixtiyoriy filial kodi bilan
-    // yozilishi mumkin (masalan "/biriktir a1b2c3d4e5f6") — shunda ushbu
-    // guruh aynan o'sha filialga bog'lanadi va faqat o'sha filial
-    // buyurtmalari shu guruhga keladi. Kod ko'rsatilmasa — avvalgidek
-    // markaziy (owner darajasidagi) guruh sifatida biriktiriladi. Filial
-    // kodini Mini App'dagi "Filiallar" bo'limidan tayyor buyruq shaklida
-    // nusxalab olish mumkin — shu bilan jarayon soddalashtirildi.
-    if ((msg.chat.type === 'group' || msg.chat.type === 'supergroup') && /^\/biriktir(@\S+)?(\s+\S+)?$/.test(text)) {
-      const owners = pruneExpiredOwners();
-      // Guruhni biriktirish — asosiy egasiga ham, unga "Egasi (hamkor)"
-      // sifatida to'liq huquq berilgan hamkorlarga ham ruxsat etiladi
-      // (ular alohida owner yozuvi emas, shuning uchun resolveOwnerContext
-      // orqali aniqlanadi — findOwner faqat asosiy egasini topadi).
-      const ctx = resolveOwnerContext(owners, from.id);
-      if (!isOwnerRole(ctx)) {
-        const blocked = getBlockedOwnerAccess(owners, from.id);
-        if (blocked) await sendSubscriptionBlockedScreen(chatId, blocked);
-        else await sendMessage(chatId, 'Faqat tasdiqlangan oshxona egasi guruhni biriktira oladi.');
-        return;
-      }
-      const owner = ctx.owner;
-      if (!ownerCanUseFeature(owner, 'delivery-group')) {
-        await sendMessage(chatId, featureBlockedResult('delivery-group').reason);
-        return;
-      }
-      const branchCode = text.split(/\s+/)[1] || null;
-      let branch = null;
-      if (branchCode) {
-        branch = findBranch(owner, branchCode);
-        if (!branch) { await sendMessage(chatId, `❌ "${escapeHtmlServer(branchCode)}" kodli filial topilmadi. Kodni Mini App'dagi Filiallar bo'limidan qaytadan nusxalab ko'ring.`); return; }
-      }
-      const target = branch || owner;
-      target.deliveryGroupId = String(chatId);
-      target.deliveryGroupTitle = msg.chat.title || null;
-      target.deliveryGroupThreadId = msg.message_thread_id || null;
-      saveOwners(owners);
-      const scopeLabel = branch ? `<b>${escapeHtmlServer(branch.name)}</b> filiali` : `<b>${escapeHtmlServer((owner.profile && owner.profile.name) || 'oshxona')}</b>`;
-      await sendMessage(chatId,
-        `✅ Bu guruh ${scopeLabel} uchun admin guruhi sifatida biriktirildi.\n` +
-        `Endi ${branch ? 'shu filialga tegishli' : 'mijozlar istalgan turda (Stolga, Olib ketish yoki Dostavka)'} buyurtma bersa, "Qabul qilish" va "Tayyor" tugmali xabarlar shu guruhga keladi.` +
-        (target.deliveryGroupThreadId ? `\n\n📌 Xabarlar aynan shu mavzu (topic)ga yozib boriladi.` : ''),
-        null, target.deliveryGroupThreadId);
-      return;
-    }
-
-    if ((msg.chat.type === 'group' || msg.chat.type === 'supergroup') && /^\/bekor_biriktir(@\S+)?$/.test(text)) {
-      const owners = loadOwners();
-      const ctx = resolveOwnerContext(owners, from.id);
-      const owner = ctx ? ctx.owner : null;
-      if (owner) {
-        const pools = [owner, ...(owner.branches || [])];
-        const target = pools.find(p => String(p.deliveryGroupId) === String(chatId));
-        if (target) {
-          target.deliveryGroupId = null;
-          target.deliveryGroupTitle = null;
-          target.deliveryGroupThreadId = null;
-          saveOwners(owners);
-          await sendMessage(chatId, 'Bu guruh admin guruhi sifatidan olib tashlandi.');
-        }
-      }
-      return;
-    }
-
-    if ((msg.chat.type === 'group' || msg.chat.type === 'supergroup') && /^\/oshpaz_biriktir(@\S+)?(\s+\S+)?$/.test(text)) {
-      const owners = pruneExpiredOwners();
-      const ctx = resolveOwnerContext(owners, from.id);
-      if (!isOwnerRole(ctx)) {
-        const blocked = getBlockedOwnerAccess(owners, from.id);
-        if (blocked) await sendSubscriptionBlockedScreen(chatId, blocked);
-        else await sendMessage(chatId, 'Faqat tasdiqlangan oshxona egasi guruhni biriktira oladi.');
-        return;
-      }
-      const owner = ctx.owner;
-      if (!ownerCanUseFeature(owner, 'kitchen-group')) {
-        await sendMessage(chatId, featureBlockedResult('kitchen-group').reason);
-        return;
-      }
-      const branchCode = text.split(/\s+/)[1] || null;
-      let branch = null;
-      if (branchCode) {
-        branch = findBranch(owner, branchCode);
-        if (!branch) { await sendMessage(chatId, `❌ "${escapeHtmlServer(branchCode)}" kodli filial topilmadi. Kodni Mini App'dagi Filiallar bo'limidan qaytadan nusxalab ko'ring.`); return; }
-      }
-      const target = branch || owner;
-      target.kitchenGroupId = String(chatId);
-      target.kitchenGroupTitle = msg.chat.title || null;
-      target.kitchenGroupThreadId = msg.message_thread_id || null;
-      saveOwners(owners);
-      const scopeLabel = branch ? `<b>${escapeHtmlServer(branch.name)}</b> filiali` : `<b>${escapeHtmlServer((owner.profile && owner.profile.name) || 'oshxona')}</b>`;
-      await sendMessage(chatId,
-        `✅ Bu guruh ${scopeLabel} uchun Oshpazlar guruhi sifatida biriktirildi.\n` +
-        `Endi ${branch ? 'shu filialga tegishli' : 'har bir'} yangi buyurtma shu guruhga ham, "Qabul qilish" va "Tayyor" tugmalari bilan yuboriladi.` +
-        (target.kitchenGroupThreadId ? `\n\n📌 Xabarlar aynan shu mavzu (topic)ga yozib boriladi.` : ''),
-        null, target.kitchenGroupThreadId);
-      return;
-    }
-
-    if ((msg.chat.type === 'group' || msg.chat.type === 'supergroup') && /^\/oshpaz_bekor_biriktir(@\S+)?$/.test(text)) {
-      const owners = loadOwners();
-      const ctx = resolveOwnerContext(owners, from.id);
-      const owner = ctx ? ctx.owner : null;
-      if (owner) {
-        const pools = [owner, ...(owner.branches || [])];
-        const target = pools.find(p => String(p.kitchenGroupId) === String(chatId));
-        if (target) {
-          target.kitchenGroupId = null;
-          target.kitchenGroupTitle = null;
-          target.kitchenGroupThreadId = null;
-          saveOwners(owners);
-          await sendMessage(chatId, 'Bu guruh Oshpazlar guruhi sifatidan olib tashlandi.');
-        }
-      }
-      return;
-    }
-
-    if (!text.startsWith('/') && pendingReviewComments.has(String(from.id))) {
-      const pending = pendingReviewComments.get(String(from.id));
-      pendingReviewComments.delete(String(from.id));
-      if (pending.expiresAt >= Date.now()) {
-        const owners = loadOwners();
-        const owner = findOwner(owners, pending.ownerId);
-        const order = owner && (owner.orders || []).find(o => String(o.id) === String(pending.orderId));
-        if (owner && order && !order.customerComment) {
-          const commentTrim = text.trim().slice(0, 500);
-          if (commentTrim) {
-            order.customerComment = commentTrim;
-            order.customerCommentAt = new Date().toISOString();
-            saveOwners(owners);
-            await sendMessage(chatId, 'Fikringiz uchun rahmat! 🙏');
-
-            const starsText = '⭐️'.repeat(order.customerRating || 0);
-            const notifyText = `💬 <b>Mijoz sharhi</b> (${starsText})\n"${escapeHtmlServer(commentTrim)}"\n\nMijoz: ${orderCustomerContactLabel(order)}`;
-            const staffList = owner.staff || [];
-            const targetIds = staffList.filter(s => ['egasi', 'kassir'].includes(s.role)).map(s => s.id);
-            for (const targetId of new Set([owner.id, ...targetIds])) {
-              sendMessage(targetId, notifyText);
-            }
-            for (const adminId of allAdminIds()) {
-              sendMessage(adminId, `${notifyText}\n\nOshxona: ${escapeHtmlServer((owner.profile && owner.profile.name) || owner.id)}`);
-            }
-          }
-        }
-      }
-      return;
-    }
-
-    if (!isAdminId(from.id) && !text.startsWith('/') && pendingSelfRegistration.has(String(from.id))) {
-      const restaurantName = text.trim();
-      if (restaurantName.length < 2 || restaurantName.length > 60) {
-        await sendMessage(chatId, "Iltimos, oshxona nomini 2 tadan 60 belgigacha oralig'ida yozing.");
-        return;
-      }
-      pendingSelfRegistration.delete(String(from.id));
-
-      const owners = loadOwners();
-
-      if (findOwner(owners, from.id)) {
-        await sendMessage(chatId, 'Siz allaqachon ro\'yxatdan o\'tgansiz. Mini App tugmasi orqali oching.');
-        return;
-      }
-
-      const newOwner = {
-        id: String(from.id),
-        username: from.username || null,
-        addedAt: new Date().toISOString(),
-        expiresAt: null,
-        price: 0,
-        paid: false,
-        paidAt: null,
-
-        subscriptionStatus: SUBSCRIPTION_STATUS.PENDING_TRIAL,
-        subscriptionUntil: null,
-        graceUntil: null,
-        trialGivenAt: null,
-        profile: { name: restaurantName }
-      };
-      owners.push(newOwner);
-      saveOwners(owners);
-
-      await sendMessage(chatId,
-        `✅ So'rovingiz qabul qilindi!\n<b>${escapeHtmlServer(restaurantName)}</b> nomi bilan ro'yxatga olindi.\n` +
-        `Administrator tasdiqlashini kuting — tasdiqlangach shu yerga xabar boradi.`);
-
-      const adminText =
-        `🆕 <b>Yangi oshxona — o'zi ro'yxatdan o'tdi</b>\n` +
-        `Oshxona: <b>${escapeHtmlServer(restaurantName)}</b>\n` +
-        `Ega: ${displayName(from)}${from.username ? ' (@' + escapeHtmlServer(from.username) + ')' : ''}\n` +
-        `ID: <code>${from.id}</code>\n\n` +
-        `Sinov muddatini tasdiqlaysizmi? (tasdiqlansa ${SUBSCRIPTION_TRIAL_DAYS} kunlik standart sinov beriladi)`;
-      const approveKb = {
-        inline_keyboard: [[
-          { text: '✅ Tasdiqlash', callback_data: `approve_trial:${newOwner.id}` },
-          { text: '❌ Rad etish', callback_data: `reject_trial:${newOwner.id}` }
-        ]]
-      };
-      for (const adminId of allAdminIds()) {
-        sendMessage(adminId, adminText, approveKb);
-      }
-      return;
-    }
-
-    if (isAdminId(from.id) && !text.startsWith('/')) {
-      const awaiting = getAwaitingCustom();
-      if (awaiting && awaiting.kind === 'approve_days' && awaiting.reqId) {
-        const reqInfo = findRequest(awaiting.reqId);
-        if (!reqInfo) {
-          clearAwaitingCustom();
-          await sendMessage(chatId, 'Bu so\'rov allaqachon ko\'rib chiqilgan.');
-          return;
-        }
-        const n = parseInt(text, 10);
-        if (!Number.isInteger(n) || n <= 0 || String(n) !== text) {
-          await sendMessage(chatId, 'Iltimos, faqat musbat butun son yuboring (masalan: 14). Bekor qilish uchun /bekor yozing.');
-          return;
-        }
-        clearAwaitingCustom();
-        const label = approveRequest(reqInfo, n);
-        if (awaiting.promptMessageId) {
-          await editMessageText(chatId, awaiting.promptMessageId,
-            `✅ <b>Tasdiqlandi</b>\n${displayName(reqInfo)} (ID: <code>${reqInfo.userId}</code>)\nRuxsat muddati: ${label}`);
-        } else {
-          await sendMessage(chatId, `✅ Tasdiqlandi. Ruxsat muddati: ${label}`);
-        }
-        await sendMessage(reqInfo.userId,
-          `✅ So'rovingiz tasdiqlandi! Sizga <b>${label}</b> muddatga kirish huquqi berildi.\nMini App tugmasi orqali oching.`);
-        return;
-      }
-
-      if (awaiting && awaiting.kind === 'sub_reject_reason' && awaiting.ownerId) {
-        const owners = loadOwners();
-        const owner = findOwner(owners, awaiting.ownerId);
-        clearAwaitingCustom();
-        if (!owner || !owner.subscriptionPaymentRequest || owner.subscriptionPaymentRequest.status !== 'kutilmoqda_tasdiq') {
-          await sendMessage(chatId, 'Bu so\'rov allaqachon ko\'rib chiqilgan.');
-          return;
-        }
-        const reasonText = text.trim();
-        decideSubscriptionPayment(owner, 'reject', from.id, reasonText);
-        saveOwners(owners);
-
-        const restaurantName = ownerLabel(owner);
-        const extraLine = `❌ Rad etildi — ${displayName(from)}\nSabab: ${escapeHtmlServer(reasonText)}`;
-        if (awaiting.chatId && awaiting.messageId) {
-          const mergedContent = `${awaiting.originalContent || ''}\n\n${extraLine}`;
-          if (awaiting.hasPhoto) {
-            await editMessageCaption(awaiting.chatId, awaiting.messageId, mergedContent, null);
-          } else {
-            await editMessageText(awaiting.chatId, awaiting.messageId, mergedContent, null);
-          }
-        } else {
-          await sendMessage(chatId, `❌ Rad etildi. Oshxona: ${escapeHtmlServer(restaurantName)}\nSabab: ${escapeHtmlServer(reasonText)}`);
-        }
-        return;
-      }
-    }
-
-    if (isAdminId(from.id) && text === '/bekor') {
-      const awaiting = getAwaitingCustom();
-      if (awaiting) {
-        clearAwaitingCustom();
-        await sendMessage(chatId, 'Bekor qilindi.');
-      }
-      return;
-    }
-
-    if (text === '/hisobot' || text.startsWith('/hisobot@') || text.startsWith('/hisobot ')) {
-      const owners = pruneExpiredOwners();
-      const ctx = resolveOwnerContext(owners, from.id);
-      if (!isOwnerRole(ctx)) {
-        await sendMessage(chatId, "Bu buyruq faqat oshxona egasi va uning hamkorlariga mavjud.");
-        return;
-      }
-      await sendMessage(chatId, buildFullHisobotText(ctx.owner));
-      return;
-    }
-
-    if (text.startsWith('/start')) {
-      await handleStartCommand(chatId, from, text);
-      return;
-    }
-    return;
-  }
-
-  if (update.message && update.message.photo && update.message.chat && update.message.chat.type === 'private') {
-    const msg = update.message;
-    const from = msg.from;
-    const chatId = msg.chat.id;
-    const userId = String(from.id);
-
-    const owners = loadOwners();
-    let targetOwner = null;
-    let targetOrder = null;
-    for (const owner of owners) {
-      for (const order of (owner.orders || [])) {
-        if (String(order.customerId) !== userId) continue;
-        if (order.paymentConfirmMethod !== 'skrinshot') continue;
-        if (order.paymentProofStatus !== 'kutilmoqda' && order.paymentProofStatus !== 'rad_etildi') continue;
-        if (!targetOrder || new Date(order.createdAt) > new Date(targetOrder.createdAt)) {
-          targetOwner = owner;
-          targetOrder = order;
-        }
-      }
-    }
-
-    if (!targetOwner || !targetOrder) {
-
-      const subOwner = findOwner(owners, userId);
-      if (subOwner && subOwner.subscriptionPaymentRequest &&
-          subOwner.subscriptionPaymentRequest.status === 'kutilmoqda_skrinshot') {
-        const reqData = subOwner.subscriptionPaymentRequest;
-        const photos = msg.photo;
-        const bestPhoto = photos[photos.length - 1];
-        reqData.screenshotFileId = bestPhoto.file_id;
-        reqData.status = 'kutilmoqda_tasdiq';
-        reqData.screenshotSentAt = new Date().toISOString();
-        saveOwners(owners);
-
-        await sendMessage(chatId, '📤 Skrinshot qabul qilindi. Administrator tasdiqlashini kuting...');
-
-        const surchargeCaptionLine = (reqData.upgradeSurcharge > 0)
-          ? `\nAsosiy narx: ${fmtNum(reqData.baseAmount)} so'm + tarif farqi ustamasi (qolgan ${reqData.upgradeRemainingDays} kun): ${fmtNum(reqData.upgradeSurcharge)} so'm`
-          : '';
-        const caption = `💳 <b>Obuna to'lovi tasdiqlash so'raladi</b>\n` +
-          `Oshxona: ${escapeHtmlServer(ownerLabel(subOwner))} (ID: <code>${subOwner.id}</code>)\n` +
-          `Tarif: ${escapeHtmlServer(reqData.planLabel)}\nSumma: ${fmtNum(reqData.amount)} so'm${surchargeCaptionLine}`;
-        const subKb = {
-          inline_keyboard: [[
-            { text: '✅ Tasdiqlash', callback_data: `subok:${subOwner.id}` },
-            { text: '❌ Rad etish', callback_data: `subrej:${subOwner.id}` }
-          ]]
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+          resolve(canvas.toDataURL('image/jpeg', quality));
         };
-        for (const adminId of allAdminIds()) {
-          copyMessageWithKeyboard(adminId, chatId, msg.message_id, caption, subKb);
-        }
-      }
-
-      return;
-    }
-
-    const photos = msg.photo;
-    const bestPhoto = photos[photos.length - 1];
-    targetOrder.paymentProofFileId = bestPhoto.file_id;
-    targetOrder.paymentProofStatus = 'kutilmoqda';
-    targetOrder.paymentProofSentAt = new Date().toISOString();
-    saveOwners(owners);
-
-    await sendMessage(chatId, '📤 Skrinshot qabul qilindi, tasdiqlanishini kuting...');
-
-    const itemsText = targetOrder.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
-    const caption = `💳 <b>To'lov tasdiqlash so'raladi</b>\n` +
-      `${orderCustomerContactLabel(targetOrder)}\n${itemsText}\n\n` +
-      `Jami: ${fmtNum(targetOrder.total)} so'm\n${ORDER_TYPES[targetOrder.orderType] || targetOrder.orderType}`;
-    const approveKb = {
-      inline_keyboard: [[
-        { text: '✅ Tasdiqlash', callback_data: `payok:${targetOwner.id}:${targetOrder.id}` },
-        { text: '❌ Rad etish', callback_data: `payrej:${targetOwner.id}:${targetOrder.id}` }
-      ]]
-    };
-    const approvers = [targetOwner.id, ...((targetOwner.staff || []).filter(s => staffHasRole(s, 'kassir')).map(s => s.id))];
-    for (const approverId of new Set(approvers.map(String))) {
-      copyMessageWithKeyboard(approverId, chatId, msg.message_id, caption, approveKb);
-    }
-    return;
+        img.src = reader.result;
+      };
+      reader.readAsDataURL(file);
+    });
   }
 
-  if (update.callback_query) {
-    const cq = update.callback_query;
-    const from = cq.from;
-    const data = cq.data || '';
-    const chatId = cq.message && cq.message.chat && cq.message.chat.id;
-    const messageId = cq.message && cq.message.message_id;
+  function expiryText(o) {
+    if (!o.expiresAt) return 'Doimiy ruxsat';
+    const ms = new Date(o.expiresAt).getTime() - Date.now();
+    if (ms <= 0) return 'Muddati tugagan';
+    const days = Math.ceil(ms / 86400000);
+    return `${days} kun qoldi`;
+  }
 
-    if (data === 'sk:menu') {
-      await answerCallbackQuery(cq.id);
-      const owners = loadOwners();
-      const ctx = skResolveCtx(owners, from.id);
-      if (!ctx) { await sendMessage(chatId, 'Ruxsatingiz yo\'q.'); return; }
-      await sendSkladMenu(chatId, from.id);
-      return;
+  function subscriptionProgressHtml(o) {
+    if (!o.expiresAt) return '';
+    const expiresMs = new Date(o.expiresAt).getTime();
+    const startedMs = o.addedAt ? new Date(o.addedAt).getTime() : NaN;
+    const nowMs = Date.now();
+    const totalMs = Number.isFinite(startedMs) ? expiresMs - startedMs : NaN;
+
+    const remainingMs = expiresMs - nowMs;
+    const remainingPercent = Number.isFinite(totalMs) && totalMs > 0
+      ? Math.max(0, Math.min(100, Math.round((remainingMs / totalMs) * 100)))
+      : Math.max(0, Math.min(100, Math.round((remainingMs / (30 * 86400000)) * 100)));
+    let statusClass = 'ok';
+    if (remainingMs <= 0) statusClass = 'danger';
+    else if (remainingPercent <= 20) statusClass = 'danger';
+    else if (remainingPercent <= 50) statusClass = 'warn';
+    return `
+      <div class="subscription-progress ${statusClass}" role="progressbar" aria-valuenow="${remainingPercent}" aria-valuemin="0" aria-valuemax="100" aria-label="Obuna muddati">
+        <div class="subscription-progress-track">
+          <div class="subscription-progress-fill" style="width:${remainingPercent}%;"></div>
+        </div>
+      </div>
+    `;
+  }
+
+  function ownerSearchKey(o) {
+    return [(o.profile && o.profile.name) || '', o.username || '', o.id]
+      .join(' ')
+      .toLowerCase();
+  }
+
+  let tariffCacheForOwners = [];
+  function ownerTariffLabel(tariffId) {
+    if (!tariffId) return 'Tarif belgilanmagan';
+    const t = tariffCacheForOwners.find(x => x.id === tariffId);
+    return t ? t.name : 'Tarif belgilanmagan';
+  }
+
+  function ownerItemHtml(o) {
+
+    const ratingBadgeHtml = o.avgRating !== null && o.avgRating !== undefined
+      ? `<span class="badge" title="${o.ratingCount} ta baho asosida">⭐ ${o.avgRating}</span>`
+      : '';
+    return `
+      <div class="owner-item owner-item-detailed" data-search-key="${escapeHtml(ownerSearchKey(o))}">
+        <div class="owner-item-head">
+          <div class="owner-avatar">${escapeHtml((((o.profile && o.profile.name) || o.username || String(o.id) || '#').trim().charAt(0) || '#').toUpperCase())}</div>
+          <div class="owner-item-heading">
+            <div class="owner-item-top">
+              <span class="owner-id">${escapeHtml(o.id)}</span>
+              <span class="badge ${o.paid ? 'paid' : 'unpaid'}" data-toggle-paid="${escapeHtml(o.id)}" data-paid="${o.paid ? '1' : '0'}">
+                ${o.paid ? icon('check', 'icon-xs') + " To'langan" : icon('x', 'icon-xs') + ' Qarzdor'}
+              </span>
+              ${ratingBadgeHtml}
+            </div>
+            ${o.username ? `<div class="owner-username">@${escapeHtml(o.username)}</div>` : ''}
+            ${o.profile && o.profile.name ? `<div class="owner-username">${icon('restaurant', 'icon-xs icon-muted')} ${escapeHtml(o.profile.name)}</div>` : `<div class="owner-username owner-username-empty">${icon('warning', 'icon-xs')} Profil to'ldirilmagan</div>`}
+            ${o.profile && o.profile.phone ? `<div class="owner-username">${icon('send', 'icon-xs icon-muted')} ${escapeHtml(o.profile.phone)}</div>` : ''}
+            ${o.profile && o.profile.address ? `<div class="owner-username">${icon('pin', 'icon-xs icon-muted')} ${escapeHtml(o.profile.address)}</div>` : ''}
+          </div>
+          <button class="owner-remove-btn" data-remove-id="${escapeHtml(o.id)}" aria-label="O'chirish" title="O'chirish">${icon('x', 'icon-xs')}</button>
+        </div>
+
+        <div class="owner-field-list">
+          <div class="owner-field" data-edit-expiry="${escapeHtml(o.id)}" data-expiry-current="${o.expiresAt ? escapeHtml(o.expiresAt) : ''}">
+            <span class="owner-field-icon">${icon('clock', 'icon-xs')}</span>
+            <span class="owner-field-value">${escapeHtml(expiryText(o))}</span>
+            <span class="owner-field-edit">${icon('edit', 'icon-xs')}</span>
+          </div>
+          ${subscriptionProgressHtml(o)}
+          <div class="owner-field" data-edit-price="${escapeHtml(o.id)}">
+            <span class="owner-field-icon">${icon('card', 'icon-xs')}</span>
+            <span class="owner-field-value">${o.price ? fmtNum(o.price) + " so'm/oy" : 'Narx kiritilmagan'}</span>
+            <span class="owner-field-edit">${icon('edit', 'icon-xs')}</span>
+          </div>
+          <div class="owner-field" data-edit-credentials="${escapeHtml(o.id)}">
+            <span class="owner-field-icon">${icon('user', 'icon-xs')}</span>
+            <span class="owner-field-value">${o.hasLogin ? `Login: ${escapeHtml(o.login)}` : 'Login/parol o\'rnatilmagan'}</span>
+            <span class="owner-field-edit">${icon('edit', 'icon-xs')}</span>
+          </div>
+          <div class="owner-field" data-edit-tariff="${escapeHtml(o.id)}">
+            <span class="owner-field-icon">${icon('star', 'icon-xs')}</span>
+            <span class="owner-field-value">${escapeHtml(ownerTariffLabel(o.tariffId))}</span>
+            <span class="owner-field-edit">${icon('edit', 'icon-xs')}</span>
+          </div>
+        </div>
+
+        <div class="owner-action-row" style="display:flex; gap:8px; margin-top:8px;">
+          <button class="row-action-btn brand" style="flex:1;" data-view-reviews="${escapeHtml(o.id)}">⭐ Sharhlar</button>
+          <button class="row-action-btn brand" style="flex:1;" data-manage-menu="${escapeHtml(o.id)}" data-manage-menu-name="${escapeHtml((o.profile && o.profile.name) || o.id)}">🍽 Menyu/Sklad</button>
+          <button class="row-action-btn brand" style="flex:1;" data-write-owner="${escapeHtml(o.id)}">✉️ Yozish</button>
+        </div>
+      </div>
+    `;
+  }
+
+  let adminChatsUnreadPollTimer = null;
+
+  async function refreshAdminChatsBadge() {
+    const btn = document.querySelector('.admin-menu-grid [data-admin-menu-key="yordam"]');
+    if (!btn) { if (adminChatsUnreadPollTimer) { clearInterval(adminChatsUnreadPollTimer); adminChatsUnreadPollTimer = null; } return; }
+    const res = await apiPost('/api/admin-support-inbox');
+    const stillThere = document.querySelector('.admin-menu-grid [data-admin-menu-key="yordam"]');
+    if (!stillThere) { if (adminChatsUnreadPollTimer) { clearInterval(adminChatsUnreadPollTimer); adminChatsUnreadPollTimer = null; } return; }
+    if (!res.ok) return;
+    const total = (res.threads || []).reduce((sum, t) => sum + (t.unreadCount || 0), 0);
+    const existing = stillThere.querySelector('.ko-menu-item-badge');
+    if (total > 0) {
+      const text = total > 99 ? '99+' : String(total);
+      if (existing) existing.textContent = text;
+      else stillThere.insertAdjacentHTML('beforeend', `<span class="ko-menu-item-badge">${text}</span>`);
+    } else if (existing) {
+      existing.remove();
     }
+  }
 
-    if (data === 'sk:cancel') {
-      await answerCallbackQuery(cq.id);
-      skClearState(from.id);
-      await sendMessage(chatId, 'Bekor qilindi.', { inline_keyboard: [[{ text: '⬅️ Sklad menyusi', callback_data: 'sk:menu' }]] });
-      return;
-    }
+  async function renderAdminPanel(owners, revenue) {
+    if (adminChatsUnreadPollTimer) { clearInterval(adminChatsUnreadPollTimer); adminChatsUnreadPollTimer = null; }
+    setAppHeader(null, 'Pulsar', 'Admin');
+    const nowMs = Date.now();
+    const totalCount = owners.length;
+    const activeCount = owners.filter(o => !o.expiresAt || new Date(o.expiresAt).getTime() > nowMs).length;
+    const expiringSoonCount = owners.filter(o => {
+      if (!o.expiresAt) return false;
+      const ms = new Date(o.expiresAt).getTime() - nowMs;
+      return ms > 0 && ms <= 3 * 86400000;
+    }).length;
+    const unpaidCount = owners.filter(o => !o.paid).length;
 
-    if (data === 'sk:stockadd') {
-      await answerCallbackQuery(cq.id);
-      const owners = loadOwners();
-      const ctx = skResolveCtx(owners, from.id);
-      if (!ctx) { await sendMessage(chatId, 'Ruxsatingiz yo\'q.'); return; }
-      skClearState(from.id);
-      await sendStockAddMenu(ctx, chatId);
-      return;
-    }
+    const thisMonthRevenue = revenue ? revenue.thisMonth : 0;
+    const lifetimeRevenue = revenue ? revenue.totalLifetime : 0;
+    const pendingRevenue = owners.filter(o => !o.paid).reduce((sum, o) => sum + (Number(o.price) || 0), 0);
 
-    if (data.startsWith('sk:stockadd:pick:')) {
-      await answerCallbackQuery(cq.id);
-      const stockId = data.slice('sk:stockadd:pick:'.length);
-      const owners = loadOwners();
-      const ctx = skResolveCtx(owners, from.id);
-      if (!ctx) { await sendMessage(chatId, 'Ruxsatingiz yo\'q.'); return; }
-      const pool = skPool(ctx);
-      const item = pool && findStockItem(pool, stockId);
-      if (!item) { await sendMessage(chatId, 'Mahsulot topilmadi.'); return; }
-      botFlowState.set(String(from.id), { kind: 'stock_qty', stockId: item.id, name: item.name, unit: item.unit });
-      await sendMessage(chatId, `<b>${escapeHtmlServer(item.name)}</b> — hozir: ${item.qty} ${escapeHtmlServer(item.unit)}\n\nNecha ${escapeHtmlServer(item.unit)} qo'shilsin? (masalan: 5)\n\nBekor qilish uchun /bekor yozing.`);
-      return;
-    }
+    const statsHtml = `
+      <div class="ko-kpi-grid admin-stats-grid">
+        ${koKpiCardHtml('users', 'Jami egalar', String(totalCount), null)}
+        ${koKpiCardHtml('check-circle', 'Faol', String(activeCount), null)}
+        ${koKpiCardHtml('clock', 'Muddati yaqin', String(expiringSoonCount), null)}
+        ${koKpiCardHtml('wallet', "Qarzdor", String(unpaidCount), null)}
+        ${koKpiCardHtml('card', "Bu oy daromad", cfFormatSum(thisMonthRevenue), null)}
+        ${koKpiCardHtml('trending-up', "Jami daromad", cfFormatSum(lifetimeRevenue), null)}
+        ${koKpiCardHtml('warning', "Kutilmoqda (qarzdor)", cfFormatSum(pendingRevenue), null)}
+      </div>
+    `;
 
-    if (data === 'sk:stockadd:new') {
-      await answerCallbackQuery(cq.id);
-      const owners = loadOwners();
-      const ctx = skResolveCtx(owners, from.id);
-      if (!ctx) { await sendMessage(chatId, 'Ruxsatingiz yo\'q.'); return; }
-      botFlowState.set(String(from.id), { kind: 'stock_new_name' });
-      await sendMessage(chatId, "Yangi mahsulot nomini yozing (masalan: \"Un\"):\n\nBekor qilish uchun /bekor yozing.");
-      return;
-    }
+    ekran(`
+      <div class="panel has-ko-bottom-nav">
+        <div class="salom">Salom, admin</div>
+        <div class="bosh admin-subtitle">Quyidagi bo'limlardan birini tanlang.</div>
 
-    if (data.startsWith('sk:stockadd:unit:')) {
-      await answerCallbackQuery(cq.id);
-      const unit = data.slice('sk:stockadd:unit:'.length);
-      const state = botFlowState.get(String(from.id));
-      if (!state || state.kind !== 'stock_new_unit' || !Object.prototype.hasOwnProperty.call(STOCK_UNITS, unit)) {
-        await sendMessage(chatId, 'Bu amal muddati o\'tgan. Qaytadan /sklad buyrug\'ini yuboring.');
-        return;
-      }
-      state.unit = unit;
-      state.kind = 'stock_new_qty';
-      await sendMessage(chatId, `Miqdorni yozing (${escapeHtmlServer(unit)}, masalan: 10):`);
-      return;
-    }
+        ${statsHtml}
 
-    if (data === 'sk:recipe') {
-      await answerCallbackQuery(cq.id);
-      const owners = loadOwners();
-      const ctx = skResolveCtx(owners, from.id);
-      if (!ctx) { await sendMessage(chatId, 'Ruxsatingiz yo\'q.'); return; }
-      skClearState(from.id);
-      await sendRecipeMenuList(ctx, chatId);
-      return;
-    }
+        <div class="ko-menu-grid admin-menu-grid">
+          ${adminMenuItemHtml({ key: 'egalar', icon: 'users', label: "Do'kon egalari" })}
+          ${adminMenuItemHtml({ key: 'yangiEga', icon: 'plus', label: "Yangi ega qo'shish" })}
+          ${adminMenuItemHtml({ key: 'tolovlar', icon: 'card', label: "Kutilayotgan to'lovlar" })}
+          ${adminMenuItemHtml({ key: 'yordam', icon: 'message-circle', label: "Chatlar" })}
+          ${adminMenuItemHtml({ key: 'tariflar', icon: 'star', label: 'Tariflar' })}
+          ${adminMenuItemHtml({ key: 'obunaRejalari', icon: 'card', label: 'Obuna rejalari' })}
+          ${adminMenuItemHtml({ key: 'tolovSozlamalari', icon: 'settings', label: "To'lov sozlamalari" })}
+          ${adminMenuItemHtml({ key: 'elon', icon: 'send', label: "E'lon yuborish" })}
+          ${adminMenuItemHtml({ key: 'savatcha', icon: 'trash', label: 'Savatcha' })}
+          ${adminMenuItemHtml({ key: 'zaxira', icon: 'download', label: 'Zaxira (Backup)' })}
+          ${adminMenuItemHtml({ key: 'tizim', icon: 'settings', label: 'Tizim holati' })}
+        </div>
+      </div>
+      ${adminBottomNavHtml('bosh')}
+    `);
 
-    if (data.startsWith('sk:recipe:item:')) {
-      await answerCallbackQuery(cq.id);
-      const menuId = data.slice('sk:recipe:item:'.length);
-      const owners = loadOwners();
-      const ctx = skResolveCtx(owners, from.id);
-      if (!ctx) { await sendMessage(chatId, 'Ruxsatingiz yo\'q.'); return; }
-      const menuItem = (ctx.owner.menu || []).find(m => m.id === menuId);
-      if (!menuItem) { await sendMessage(chatId, 'Taom topilmadi.'); return; }
-      if (menuItem.directStockId) {
-        await sendMessage(chatId, `<b>${escapeHtmlServer(menuItem.name)}</b> — "to'g'ridan skladdan" turida, unga alohida retsept qo'shib bo'lmaydi.`, { inline_keyboard: skBackCancelRow() });
-        return;
-      }
-      await sendRecipeIngredientList(ctx, chatId, menuItem);
-      return;
-    }
-
-    if (data.startsWith('sk:recipe:ing:')) {
-      await answerCallbackQuery(cq.id);
-      const rest = data.slice('sk:recipe:ing:'.length);
-      const sepIdx = rest.indexOf(':');
-      const menuId = sepIdx >= 0 ? rest.slice(0, sepIdx) : '';
-      const stockId = sepIdx >= 0 ? rest.slice(sepIdx + 1) : '';
-      const owners = loadOwners();
-      const ctx = skResolveCtx(owners, from.id);
-      if (!ctx) { await sendMessage(chatId, 'Ruxsatingiz yo\'q.'); return; }
-      const menuItem = (ctx.owner.menu || []).find(m => m.id === menuId);
-      if (!menuItem) { await sendMessage(chatId, 'Taom topilmadi.'); return; }
-      const pool = skPool(ctx);
-      const stockItem = pool && findStockItem(pool, stockId);
-      if (!stockItem) { await sendMessage(chatId, 'Sklad mahsuloti topilmadi.'); return; }
-      botFlowState.set(String(from.id), { kind: 'recipe_qty', menuId: menuItem.id, menuName: menuItem.name, stockId: stockItem.id, stockName: stockItem.name, unit: stockItem.unit });
-      await sendMessage(chatId, `1 dona "<b>${escapeHtmlServer(menuItem.name)}</b>" uchun necha ${escapeHtmlServer(stockItem.unit)} "${escapeHtmlServer(stockItem.name)}" kerak?\n(masalan: 0.05)\n\nBekor qilish uchun /bekor yozing.`);
-      return;
-    }
-
-    if (data.startsWith('sk:recipe:done:')) {
-      await answerCallbackQuery(cq.id, 'Saqlandi ✅');
-      const menuId = data.slice('sk:recipe:done:'.length);
-      skClearState(from.id);
-      const owners = loadOwners();
-      const ctx = skResolveCtx(owners, from.id);
-      if (!ctx) { await sendMessage(chatId, 'Ruxsatingiz yo\'q.'); return; }
-      const menuItem = (ctx.owner.menu || []).find(m => m.id === menuId);
-      const count = menuItem && Array.isArray(menuItem.recipe) ? menuItem.recipe.length : 0;
-      await sendMessage(chatId, `✅ <b>${escapeHtmlServer(menuItem ? menuItem.name : '')}</b> retsepti saqlandi (${count} ta ingredient).`, { inline_keyboard: [[{ text: '⬅️ Sklad menyusi', callback_data: 'sk:menu' }]] });
-      return;
-    }
-
-    if (data === 'sk:audit') {
-      await answerCallbackQuery(cq.id);
-      const owners = loadOwners();
-      const ctx = skResolveCtx(owners, from.id);
-      if (!ctx) { await sendMessage(chatId, 'Ruxsatingiz yo\'q.'); return; }
-      const pool = skPool(ctx);
-      const items = (pool ? (pool.stock || []) : []).slice().sort((a, b) => a.name.localeCompare(b.name, 'uz'));
-      if (!items.length) {
-        await sendMessage(chatId, "Skladda hali mahsulot yo'q. Avval \"Ostatka qo'shish\" orqali sklad mahsulotini qo'shing.", { inline_keyboard: skBackCancelRow() });
-        return;
-      }
-      const state = {
-        kind: 'audit',
-        branchId: ctx.role === 'egasi' ? null : ctx.branchId,
-        items: items.map(i => ({ id: i.id, name: i.name, unit: i.unit, qty: i.qty })),
-        index: 0,
-        entries: []
-      };
-      botFlowState.set(String(from.id), state);
-      await sendAuditPrompt(chatId, state);
-      return;
-    }
-
-    if (data === 'sk:audit:skip') {
-      await answerCallbackQuery(cq.id);
-      const state = botFlowState.get(String(from.id));
-      if (!state || state.kind !== 'audit') { await sendMessage(chatId, 'Bu amal muddati o\'tgan. Qaytadan /sklad buyrug\'ini yuboring.'); return; }
-      state.index += 1;
-      if (state.index < state.items.length) {
-        await sendAuditPrompt(chatId, state);
-      } else {
-        await finalizeAudit(from.id, chatId);
-      }
-      return;
-    }
-
-    if (data === 'sk:audit:finish') {
-      await answerCallbackQuery(cq.id);
-      const state = botFlowState.get(String(from.id));
-      if (!state || state.kind !== 'audit') { await sendMessage(chatId, 'Bu amal muddati o\'tgan. Qaytadan /sklad buyrug\'ini yuboring.'); return; }
-      await finalizeAudit(from.id, chatId);
-      return;
-    }
-
-    if (data === 'obuna_menyu') {
-      await answerCallbackQuery(cq.id);
-      const owners = loadOwners();
-      const owner = findOwner(owners, from.id);
-      if (!owner) {
-        await sendMessage(from.id, 'Siz do\'kon egasi sifatida ro\'yxatdan o\'tmagansiz. Administrator bilan bog\'laning.');
-        return;
-      }
-      await sendObunaPlansMenu(owner, from.id);
-      return;
-    }
-
-    if (data.startsWith('subplan:')) {
-      const [, planId] = data.split(':');
-      const owners = loadOwners();
-      const owner = findOwner(owners, from.id);
-      if (!owner) { await answerCallbackQuery(cq.id, 'Oshxona topilmadi.'); return; }
-      const plan = loadSubscriptionPlans()[planId];
-      if (!plan) { await answerCallbackQuery(cq.id, 'Tarif topilmadi.'); return; }
-      const reqData = createSubscriptionPaymentRequest(owner, planId);
-      saveOwners(owners);
-      await answerCallbackQuery(cq.id, 'Tarif tanlandi ✅');
-      const surchargeLine = (reqData.upgradeSurcharge > 0)
-        ? `\n➕ Tarif farqi ustamasi (qolgan ${reqData.upgradeRemainingDays} kun uchun): ${fmtNum(reqData.upgradeSurcharge)} so'm` +
-          `\n💰 <b>Jami to'lov: ${fmtNum(reqData.amount)} so'm</b>`
-        : '';
-      await sendMessage(from.id,
-        `✅ Siz <b>${escapeHtmlServer(plan.label)}</b> tarifini tanladingiz (${fmtNum(plan.price)} so'm).${surchargeLine}\n\n` +
-        `Endi to'lov chekining (skrinshotning) RASMINI shu botga yuboring — administrator tekshirib ` +
-        `tasdiqlagach, obunangiz avtomatik yangilanadi.`);
-      return;
-    }
-
-    if (data === 'self_register_start') {
-      await answerCallbackQuery(cq.id);
-      await beginSelfRegistration(from.id);
-      return;
-    }
-
-    if (data.startsWith('request_restore:')) {
-      const trashId = data.slice('request_restore:'.length);
-      await answerCallbackQuery(cq.id);
-      const trash = loadTrash();
-      const entry = findTrashEntry(trash, trashId);
-      if (!entry) {
-        await sendMessage(from.id, 'Bu so\'rov muddati o\'tgan yoki allaqachon ko\'rib chiqilgan.');
-        return;
-      }
-      if (String(entry.ownerSnapshot.id) !== String(from.id)) {
-        await sendMessage(from.id, 'Bu so\'rov sizga tegishli emas.');
-        return;
-      }
-      if (entry.restoreStatus === 'pending') {
-        await sendMessage(from.id, '🕓 So\'rovingiz allaqachon adminga yuborilgan, tasdiqlanishini kuting.');
-        return;
-      }
-      entry.restoreStatus = 'pending';
-      entry.restoreRequestedAt = new Date().toISOString();
-      saveTrash(trash);
-      logTrashEvent('restore_requested', entry.ownerSnapshot, {});
-
-      await sendMessage(from.id, '📤 So\'rovingiz administratorga yuborildi, tasdiqlanishini kuting.');
-      const restaurantName = (entry.ownerSnapshot.profile && entry.ownerSnapshot.profile.name) || 'oshxona';
-      const daysLeft = Math.max(0, Math.ceil((new Date(entry.autoPurgeAt).getTime() - Date.now()) / 86400000));
-      const kb = {
-        inline_keyboard: [[
-          { text: '✅ Tiklash', callback_data: `restore_approve:${trashId}` },
-          { text: '❌ Rad etish', callback_data: `restore_reject:${trashId}` }
-        ]]
-      };
-      for (const adminId of allAdminIds()) {
-        await sendMessage(adminId,
-          `🔄 <b>Tiklash so'ralmoqda</b>\nOshxona: <b>${escapeHtmlServer(restaurantName)}</b> (ID: <code>${entry.ownerSnapshot.id}</code>)\n` +
-          `Savatchadan avtomatik o'chirilishiga: ${daysLeft} kun qoldi.`, kb);
-      }
-      return;
-    }
-
-    if (data.startsWith('restore_approve:') || data.startsWith('restore_reject:')) {
-      if (!isAdminId(from.id)) { await answerCallbackQuery(cq.id, 'Faqat admin tasdiqlay oladi.', true); return; }
-      const isApprove = data.startsWith('restore_approve:');
-      const trashId = data.slice((isApprove ? 'restore_approve:' : 'restore_reject:').length);
-      const trash = loadTrash();
-      const entry = findTrashEntry(trash, trashId);
-      if (!entry) { await answerCallbackQuery(cq.id, 'Bu yozuv Savatchada topilmadi (allaqachon ko\'rib chiqilgan bo\'lishi mumkin).', true); return; }
-
-      const restaurantName = (entry.ownerSnapshot.profile && entry.ownerSnapshot.profile.name) || 'oshxona';
-
-      if (isApprove) {
-        const result = restoreOwnerFromTrash(entry);
-        if (!result.ok) { await answerCallbackQuery(cq.id, result.reason, true); return; }
-        saveTrash(trash.filter(t => t.id !== trashId));
-        logTrashEvent('restored', entry.ownerSnapshot, { restoredBy: String(from.id), via: 'bot_request' });
-
-        await answerCallbackQuery(cq.id, '✅ Tiklandi.');
-        if (chatId && messageId) {
-          await editMessageText(chatId, messageId, `✅ <b>Tiklandi</b>\nOshxona: <b>${escapeHtmlServer(restaurantName)}</b>`);
-        }
-        await sendMessage(entry.ownerSnapshot.id,
-          `✅ <b>Oshxonangiz tiklandi!</b>\nBarcha ma'lumotlaringiz (menyu, xodimlar, sozlamalar) saqlanib qolgan. Mini App tugmasi orqali oching.`);
-      } else {
-        entry.restoreStatus = 'rejected';
-        saveTrash(trash);
-        logTrashEvent('restore_rejected', entry.ownerSnapshot, { rejectedBy: String(from.id) });
-
-        await answerCallbackQuery(cq.id, '❌ Rad etildi.');
-        if (chatId && messageId) {
-          await editMessageText(chatId, messageId, `❌ <b>Rad etildi</b>\nOshxona: <b>${escapeHtmlServer(restaurantName)}</b>`);
-        }
-        await sendMessage(entry.ownerSnapshot.id,
-          '❌ Afsuski, tiklash so\'rovingiz rad etildi. Savollar bo\'lsa, administrator bilan bog\'laning.');
-      }
-      return;
-    }
-
-    if (data.startsWith('approve_trial:')) {
-      if (!isAdminId(from.id)) { await answerCallbackQuery(cq.id, 'Faqat admin tasdiqlay oladi.', true); return; }
-      const ownerId = data.slice('approve_trial:'.length);
-      const owners = loadOwners();
-      const owner = findOwner(owners, ownerId);
-      if (!owner) { await answerCallbackQuery(cq.id, 'Bu so\'rov topilmadi (allaqachon ko\'rib chiqilgan bo\'lishi mumkin).', true); return; }
-      if (owner.subscriptionStatus !== SUBSCRIPTION_STATUS.PENDING_TRIAL) {
-        await answerCallbackQuery(cq.id, 'Bu so\'rov allaqachon ko\'rib chiqilgan.', true);
-        return;
-      }
-      const until = new Date(Date.now() + SUBSCRIPTION_TRIAL_DAYS * 86400000).toISOString();
-      owner.subscriptionStatus = SUBSCRIPTION_STATUS.ACTIVE;
-      owner.subscriptionUntil = until;
-      owner.trialGivenAt = new Date().toISOString();
-      owner.graceUntil = null;
-      saveOwners(owners);
-
-      await answerCallbackQuery(cq.id, '✅ Tasdiqlandi.');
-      if (chatId && messageId) {
-        await editMessageText(chatId, messageId,
-          `✅ <b>Tasdiqlandi</b>\nOshxona: <b>${escapeHtmlServer((owner.profile && owner.profile.name) || 'oshxona')}</b>\nSinov muddati: ${SUBSCRIPTION_TRIAL_DAYS} kun`);
-      }
-      await sendMessage(owner.id,
-        `✅ So'rovingiz tasdiqlandi!\nSizga <b>${SUBSCRIPTION_TRIAL_DAYS} kunlik</b> bepul sinov muddati berildi.\nMini App tugmasi orqali oching va oshxonangizni sozlashni boshlang.`);
-      return;
-    }
-
-    if (data.startsWith('reject_trial:')) {
-      if (!isAdminId(from.id)) { await answerCallbackQuery(cq.id, 'Faqat admin rad eta oladi.', true); return; }
-      const ownerId = data.slice('reject_trial:'.length);
-      const owners = loadOwners();
-      const owner = findOwner(owners, ownerId);
-      if (!owner) { await answerCallbackQuery(cq.id, 'Bu so\'rov topilmadi (allaqachon ko\'rib chiqilgan bo\'lishi mumkin).', true); return; }
-      if (owner.subscriptionStatus !== SUBSCRIPTION_STATUS.PENDING_TRIAL) {
-        await answerCallbackQuery(cq.id, 'Bu so\'rov allaqachon ko\'rib chiqilgan.', true);
-        return;
-      }
-      const restaurantName = (owner.profile && owner.profile.name) || 'oshxona';
-      const remaining = owners.filter(o => String(o.id) !== String(ownerId));
-      saveOwners(remaining);
-
-      await answerCallbackQuery(cq.id, '❌ Rad etildi.');
-      if (chatId && messageId) {
-        await editMessageText(chatId, messageId, `❌ <b>Rad etildi</b>\nOshxona: <b>${escapeHtmlServer(restaurantName)}</b>`);
-      }
-      await sendMessage(ownerId, '❌ Afsuski, ro\'yxatdan o\'tish so\'rovingiz rad etildi. Savollar bo\'lsa, administrator bilan bog\'laning.');
-      return;
-    }
-
-    if (data.startsWith('rate:')) {
-      const [, ownerId, orderId, starsRaw] = data.split(':');
-      const stars = Number(starsRaw);
-      const owners = loadOwners();
-      const owner = findOwner(owners, ownerId);
-      if (!owner) { await answerCallbackQuery(cq.id, 'Oshxona topilmadi.'); return; }
-      const order = (owner.orders || []).find(o => o.id === orderId);
-      if (!order) { await answerCallbackQuery(cq.id, 'Buyurtma topilmadi.'); return; }
-      if (String(order.customerId) !== String(from.id)) {
-        await answerCallbackQuery(cq.id, 'Bu baho boshqa mijozga tegishli.');
-        return;
-      }
-      if (order.customerRating) {
-        await answerCallbackQuery(cq.id, 'Siz bu buyurtmaga allaqachon baho bergansiz, rahmat! 🙏');
-        return;
-      }
-      if (!Number.isFinite(stars) || stars < 1 || stars > 5) {
-        await answerCallbackQuery(cq.id, 'Noto\'g\'ri baho.');
-        return;
-      }
-
-      order.customerRating = stars;
-      order.customerRatedAt = new Date().toISOString();
-      saveOwners(owners);
-
-      const starsText = '⭐️'.repeat(stars);
-      if (chatId && messageId) {
-        await editMessageText(chatId, messageId,
-          `${cq.message.text || ''}\n\nSizning bahoyingiz: ${starsText}\nRahmat! 🙏`, null);
-      }
-      await answerCallbackQuery(cq.id, 'Bahoyingiz uchun rahmat! 🙏');
-
-      pendingReviewComments.set(String(from.id), {
-        ownerId: String(owner.id),
-        orderId: String(order.id),
-        expiresAt: Date.now() + REVIEW_COMMENT_WINDOW_MS
+    const goBack = () => loadOwnersAndRender();
+    document.querySelectorAll('.admin-menu-grid [data-admin-menu-key]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        if (adminChatsUnreadPollTimer) { clearInterval(adminChatsUnreadPollTimer); adminChatsUnreadPollTimer = null; }
+        const key = btn.getAttribute('data-admin-menu-key');
+        if (key === 'egalar') { renderAdminOwnersScreen(owners, goBack); return; }
+        if (key === 'yangiEga') { renderAdminAddOwnerScreen(goBack); return; }
+        if (key === 'tolovlar') { renderAdminPendingPaymentsScreen(goBack); return; }
+        if (key === 'yordam') { renderAdminSupportInboxScreen(goBack); return; }
+        if (key === 'tariflar') { renderTariffsScreen(goBack); return; }
+        if (key === 'obunaRejalari') { renderSubscriptionPlansScreen(goBack); return; }
+        if (key === 'tolovSozlamalari') { renderPaymentSettingsScreen(goBack); return; }
+        if (key === 'elon') { renderBroadcastScreen(goBack); return; }
+        if (key === 'savatcha') { renderTrashScreen(goBack); return; }
+        if (key === 'zaxira') { renderBackupScreen(goBack); return; }
+        if (key === 'tizim') { loadAndShowSystemStatus(); return; }
       });
-      await sendMessage(from.id, '✍️ Fikr-mulohazangiz bo\'lsa, shu yerga yozib qoldiring (ixtiyoriy — o\'tkazib yuborishingiz ham mumkin).');
+    });
+    wireAdminBottomNav(owners, goBack);
 
-      if (stars <= 3) {
-        const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
-        const alertText = `⚠️ <b>Past baho olindi</b> (${starsText})\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm\nMijoz: ${orderCustomerContactLabel(order)}`;
-        const staffList = owner.staff || [];
-        const targetIds = staffList.filter(s => ['egasi', 'kassir'].includes(s.role)).map(s => s.id);
-        for (const targetId of new Set([owner.id, ...targetIds])) {
-          sendMessage(targetId, alertText);
-        }
-      }
-      return;
+    refreshAdminChatsBadge();
+    adminChatsUnreadPollTimer = setInterval(refreshAdminChatsBadge, 7000);
+  }
+
+  function adminBottomNavHtml(activeKey) {
+    return `
+      <div class="ko-bottom-nav" id="adminBottomNav">
+        <button type="button" class="ko-bottom-nav-item ${activeKey === 'bosh' ? 'active' : ''}" data-admin-nav="bosh">
+          ${icon('home')}
+          <span>Bosh sahifa</span>
+        </button>
+        <button type="button" class="ko-bottom-nav-item ${activeKey === 'egalar' ? 'active' : ''}" data-admin-nav="egalar">
+          ${icon('users')}
+          <span>Egalar</span>
+        </button>
+        <button type="button" class="ko-bottom-nav-item ko-bottom-nav-fab-item" data-admin-nav="yangiEga">
+          <span class="ko-bottom-nav-fab">${icon('plus')}</span>
+          <span>Yangi ega</span>
+        </button>
+        <button type="button" class="ko-bottom-nav-item ${activeKey === 'tariflar' ? 'active' : ''}" data-admin-nav="tariflar">
+          ${icon('star')}
+          <span>Tariflar</span>
+        </button>
+        <button type="button" class="ko-bottom-nav-item ${activeKey === 'tizim' ? 'active' : ''}" data-admin-nav="tizim">
+          ${icon('settings')}
+          <span>Tizim</span>
+        </button>
+      </div>
+    `;
+  }
+
+  function wireAdminBottomNav(owners, goBack) {
+    const nav = document.getElementById('adminBottomNav');
+    if (!nav) return;
+    nav.querySelectorAll('[data-admin-nav]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const key = btn.getAttribute('data-admin-nav');
+        if (key === 'bosh') return;
+        if (adminChatsUnreadPollTimer) { clearInterval(adminChatsUnreadPollTimer); adminChatsUnreadPollTimer = null; }
+        if (key === 'egalar') { renderAdminOwnersScreen(owners, goBack); return; }
+        if (key === 'yangiEga') { renderAdminAddOwnerScreen(goBack); return; }
+        if (key === 'tariflar') { renderTariffsScreen(goBack); return; }
+        if (key === 'tizim') { loadAndShowSystemStatus(); return; }
+      });
+    });
+  }
+
+  function adminMenuItemHtml(item) {
+    return `
+      <button type="button" class="ko-menu-item" data-admin-menu-key="${item.key}">
+        <span class="ko-menu-item-icon">${icon(item.icon)}</span>
+        <span class="ko-menu-item-label">${escapeHtml(item.label)}</span>
+      </button>
+    `;
+  }
+
+  async function reloadAdminOwnersScreen(goBack) {
+    const res = await apiPost('/api/owners');
+    if (res.networkError) { renderNetworkErrorScreen(res.reason, () => reloadAdminOwnersScreen(goBack)); return; }
+    renderAdminOwnersScreen(res.ok ? res.owners : [], goBack);
+  }
+
+  async function renderAdminOwnersScreen(owners, goBack) {
+    setAppHeader(null, 'Pulsar', 'Admin');
+
+    const tariffRes = await apiPost('/api/tariff-list');
+    if (tariffRes.ok) tariffCacheForOwners = tariffRes.tariffs;
+    const totalCount = owners.length;
+
+    const ownersHtml = owners.length
+      ? owners.map(ownerItemHtml).join('')
+      : `
+        <div class="admin-empty-state">
+          ${icon('users', 'icon-lg icon-muted')}
+          <div class="bosh">Hozircha do'kon egalari yo'q.</div>
+        </div>
+      `;
+
+    ekran(`
+      <div class="panel">
+        <button class="btn ikkinchi" id="adminOwnersBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="kartochka">
+          <div class="admin-list-header">
+            <h2>${icon('users', 'icon-xs')} Ruxsat berilgan do'kon egalari</h2>
+            <span class="admin-list-count">${totalCount}</span>
+          </div>
+          ${owners.length > 3 ? `
+            <div class="admin-search-wrap">
+              ${icon('search', 'icon-xs icon-muted admin-search-icon')}
+              <input type="text" id="ownerSearchInput" placeholder="ID, username yoki nom bo'yicha qidirish" autocomplete="off">
+            </div>
+          ` : ''}
+          <div class="owner-list" id="ownerList">${ownersHtml}</div>
+          <div class="bosh admin-no-results hidden" id="ownerNoResults">Hech narsa topilmadi.</div>
+        </div>
+      </div>
+    `);
+
+    document.getElementById('adminOwnersBackBtn').addEventListener('click', goBack);
+
+    const searchInput = document.getElementById('ownerSearchInput');
+    if (searchInput) {
+      searchInput.addEventListener('input', () => {
+        const q = searchInput.value.trim().toLowerCase();
+        const items = document.querySelectorAll('#ownerList .owner-item');
+        let visibleCount = 0;
+        items.forEach(item => {
+          const match = !q || (item.getAttribute('data-search-key') || '').includes(q);
+          item.classList.toggle('hidden', !match);
+          if (match) visibleCount++;
+        });
+        const noResults = document.getElementById('ownerNoResults');
+        if (noResults) noResults.classList.toggle('hidden', !(q && visibleCount === 0));
+      });
     }
 
-    if (data.startsWith('dgaccept:') || data.startsWith('dgready:') || data.startsWith('kgaccept:') || data.startsWith('kgready:')) {
-      const [action, ownerId, orderId] = data.split(':');
-      const isKitchen = action.startsWith('kg');
-      const stageField = isKitchen ? 'kitchenGroupStage' : 'deliveryGroupStage';
-      const acceptedByField = isKitchen ? 'kitchenAcceptedBy' : 'deliveryAcceptedBy';
-      const acceptedAtField = isKitchen ? 'kitchenAcceptedAt' : 'deliveryAcceptedAt';
-      const readyByField = isKitchen ? 'kitchenReadyBy' : 'deliveryReadyBy';
-      const readyAtField = isKitchen ? 'kitchenReadyAt' : 'deliveryReadyAt';
-      const owners = loadOwners();
-      const owner = findOwner(owners, ownerId);
-      if (!owner) { await answerCallbackQuery(cq.id, 'Oshxona topilmadi.'); return; }
-      if (await guardCallbackSubscription(cq, owners, ownerId)) return;
-      const order = (owner.orders || []).find(o => o.id === orderId);
-      if (!order) { await answerCallbackQuery(cq.id, 'Buyurtma topilmadi.'); return; }
-
-      if (action === 'dgaccept' || action === 'kgaccept') {
-        if (order.status !== 'yangi') {
-
-          await answerCallbackQuery(cq.id, 'Allaqachon qabul qilingan.');
-          syncGroupMessagesForOrder(owner, order);
-          return;
-        }
-        order[stageField] = 'qabul_qilindi';
-        order[acceptedByField] = from.id;
-        order[acceptedAtField] = new Date().toISOString();
-
-        order.status = 'tayyorlanmoqda';
-        order.updatedAt = new Date().toISOString();
-        order.updatedBy = String(from.id);
-        if (!order.startedAt) order.startedAt = order.updatedAt;
-        saveOwners(owners);
-
-        if (chatId && messageId) {
-          await editMessageText(chatId, messageId,
-            `${cq.message.text || ''}\n\n✅ Qabul qilindi — ${displayName(from)}`,
-            { inline_keyboard: [[{ text: '✅ Tayyor', callback_data: `${isKitchen ? 'kgready' : 'dgready'}:${ownerId}:${orderId}` }]] });
-        }
-        syncGroupMessagesForOrder(owner, order);
-        if (order.customerId) {
-          await sendMessage(order.customerId, '✅ Buyurtmangiz qabul qilindi, tez orada tayyorlanadi!');
-        }
-        await answerCallbackQuery(cq.id, 'Qabul qilindi ✅');
+    document.getElementById('ownerList').addEventListener('click', async (e) => {
+      const removeBtn = e.target.closest('[data-remove-id]');
+      if (removeBtn) {
+        removeBtn.disabled = true;
+        await apiPost('/api/remove-owner', { id: removeBtn.getAttribute('data-remove-id') });
+        reloadAdminOwnersScreen(goBack);
         return;
       }
 
-      if (action === 'dgready' || action === 'kgready') {
-        if (order.status === 'tayyor') {
-          await answerCallbackQuery(cq.id, 'Allaqachon tayyor deb belgilangan.');
-          syncGroupMessagesForOrder(owner, order);
+      const reviewsBtn = e.target.closest('[data-view-reviews]');
+      if (reviewsBtn) {
+        const ownerId = reviewsBtn.getAttribute('data-view-reviews');
+        const ownerObj = owners.find(o => String(o.id) === String(ownerId));
+        renderAdminOwnerReviewsScreen(ownerId, (ownerObj && ownerObj.profile && ownerObj.profile.name) || ownerId, () => renderAdminOwnersScreen(owners, goBack));
+        return;
+      }
+
+      const writeBtn = e.target.closest('[data-write-owner]');
+      if (writeBtn) {
+        const ownerId = writeBtn.getAttribute('data-write-owner');
+        // Bu yerda thread hali umuman yo'q bo'lishi ham mumkin (egasi hali
+        // yozmagan) — /api/admin-support-thread/-reply har qanday ownerId
+        // bilan ishlaydi, shu sababli to'g'ridan-to'g'ri suhbat oynasini
+        // ochamiz, "Egalardan xabarlar" ro'yxatida paydo bo'lishini kutmasdan.
+        renderAdminSupportThreadScreen(ownerId, () => renderAdminOwnersScreen(owners, goBack));
+        return;
+      }
+
+      const menuBtn = e.target.closest('[data-manage-menu]');
+      if (menuBtn) {
+        const ownerId = menuBtn.getAttribute('data-manage-menu');
+        const ownerName = menuBtn.getAttribute('data-manage-menu-name');
+
+        adminTargetOwnerId = ownerId;
+        renderStockScreen(ownerName, 'egasi', () => {
+          adminTargetOwnerId = null;
+          renderAdminOwnersScreen(owners, goBack);
+        });
+        return;
+      }
+
+      const toggleEl = e.target.closest('[data-toggle-paid]');
+      if (toggleEl) {
+        const current = toggleEl.getAttribute('data-paid') === '1';
+        await apiPost('/api/update-owner-billing', { id: toggleEl.getAttribute('data-toggle-paid'), paid: !current });
+        reloadAdminOwnersScreen(goBack);
+        return;
+      }
+
+      const editEl = e.target.closest('[data-edit-price]');
+      if (editEl && !editEl.querySelector('input')) {
+        const editId = editEl.getAttribute('data-edit-price');
+        editEl.innerHTML = `
+          <input type="text" inputmode="numeric" placeholder="Yangi narx" style="margin:0; padding:6px 8px; font-size:13px;" data-price-field="${escapeHtml(editId)}">
+          <button data-save-price="${escapeHtml(editId)}" class="row-action-btn-solid">Saqlash</button>
+        `;
+      }
+
+      const credEl = e.target.closest('[data-edit-credentials]');
+      if (credEl && !credEl.querySelector('input')) {
+        const editId = credEl.getAttribute('data-edit-credentials');
+        const hasLoginNow = credEl.textContent.includes('Login:');
+        credEl.innerHTML = `
+          <input type="text" placeholder="Login" style="margin:0; padding:6px 8px; font-size:13px;" data-login-field="${escapeHtml(editId)}" autocomplete="off">
+          <input type="text" placeholder="Yangi parol" style="margin:0; padding:6px 8px; font-size:13px;" data-password-field="${escapeHtml(editId)}" autocomplete="off">
+          <button data-save-credentials="${escapeHtml(editId)}" class="row-action-btn-solid">Saqlash</button>
+          ${hasLoginNow ? `<button data-remove-credentials="${escapeHtml(editId)}" class="row-action-btn-solid">O'chirish</button>` : ''}
+        `;
+      }
+
+      const tariffEl = e.target.closest('[data-edit-tariff]');
+      if (tariffEl && !tariffEl.querySelector('select')) {
+        const editId = tariffEl.getAttribute('data-edit-tariff');
+        const owner = owners.find(o => String(o.id) === String(editId));
+        const currentTariffId = owner ? owner.tariffId : null;
+        const optionsHtml = [`<option value="">Tarif belgilanmagan</option>`]
+          .concat(tariffCacheForOwners.map(t => `<option value="${escapeHtml(t.id)}" ${t.id === currentTariffId ? 'selected' : ''}>${escapeHtml(t.name)}</option>`))
+          .join('');
+        tariffEl.innerHTML = `
+          <select data-tariff-field="${escapeHtml(editId)}" style="margin:0; padding:6px 8px; font-size:13px;">${optionsHtml}</select>
+          <button data-save-tariff="${escapeHtml(editId)}" class="row-action-btn-solid">Saqlash</button>
+        `;
+      }
+
+      const expiryEl = e.target.closest('[data-edit-expiry]');
+      if (expiryEl && !expiryEl.querySelector('select')) {
+        const editId = expiryEl.getAttribute('data-edit-expiry');
+        expiryEl.innerHTML = `
+          <select data-expiry-action="${escapeHtml(editId)}" style="margin:0; padding:6px 8px; font-size:13px;">
+            <option value="extend">+ kun qo'shish</option>
+            <option value="setDate">Aniq sanani belgilash</option>
+            <option value="unlimited">Doimiy qilish</option>
+            <option value="cancelNow">Hoziroq bekor qilish</option>
+          </select>
+          <input type="text" inputmode="numeric" placeholder="Necha kun" style="margin:0; padding:6px 8px; font-size:13px; width:80px;" data-expiry-days="${escapeHtml(editId)}">
+          <input type="date" style="margin:0; padding:6px 8px; font-size:13px; display:none;" data-expiry-date="${escapeHtml(editId)}">
+          <button data-save-expiry="${escapeHtml(editId)}" class="row-action-btn-solid">Saqlash</button>
+        `;
+      }
+    });
+
+    document.getElementById('ownerList').addEventListener('change', (e) => {
+      const sel = e.target.closest('[data-expiry-action]');
+      if (!sel) return;
+      const editId = sel.getAttribute('data-expiry-action');
+      const daysInput = document.querySelector(`input[data-expiry-days="${editId}"]`);
+      const dateInput = document.querySelector(`input[data-expiry-date="${editId}"]`);
+      if (daysInput) daysInput.style.display = sel.value === 'extend' ? '' : 'none';
+      if (dateInput) dateInput.style.display = sel.value === 'setDate' ? '' : 'none';
+    });
+
+    document.getElementById('ownerList').addEventListener('click', async (e) => {
+      const saveId = e.target.getAttribute('data-save-price');
+      if (saveId) {
+        const input = document.querySelector(`input[data-price-field="${saveId}"]`);
+        const val = input ? input.value.trim() : '';
+        if (val && (!/^\d+$/.test(val) || parseInt(val, 10) < 0)) {
+          alert('Narx musbat son bo\'lishi kerak.');
           return;
         }
+        await apiPost('/api/update-owner-billing', { id: saveId, price: val || 0 });
+        reloadAdminOwnersScreen(goBack);
+        return;
+      }
 
-        if (order.status !== 'tayyorlanmoqda') {
-          if (action === 'kgready' && order.status === 'yangi') {
-            // Oshpazlar guruhida "Qabul qilish" bosqichi olib tashlangan —
-            // "Tayyor" to'g'ridan-to'g'ri "yangi"dan bosilsa, qabul qilish
-            // ham shu zahoti (orqa fonda) belgilanadi.
-            order.kitchenGroupStage = 'qabul_qilindi';
-            order.kitchenAcceptedBy = from.id;
-            order.kitchenAcceptedAt = new Date().toISOString();
-            if (!order.startedAt) order.startedAt = order.kitchenAcceptedAt;
-          } else {
-            await answerCallbackQuery(cq.id, 'Avval "✅ Qabul qilish" tugmasini bosing.', true);
+      const saveCredId = e.target.getAttribute('data-save-credentials');
+      if (saveCredId) {
+        const loginInput = document.querySelector(`input[data-login-field="${saveCredId}"]`);
+        const passwordInput = document.querySelector(`input[data-password-field="${saveCredId}"]`);
+        const loginVal = loginInput ? loginInput.value.trim() : '';
+        const passwordVal = passwordInput ? passwordInput.value : '';
+        const res = await apiPost('/api/set-owner-credentials', { id: saveCredId, login: loginVal, password: passwordVal });
+        if (!res.ok) {
+          alert(res.reason || 'Xatolik yuz berdi.');
+          return;
+        }
+        reloadAdminOwnersScreen(goBack);
+        return;
+      }
+
+      const removeCredId = e.target.getAttribute('data-remove-credentials');
+      if (removeCredId) {
+        await apiPost('/api/remove-owner-credentials', { id: removeCredId });
+        reloadAdminOwnersScreen(goBack);
+        return;
+      }
+
+      const saveTariffId = e.target.getAttribute('data-save-tariff');
+      if (saveTariffId) {
+        const select = document.querySelector(`select[data-tariff-field="${saveTariffId}"]`);
+        const val = select ? select.value : '';
+        const res = await apiPost('/api/owner-set-tariff', { id: saveTariffId, tariffId: val || null });
+        if (!res.ok) {
+          alert(res.reason || 'Xatolik yuz berdi.');
+          return;
+        }
+        reloadAdminOwnersScreen(goBack);
+        return;
+      }
+
+      const saveExpiryId = e.target.getAttribute('data-save-expiry');
+      if (saveExpiryId) {
+        const actionSelect = document.querySelector(`select[data-expiry-action="${saveExpiryId}"]`);
+        const action = actionSelect ? actionSelect.value : '';
+        const body = { id: saveExpiryId, action };
+        if (action === 'extend') {
+          const daysInput = document.querySelector(`input[data-expiry-days="${saveExpiryId}"]`);
+          const days = daysInput ? daysInput.value.trim() : '';
+          if (!days || !/^\d+$/.test(days) || parseInt(days, 10) <= 0) {
+            alert('Kun sonini musbat butun son sifatida kiriting.');
             return;
           }
-        }
-        order[stageField] = 'tayyor';
-        order[readyByField] = from.id;
-        order[readyAtField] = new Date().toISOString();
-
-        order.status = 'tayyor';
-        order.updatedAt = new Date().toISOString();
-        order.updatedBy = String(from.id);
-        if (!order.readyAt) order.readyAt = order.updatedAt;
-        saveOwners(owners);
-
-        if (chatId && messageId) {
-          await editMessageText(chatId, messageId,
-            `${cq.message.text || ''}\n\n✅ Tayyor — ${displayName(from)}`, null);
-        }
-        syncGroupMessagesForOrder(owner, order, { skipKitchenTextFinalize: isKitchen });
-        notifyDeliveryGroupOrderReady(owner, order);
-        if (order.customerId) {
-          const readyMsg = order.orderType === 'dostavka'
-            ? '✅ Buyurtmangiz tayyor, kuryer yo\'lda!'
-            : '✅ Buyurtmangiz tayyor!';
-          await sendMessage(order.customerId, readyMsg);
-        }
-
-        {
-          const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
-          const orderLabel = `${ORDER_TYPES[order.orderType] || order.orderType}`;
-          const readyText = `✅ <b>Buyurtma tayyor</b> (${orderLabel})\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm`;
-          const staffList = owner.staff || [];
-          const targetRoles = order.orderType === 'dostavka' ? ['kassir', 'dostavka'] : ['kassir'];
-          const targetIds = staffList.filter(s => targetRoles.includes(s.role)).map(s => s.id);
-          for (const targetId of new Set(targetIds.map(String))) {
-            if (targetId === String(from.id)) continue;
-            sendMessage(targetId, readyText);
+          body.days = days;
+        } else if (action === 'setDate') {
+          const dateInput = document.querySelector(`input[data-expiry-date="${saveExpiryId}"]`);
+          const date = dateInput ? dateInput.value : '';
+          if (!date) {
+            alert('Sanani tanlang.');
+            return;
           }
+          body.date = date;
+        } else if (action === 'cancelNow') {
+          if (!confirm("Obunani hoziroq bekor qilasizmi? Do'kon egasining Mini App'ga kirishi darhol yopiladi.")) return;
         }
-        await answerCallbackQuery(cq.id, 'Tayyor deb belgilandi ✅');
+        const res = await apiPost('/api/owner-set-expiry', body);
+        if (!res.ok) {
+          alert(res.reason || 'Xatolik yuz berdi.');
+          return;
+        }
+        reloadAdminOwnersScreen(goBack);
         return;
       }
-    }
+    });
+  }
 
-    // Buyurtma allaqachon "Tayyor" bo'lgach, kassir unga yangi mahsulot
-    // qo'shsa — shu qo'shimcha alohida oshxona guruhiga yuboriladi va
-    // shu yerda unga alohida "Tayyor" bosiladi (asosiy buyurtma holatiga
-    // tegmaydi). Qarang: /api/edit-order.
-    if (data.startsWith('kgaddready:')) {
-      const [, ownerId, orderId, additionId] = data.split(':');
-      const owners = loadOwners();
-      const owner = findOwner(owners, ownerId);
-      if (!owner) { await answerCallbackQuery(cq.id, 'Oshxona topilmadi.'); return; }
-      if (await guardCallbackSubscription(cq, owners, ownerId)) return;
-      const order = (owner.orders || []).find(o => o.id === orderId);
-      if (!order) { await answerCallbackQuery(cq.id, 'Buyurtma topilmadi.'); return; }
-      const addition = (order.additions || []).find(a => a.id === additionId);
-      if (!addition) { await answerCallbackQuery(cq.id, 'Topilmadi.'); return; }
-      if (addition.ready) {
-        await answerCallbackQuery(cq.id, 'Allaqachon tayyor deb belgilangan.');
-        return;
-      }
-      addition.ready = true;
-      addition.readyBy = from.id;
-      addition.readyAt = new Date().toISOString();
-      saveOwners(owners);
+  async function renderAdminPendingPaymentsScreen(goBack) {
+    setAppHeader(null, 'Pulsar', 'Admin');
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Kutilayotgan to'lovlar</div>
+        <button class="btn ikkinchi" id="pendingPayBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="kartochka">
+          <div id="pendingPayList"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+      </div>
+    `);
+    document.getElementById('pendingPayBackBtn').addEventListener('click', () => goBack && goBack());
+    await loadPendingPaymentsList(goBack);
+  }
 
-      if (chatId && messageId) {
-        await editMessageText(chatId, messageId,
-          `${cq.message.text || ''}\n\n✅ Tayyor — ${displayName(from)}`, null);
-      }
-
-      {
-        const itemsText = addition.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
-        const orderLabel = `#${order.orderNumber || order.id}`;
-        const readyText = `✅ <b>Qo'shimcha tayyor</b> (Buyurtma ${orderLabel})\n${itemsText}`;
-        const staffList = owner.staff || [];
-        const targetIds = staffList.filter(s => staffHasRole(s, 'kassir')).map(s => s.id);
-        for (const targetId of new Set([owner.id, ...targetIds].map(String))) {
-          if (targetId === String(from.id)) continue;
-          sendMessage(targetId, readyText);
-        }
-      }
-      await answerCallbackQuery(cq.id, 'Tayyor deb belgilandi ✅');
+  async function loadPendingPaymentsList(goBack) {
+    const listEl = document.getElementById('pendingPayList');
+    if (!listEl) return;
+    const res = await apiPost('/api/admin-pending-subscription-payments');
+    if (!res.ok) {
+      listEl.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
       return;
     }
-
-    // Dostavka guruhida "✅ Yetkazildi" tugmasi — kuryer mini-ilovani
-    // ochmasdan, to'g'ridan-to'g'ri guruhdan buyurtmani yetkazilgan deb
-    // belgilashi mumkin (qarang: notifyDeliveryGroupOrderReady()). Bu
-    // /api/deliver-order bilan bir xil natijaga olib keladi — mijozga
-    // baho so'rovi ham shu yerdan yuboriladi.
-    if (data.startsWith('dgdelivered:')) {
-      const [, ownerId, orderId] = data.split(':');
-      const owners = loadOwners();
-      const owner = findOwner(owners, ownerId);
-      if (!owner) { await answerCallbackQuery(cq.id, 'Oshxona topilmadi.'); return; }
-      if (await guardCallbackSubscription(cq, owners, ownerId)) return;
-      const order = (owner.orders || []).find(o => o.id === orderId);
-      if (!order) { await answerCallbackQuery(cq.id, 'Buyurtma topilmadi.'); return; }
-      if (order.orderType !== 'dostavka') {
-        await answerCallbackQuery(cq.id, 'Bu buyurtma dostavka turi emas.');
-        return;
-      }
-      if (order.deliveredBy) {
-        await answerCallbackQuery(cq.id, 'Bu buyurtma allaqachon yetkazilgan deb belgilangan.');
-        syncGroupMessagesForOrder(owner, order);
-        return;
-      }
-
-      order.deliveredBy = from.id;
-      order.deliveredAt = new Date().toISOString();
-      logStaffAction(owner, { userId: String(from.id), role: 'dostavka', action: 'yetkazdi', orderId: order.id, note: `${fmtNum(order.total)} so'm — yetkazib berildi (guruhdan)` });
-      saveOwners(owners);
-
-      if (chatId && messageId) {
-        await editMessageText(chatId, messageId,
-          `${cq.message.text || ''}\n\n✅ Yetkazildi — ${displayName(from)}`, null);
-      }
-      sendOrderRatingRequest(owner, order);
-      await answerCallbackQuery(cq.id, 'Yetkazildi deb belgilandi ✅');
+    if (!res.pending.length) {
+      listEl.innerHTML = `<div class="bosh">${icon('check-circle', 'icon-xs')} Hozircha kutilayotgan to'lov yo'q.</div>`;
       return;
     }
+    listEl.innerHTML = res.pending.map(p => `
+      <div class="owner-item owner-item-detailed" data-owner-id="${escapeHtml(String(p.ownerId))}">
+        <div class="owner-item-head">
+          <div class="owner-item-heading">
+            <div class="owner-id">${escapeHtml(p.restaurantName || p.ownerLabel)}</div>
+            <div class="owner-username">${escapeHtml(p.ownerLabel)} · ID: ${escapeHtml(String(p.ownerId))}</div>
+          </div>
+        </div>
+        <div class="profile-row"><b>Reja:</b> ${escapeHtml(p.request.planLabel)}</div>
+        <div class="profile-row"><b>Summa:</b> ${fmtNum(p.request.amount)} so'm</div>
+        ${p.request.tariffLabel ? `<div class="profile-row"><b>Tarif (biriktiriladi):</b> ${escapeHtml(p.request.tariffLabel)}</div>` : ''}
+        <div class="profile-row"><b>Skrinshot yuborildi:</b> ${escapeHtml(timeAgo(p.request.screenshotSentAt))}</div>
+        <div class="bosh" style="margin:6px 0 10px;">Skrinshotni tekshirish uchun Telegram'dagi bot xabarini ko'ring (shu yerga avtomatik yuborilgan).</div>
+        <div class="btn-row" style="margin-top:0;">
+          <button class="btn" data-decide-approve="${escapeHtml(String(p.ownerId))}" style="width:auto; min-height:36px; padding:6px 14px;">✅ Tasdiqlash</button>
+          <button class="btn xavfli" data-decide-reject="${escapeHtml(String(p.ownerId))}" style="width:auto; min-height:36px; padding:6px 14px;">❌ Rad etish</button>
+        </div>
+      </div>
+    `).join('');
 
-    if (data.startsWith('payok:') || data.startsWith('payrej:')) {
-      const [action, ownerId, orderId] = data.split(':');
-      const owners = loadOwners();
-      const owner = findOwner(owners, ownerId);
-      if (!owner) { await answerCallbackQuery(cq.id, 'Oshxona topilmadi.'); return; }
-      if (await guardCallbackSubscription(cq, owners, ownerId)) return;
-      const order = (owner.orders || []).find(o => o.id === orderId);
-      if (!order) { await answerCallbackQuery(cq.id, 'Buyurtma topilmadi.'); return; }
+    listEl.querySelectorAll('[data-decide-approve]').forEach(btn => {
+      btn.addEventListener('click', () => decideAdminPendingPayment(btn.getAttribute('data-decide-approve'), 'approve', goBack));
+    });
+    listEl.querySelectorAll('[data-decide-reject]').forEach(btn => {
+      btn.addEventListener('click', () => decideAdminPendingPayment(btn.getAttribute('data-decide-reject'), 'reject', goBack));
+    });
+  }
 
-      const isOwnerUser = String(owner.id) === String(from.id);
-      const isCashier = (owner.staff || []).some(s => staffHasRole(s, 'kassir') && String(s.id) === String(from.id));
-      if (!isOwnerUser && !isCashier) {
-        await answerCallbackQuery(cq.id, 'Sizda bu amal uchun ruxsat yo\'q (faqat kassir yoki egasi).');
-        return;
-      }
-
-      const editConfirmMessage = (extraLine) => {
-        if (!chatId || !messageId) return Promise.resolve();
-        if (cq.message && cq.message.photo) {
-          return editMessageCaption(chatId, messageId, `${cq.message.caption || ''}\n\n${extraLine}`, null);
-        }
-        return editMessageText(chatId, messageId, `${cq.message.text || ''}\n\n${extraLine}`, null);
-      };
-
-      if (order.paymentProofStatus !== 'kutilmoqda') {
-        await answerCallbackQuery(cq.id, 'Bu so\'rov allaqachon ko\'rib chiqilgan.');
-        await editConfirmMessage('(allaqachon ko\'rib chiqilgan)');
-        return;
-      }
-
-      if (action === 'payok') {
-        order.paymentProofStatus = 'tasdiqlandi';
-        order.paymentProofApprovedBy = from.id;
-        order.paymentProofApprovedAt = new Date().toISOString();
-        saveOwners(owners);
-
-        const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
-        const notifyText = `🆕 <b>Yangi mijoz buyurtmasi</b> (${ORDER_TYPES[order.orderType]})\n` +
-          `${orderCustomerContactLabel(order)}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm\nTo'lov: ${PAYMENT_TYPES[order.paymentType]} (✅ tasdiqlangan)`;
-        const notifyTargets = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'oshpaz') || staffHasRole(s, 'kassir')).map(s => s.id))];
-        await notifyStaffList(owner, notifyTargets, notifyText, `Buyurtma #${order.id} (to'lov tasdiqlangach)`, 'newOrder');
-        saveOwners(owners);
-        // Dostavka guruhi FAQAT dostavka buyurtmalari uchun (va faqat
-        // oshpaz "Tayyor" deganda — qarang: notifyDeliveryGroupOrderReady).
-        // Stolga / Olib ketish buyurtmalari bu guruhga umuman yuborilmaydi.
-        notifyKitchenGroup(owner, order, orderCustomerContactLabel(order));
-
-        if (order.customerId) {
-          const okText = order.paymentConfirmMethod === 'naqd_kassa'
-            ? '✅ To\'lovingiz qabul qilindi! Taomingiz tayyorlanishni boshladi. Yoqimli ishtaha! 😊'
-            : '✅ To\'lovingiz tasdiqlandi! Buyurtmangiz oshxonaga yuborildi.';
-          await sendMessage(order.customerId, okText);
-        }
-        await editConfirmMessage(`✅ Tasdiqlandi — ${displayName(from)}`);
-        await answerCallbackQuery(cq.id, 'Tasdiqlandi ✅');
-        return;
-      }
-
-      if (action === 'payrej') {
-        order.paymentProofStatus = 'rad_etildi';
-        order.paymentProofRejectedBy = from.id;
-        order.paymentProofRejectedAt = new Date().toISOString();
-        saveOwners(owners);
-
-        if (order.customerId) {
-          const rejText = order.paymentConfirmMethod === 'naqd_kassa'
-            ? '❌ Buyurtmangiz bekor qilindi. Savol bo\'lsa, kassaga murojaat qiling.'
-            : '❌ To\'lov skrinshoti tasdiqlanmadi. Iltimos, to\'g\'ri skrinshotni qayta (rasm qilib) yuboring ' +
-              'yoki oshxona bilan bog\'laning.';
-          await sendMessage(order.customerId, rejText);
-        }
-        await editConfirmMessage(`❌ Rad etildi — ${displayName(from)}`);
-        await answerCallbackQuery(cq.id, 'Rad etildi ❌');
-        return;
-      }
-    }
-
-    if (!isAdminId(from.id)) {
-      await answerCallbackQuery(cq.id, 'Faqat admin qaror qabul qila oladi.');
+  async function decideAdminPendingPayment(ownerId, action, goBack) {
+    if (action === 'reject' && !confirm("Bu to'lov so'rovini rad etasizmi?")) return;
+    const res = await apiPost('/api/admin-subscription-decide', { ownerId, action });
+    if (!res.ok) {
+      alert(res.reason || 'Xatolik yuz berdi.');
       return;
     }
+    await loadPendingPaymentsList(goBack);
+  }
 
-    if (data.startsWith('subok:') || data.startsWith('subrej:')) {
-      const [action, ownerId] = data.split(':');
-      const owners = loadOwners();
-      const owner = findOwner(owners, ownerId);
-      if (!owner) { await answerCallbackQuery(cq.id, 'Oshxona topilmadi.'); return; }
+  function renderAdminAddOwnerScreen(goBack) {
+    setAppHeader(null, 'Pulsar', 'Admin');
+    ekran(`
+      <div class="panel">
+        <button class="btn ikkinchi" id="adminAddBackBtn" style="margin-bottom:12px;">← Orqaga</button>
 
-      const editConfirmMessage = (extraLine) => {
-        if (!chatId || !messageId) return Promise.resolve();
-        if (cq.message && cq.message.photo) {
-          return editMessageCaption(chatId, messageId, `${cq.message.caption || ''}\n\n${extraLine}`, null);
-        }
-        return editMessageText(chatId, messageId, `${cq.message.text || ''}\n\n${extraLine}`, null);
-      };
+        <div class="kartochka">
+          <h2>${icon('link', 'icon-xs')} Bir martalik taklif havolasi</h2>
+          <div class="bosh">Havolani do'kon egasiga yuboring. U botni ochganda so'rovi sizga keladi — Telegramda tugma bosib, necha kunga ruxsat berishni tanlaysiz.</div>
+          <button class="btn" id="createInviteBtn" style="margin-top:10px;">${icon('plus', 'icon-xs')}<span>Havola yaratish</span></button>
+          <div id="inviteBoxWrap"></div>
+          <div class="xabar" id="inviteMsg"></div>
+        </div>
 
-      const reqData = owner.subscriptionPaymentRequest;
-      if (!reqData || reqData.status !== 'kutilmoqda_tasdiq') {
-        await answerCallbackQuery(cq.id, 'Bu so\'rov allaqachon ko\'rib chiqilgan.');
-        await editConfirmMessage('(allaqachon ko\'rib chiqilgan)');
+        <div class="kartochka">
+          <h2>${icon('user', 'icon-xs')} Do'kon egasini ID orqali qo'shish</h2>
+          <label class="field-label">Telegram ID, @username yoki havola</label>
+          <input type="text" id="ownerInput" placeholder="Masalan: 123456789 yoki @username">
+          <label class="field-label">Muddat (kun)</label>
+          <input type="text" id="ownerDaysInput" placeholder="Bo'sh qoldirsangiz — doimiy" inputmode="numeric">
+          <label class="field-label">Obuna narxi</label>
+          <input type="text" id="ownerPriceInput" placeholder="So'm/oy (ixtiyoriy)" inputmode="numeric">
+          <label class="check-label" for="ownerPaidInput">
+            <input type="checkbox" id="ownerPaidInput"> To'lov qabul qilindi
+          </label>
+          <button class="btn" id="addOwnerBtn">${icon('plus', 'icon-xs')}<span>Do'kon egasi qo'shish</span></button>
+          <div class="xabar" id="addMsg"></div>
+        </div>
+      </div>
+      <div class="overlay hidden" id="confirmOverlay">
+        <div class="modal">
+          <h3>Tasdiqlaysizmi?</h3>
+          <p id="confirmText"></p>
+          <div class="btn-row">
+            <button class="btn ikkinchi" id="confirmCancel">Yo'q</button>
+            <button class="btn" id="confirmOk">Ha, qo'shish</button>
+          </div>
+        </div>
+      </div>
+    `);
+
+    document.getElementById('adminAddBackBtn').addEventListener('click', goBack);
+
+    document.getElementById('createInviteBtn').addEventListener('click', async () => {
+      const msgEl = document.getElementById('inviteMsg');
+      const wrap = document.getElementById('inviteBoxWrap');
+      setMsg(msgEl, 'Yaratilmoqda...');
+      const res = await apiPost('/api/create-invite');
+      if (!res.ok) {
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+        wrap.innerHTML = '';
         return;
       }
-
-      if (action === 'subrej') {
-
-        const hasPhoto = !!(cq.message && cq.message.photo);
-        const originalContent = hasPhoto ? (cq.message.caption || '') : (cq.message.text || '');
-        setAwaitingSubRejectReason(owner.id, chatId, messageId, hasPhoto, originalContent);
-        await answerCallbackQuery(cq.id, 'Rad etish sababini yozing');
-        await sendMessage(from.id,
-          `✏️ <b>${escapeHtmlServer(ownerLabel(owner))}</b> uchun rad etish sababini yozib yuboring ` +
-          `(masalan: "Skrinshot noaniq" yoki "Summa mos emas"). Bekor qilish uchun /bekor yozing.`);
-        return;
-      }
-
-      const result = decideSubscriptionPayment(owner, 'approve', from.id);
-      saveOwners(owners);
-
-      await editConfirmMessage(`✅ Tasdiqlandi — ${displayName(from)}`);
-      await answerCallbackQuery(cq.id, 'Tasdiqlandi ✅');
-      return;
-    }
-
-    if (data.startsWith('custom:')) {
-      const [, reqId] = data.split(':');
-      const reqInfo = findRequest(reqId);
-      if (!reqInfo) {
-        await answerCallbackQuery(cq.id, 'Bu so\'rov allaqachon ko\'rib chiqilgan.');
-        return;
-      }
-      setAwaitingCustom(reqId, messageId);
-      await editMessageText(chatId, messageId,
-        `🆕 <b>Yangi do'kon egasi so'rovi</b>\n${displayName(reqInfo)} (ID: <code>${reqInfo.userId}</code>)\n\n` +
-        `✏️ Necha kunga ruxsat berishni istaysiz? Kun sonini oddiy xabar qilib yuboring (masalan: 14).\nBekor qilish uchun /bekor yozing.`);
-      await answerCallbackQuery(cq.id);
-      return;
-    }
-
-    if (data.startsWith('apr:')) {
-      const [, reqId, daysKey] = data.split(':');
-      const reqInfo = findRequest(reqId);
-      if (!reqInfo) {
-        await answerCallbackQuery(cq.id, 'Bu so\'rov allaqachon ko\'rib chiqilgan.');
-        return;
-      }
-
-      const days = daysKey === 'p' ? null : parseInt(daysKey, 10);
-      const label = approveRequest(reqInfo, days);
-
-      await editMessageText(chatId, messageId,
-        `✅ <b>Tasdiqlandi</b>\n${displayName(reqInfo)} (ID: <code>${reqInfo.userId}</code>)\nRuxsat muddati: ${label}`);
-      await sendMessage(reqInfo.userId,
-        `✅ So'rovingiz tasdiqlandi! Sizga <b>${label}</b> muddatga kirish huquqi berildi.\nMini App tugmasi orqali oching.`);
-      await answerCallbackQuery(cq.id, 'Tasdiqlandi ✅');
-      return;
-    }
-
-    if (data.startsWith('rej:')) {
-      const [, reqId] = data.split(':');
-      const reqInfo = findRequest(reqId);
-      if (!reqInfo) {
-        await answerCallbackQuery(cq.id, 'Bu so\'rov allaqachon ko\'rib chiqilgan.');
-        return;
-      }
-      removeRequest(reqId);
-      await editMessageText(chatId, messageId,
-        `❌ <b>Rad etildi</b>\n${displayName(reqInfo)} (ID: <code>${reqInfo.userId}</code>)`);
-      await sendMessage(reqInfo.userId, '❌ Kechirasiz, so\'rovingiz rad etildi.');
-      await answerCallbackQuery(cq.id, 'Rad etildi');
-      return;
-    }
-  }
-}
-
-async function resolveUserInput(input) {
-  const trimmed = String(input || '').trim();
-  if (!trimmed) return { error: 'Ma\'lumot kiritilmagan' };
-
-  if (/^\d{5,}$/.test(trimmed)) {
-    return { id: trimmed };
-  }
-
-  let m = trimmed.match(/id=(\d{5,})/);
-  if (m) return { id: m[1] };
-
-  m = trimmed.match(/(?:t\.me\/|@)([a-zA-Z0-9_]{4,32})/i);
-  if (m) {
-    const username = m[1];
-    try {
-      const result = await telegramApi('getChat', { chat_id: '@' + username });
-      if (result.ok && result.result && result.result.id) {
-        return { id: String(result.result.id), username: result.result.username || username };
-      }
-      return { error: 'Foydalanuvchi topilmadi. Unga botga /start yozishni so\'rang yoki to\'g\'ridan-to\'g\'ri Telegram ID raqamini kiriting (ID ni @userinfobot orqali bilib olish mumkin).' };
-    } catch (e) {
-      return { error: 'Telegram bilan bog\'lanishda xatolik yuz berdi. Qaytadan urinib ko\'ring.' };
-    }
-  }
-
-  return { error: 'Noto\'g\'ri format. Telegram ID raqamini, @username yoki t.me havolasini kiriting.' };
-}
-
-function sendJSON(res, status, obj) {
-  if (res.headersSent) return;
-  res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
-  res.end(JSON.stringify(obj));
-}
-const sendOk = (res, data) => sendJSON(res, 200, Object.assign({ ok: true }, data));
-const sendFail = (res, reason, extra) => sendJSON(res, 200, Object.assign({ ok: false, reason }, extra));
-function bodyErrorReason(err) {
-  return err && err.message === 'body_too_large'
-    ? "So'rov hajmi juda katta (odatda yuklangan rasm judayam katta bo'lgani uchun). Rasmni kichikroq/ boshqasiga almashtirib, qaytadan urinib ko'ring."
-    : "noto'g'ri so'rov";
-}
-
-const MAX_REQUEST_BODY_BYTES = 4 * 1024 * 1024;
-function readBody(req, cb) {
-  let body = '';
-  let tooLarge = false;
-  req.on('data', chunk => {
-    if (tooLarge) return;
-    body += chunk;
-    if (body.length > MAX_REQUEST_BODY_BYTES) {
-      tooLarge = true;
-      cb(new Error('body_too_large'));
-      req.destroy();
-    }
-  });
-  req.on('end', () => {
-    if (tooLarge) return;
-    let parsed;
-    try { parsed = JSON.parse(body || '{}'); }
-    catch (e) {
-      // Diagnostika: JSON.parse nima uchun muvaffaqiyatsiz bo'lganini
-      // server konsolida ko'rish uchun (masalan Replit/PM2 log'larida).
-      console.error(
-        `readBody JSON parse xatosi [${req.method} ${req.url}]:`,
-        e.message,
-        '| body uzunligi:', body.length,
-        '| body boshi:', body.slice(0, 300),
-        '| body oxiri:', body.slice(-100)
-      );
-      return cb(e);
-    }
-    // cb tashqarida chaqiriladi: handler ichidagi xato qayta cb(err) ga tushmasin
-    cb(null, parsed);
-  });
-  req.on('error', (e) => {
-    console.error(`readBody req oqim xatosi [${req.method} ${req.url}]:`, e.message);
-    if (!tooLarge) { tooLarge = true; cb(e); }
-  });
-}
-
-const AI_DIRECTOR_HOUR = 8;
-const AI_DIRECTOR_TZ_OFFSET_MS = 5 * 60 * 60 * 1000;
-
-function aiDirDateKey(input) {
-  const d = (input instanceof Date) ? input : new Date(input);
-  return new Date(d.getTime() + AI_DIRECTOR_TZ_OFFSET_MS).toISOString().slice(0, 10);
-}
-function aiDirDayStartFromKey(dateKey) {
-  return new Date(new Date(dateKey + 'T00:00:00.000Z').getTime() - AI_DIRECTOR_TZ_OFFSET_MS);
-}
-
-// Har bir oshxona uchun kunlik tartib raqami (#1, #2, #3...) — har kuni 1 dan qayta boshlanadi.
-function getNextOrderNumber(owner) {
-  const todayKey = aiDirDateKey(new Date());
-  if (!owner.orderNumberState || owner.orderNumberState.date !== todayKey) {
-    owner.orderNumberState = { date: todayKey, seq: 0 };
-  }
-  owner.orderNumberState.seq += 1;
-  return owner.orderNumberState.seq;
-}
-function aiDirDayStart(input) {
-  return aiDirDayStartFromKey(aiDirDateKey(input));
-}
-function aiDirTashkentHour(input) {
-  const d = (input instanceof Date) ? input : new Date(input);
-  return new Date(d.getTime() + AI_DIRECTOR_TZ_OFFSET_MS).getUTCHours();
-}
-
-const AI_DIRECTOR_WEEKLY_DAY = 1;
-function aiDirTashkentWeekday(input) {
-  const d = (input instanceof Date) ? input : new Date(input);
-  return new Date(d.getTime() + AI_DIRECTOR_TZ_OFFSET_MS).getUTCDay();
-}
-
-function aiDirWeekKey(input) {
-  const d = (input instanceof Date) ? input : new Date(input);
-  const tashkent = new Date(d.getTime() + AI_DIRECTOR_TZ_OFFSET_MS);
-  const day = tashkent.getUTCDay();
-  const diffToMonday = (day === 0) ? -6 : (1 - day);
-  const monday = new Date(tashkent.getTime());
-  monday.setUTCDate(monday.getUTCDate() + diffToMonday);
-  return monday.toISOString().slice(0, 10);
-}
-
-function aiDirCashBucket(owner, fromDate, toDate) {
-  const orders = (owner.orders || []).filter(o => { const t = new Date(o.createdAt); return t >= fromDate && t < toDate; });
-  const expenses = (owner.expenses || []).filter(e => { const t = new Date(e.createdAt); return t >= fromDate && t < toDate; });
-  const income = orders.reduce((s, o) => s + orderIncomeAmount(o), 0);
-  const expense = expenses.reduce((s, e) => s + (e.amount || 0), 0);
-  return { income, expense, net: income - expense, orderCount: orders.length };
-}
-
-function aiDirItemStats(owner, fromDate, toDate) {
-  const orders = (owner.orders || []).filter(o => { const t = new Date(o.createdAt); return t >= fromDate && t < toDate; });
-  const byId = new Map();
-  for (const o of orders) {
-    for (const it of (o.items || [])) {
-      const cur = byId.get(it.id) || { id: it.id, name: it.name, qty: 0, revenue: 0 };
-      cur.qty += it.qty;
-      cur.revenue += it.price * it.qty;
-      byId.set(it.id, cur);
-    }
-  }
-  return byId;
-}
-
-function aiDirDecliningItems(owner) {
-  const todayStart = aiDirDayStart(new Date());
-  const last7Start = new Date(todayStart.getTime() - 7 * 86400000);
-  const prev7Start = new Date(todayStart.getTime() - 14 * 86400000);
-
-  const last7 = aiDirItemStats(owner, last7Start, todayStart);
-  const prev7 = aiDirItemStats(owner, prev7Start, last7Start);
-
-  const declining = [];
-  for (const [id, cur] of last7) {
-    const prev = prev7.get(id);
-    if (!prev || prev.qty < 5) continue;
-    const changePercent = ((cur.qty - prev.qty) / prev.qty) * 100;
-    if (changePercent <= -15) {
-      declining.push({ id, name: cur.name, qtyNow: cur.qty, qtyPrev: prev.qty, changePercent: Math.round(changePercent) });
-    }
-  }
-  declining.sort((a, b) => a.changePercent - b.changePercent);
-  return declining;
-}
-
-function aiDirStockRunway(owner) {
-  const since = new Date(Date.now() - 7 * 86400000);
-  const pools = [owner, ...(owner.branches || [])];
-  const result = [];
-  for (const pool of pools) {
-    const usageById = new Map();
-    for (const m of (pool.stockMovements || [])) {
-      if (m.type !== 'chiqim') continue;
-      if (!m.note || !m.note.startsWith('Buyurtma:')) continue;
-      if (new Date(m.createdAt) < since) continue;
-      usageById.set(m.stockId, (usageById.get(m.stockId) || 0) + m.qty);
-    }
-    for (const item of (pool.stock || [])) {
-      const used7d = usageById.get(item.id) || 0;
-      if (used7d <= 0) continue;
-      const avgDaily = used7d / 7;
-      if (avgDaily <= 0) continue;
-      result.push({ name: item.name, unit: item.unit, qty: item.qty, avgDaily, daysLeft: item.qty / avgDaily });
-    }
-  }
-  result.sort((a, b) => a.daysLeft - b.daysLeft);
-  return result;
-}
-
-function aiDirTopItem(owner) {
-  const todayStart = aiDirDayStart(new Date());
-  const last7Start = new Date(todayStart.getTime() - 7 * 86400000);
-  const stats = aiDirItemStats(owner, last7Start, todayStart);
-  let top = null;
-  for (const it of stats.values()) {
-    if (!top || it.revenue > top.revenue) top = it;
-  }
-  return top;
-}
-
-// --- Foyda marjasi, hafta kuni, combo foydasi va kassir cheki tahlili ---
-
-function menuItemUnitCost(owner, menuItem) {
-  if (!menuItem) return null;
-  if (menuItem.directStockId) {
-    const stockItem = (owner.stock || []).find(s => s.id === menuItem.directStockId);
-    return stockItem ? (stockItem.price || 0) : null;
-  }
-  const recipe = Array.isArray(menuItem.recipe) ? menuItem.recipe : [];
-  if (!recipe.length) return null;
-  let cost = 0;
-  for (const ing of recipe) {
-    const stockItem = (owner.stock || []).find(s => s.id === ing.stockId);
-    if (!stockItem) return null;
-    cost += ing.qty * (stockItem.price || 0);
-  }
-  return cost;
-}
-
-function comboUnitCost(owner, combo) {
-  if (!combo || !Array.isArray(combo.itemIds)) return null;
-  let cost = 0;
-  for (const entry of combo.itemIds) {
-    const menuItem = (owner.menu || []).find(m => m.id === entry.menuItemId);
-    const unitCost = menuItemUnitCost(owner, menuItem);
-    if (unitCost === null) return null;
-    cost += unitCost * entry.qty;
-  }
-  return cost;
-}
-
-function orderLineCost(owner, item) {
-  if (item.isCombo) {
-    const combo = findCombo(owner, item.id);
-    const unitCost = comboUnitCost(owner, combo);
-    return unitCost === null ? null : unitCost * item.qty;
-  }
-  const menuItem = (owner.menu || []).find(m => m.id === item.id);
-  const unitCost = menuItemUnitCost(owner, menuItem);
-  return unitCost === null ? null : unitCost * item.qty;
-}
-
-function aiDirItemMarginStats(owner, fromDate, toDate) {
-  const orders = (owner.orders || []).filter(o => { const t = new Date(o.createdAt); return t >= fromDate && t < toDate; });
-  const byId = new Map();
-  for (const o of orders) {
-    for (const it of (o.items || [])) {
-      const cost = orderLineCost(owner, it);
-      if (cost === null) continue;
-      const revenue = it.price * it.qty;
-      const cur = byId.get(it.id) || { id: it.id, name: it.name, revenue: 0, cost: 0, qty: 0 };
-      cur.revenue += revenue;
-      cur.cost += cost;
-      cur.qty += it.qty;
-      byId.set(it.id, cur);
-    }
-  }
-  return byId;
-}
-
-function aiDirMarginDrops(owner) {
-  const todayStart = aiDirDayStart(new Date());
-  const last7Start = new Date(todayStart.getTime() - 7 * 86400000);
-  const prev7Start = new Date(todayStart.getTime() - 14 * 86400000);
-  const cur = aiDirItemMarginStats(owner, last7Start, todayStart);
-  const prev = aiDirItemMarginStats(owner, prev7Start, last7Start);
-
-  const drops = [];
-  for (const [id, c] of cur) {
-    const p = prev.get(id);
-    if (!p || p.revenue <= 0 || c.revenue <= 0 || p.qty < 3) continue;
-    const curMargin = ((c.revenue - c.cost) / c.revenue) * 100;
-    const prevMargin = ((p.revenue - p.cost) / p.revenue) * 100;
-    const diff = curMargin - prevMargin;
-    if (diff <= -5) {
-      drops.push({ id, name: c.name, curMargin: Math.round(curMargin), prevMargin: Math.round(prevMargin), diff: Math.round(diff) });
-    }
-  }
-  drops.sort((a, b) => a.diff - b.diff);
-  return drops;
-}
-
-function aiDirWeekdayStaffing(owner) {
-  const since = new Date(Date.now() - 56 * 86400000);
-  const orders = (owner.orders || []).filter(o => new Date(o.createdAt) >= since);
-  if (orders.length < 14) return null;
-
-  const dayTotals = new Array(7).fill(0);
-  for (const o of orders) dayTotals[new Date(o.createdAt).getDay()]++;
-
-  const avgPerDay = orders.length / 7;
-  if (avgPerDay <= 0) return null;
-
-  let best = null;
-  for (let day = 0; day < 7; day++) {
-    const diffPercent = ((dayTotals[day] - avgPerDay) / avgPerDay) * 100;
-    if (!best || diffPercent > best.diffPercent) best = { day, count: dayTotals[day], diffPercent };
-  }
-  if (best && best.diffPercent >= 15) {
-    const weekdayLabels = ['Yakshanba', 'Dushanba', 'Seshanba', 'Chorshanba', 'Payshanba', 'Juma', 'Shanba'];
-    return { day: best.day, dayLabel: weekdayLabels[best.day], diffPercent: Math.round(best.diffPercent) };
-  }
-  return null;
-}
-
-function aiDirTopComboProfit(owner) {
-  const todayStart = aiDirDayStart(new Date());
-  const last30Start = new Date(todayStart.getTime() - 30 * 86400000);
-  const orders = (owner.orders || []).filter(o => { const t = new Date(o.createdAt); return t >= last30Start && t < todayStart; });
-
-  const byId = new Map();
-  for (const o of orders) {
-    for (const it of (o.items || [])) {
-      if (!it.isCombo) continue;
-      const cost = orderLineCost(owner, it);
-      if (cost === null) continue;
-      const revenue = it.price * it.qty;
-      const cur = byId.get(it.id) || { id: it.id, name: it.name, profit: 0, qty: 0 };
-      cur.profit += (revenue - cost);
-      cur.qty += it.qty;
-      byId.set(it.id, cur);
-    }
-  }
-  let top = null;
-  for (const c of byId.values()) {
-    if (!top || c.profit > top.profit) top = c;
-  }
-  return top;
-}
-
-function aiDirCashierName(owner, id) {
-  if (String(id) === String(owner.id)) return 'Egasi';
-  const staff = (owner.staff || []).find(s => String(s.id) === String(id));
-  return staffDisplayName(staff) || `Xodim (ID: ${id})`;
-}
-
-function aiDirCashierAvgCheck(owner) {
-  const todayStart = aiDirDayStart(new Date());
-  const last7Start = new Date(todayStart.getTime() - 7 * 86400000);
-  const orders = (owner.orders || []).filter(o => {
-    const t = new Date(o.createdAt);
-    return t >= last7Start && t < todayStart && o.createdBy && o.source !== 'customer';
-  });
-  if (orders.length < 10) return null;
-
-  const byCashier = new Map();
-  let overallSum = 0;
-  for (const o of orders) {
-    const total = o.total || 0;
-    overallSum += total;
-    const cur = byCashier.get(o.createdBy) || { id: o.createdBy, sum: 0, count: 0 };
-    cur.sum += total;
-    cur.count += 1;
-    byCashier.set(o.createdBy, cur);
-  }
-  if (byCashier.size < 2) return null;
-  const overallAvg = overallSum / orders.length;
-  if (overallAvg <= 0) return null;
-
-  let worst = null;
-  for (const c of byCashier.values()) {
-    if (c.count < 3) continue;
-    const avg = c.sum / c.count;
-    const diffPercent = ((avg - overallAvg) / overallAvg) * 100;
-    if (diffPercent <= -10 && (!worst || diffPercent < worst.diffPercent)) {
-      worst = { id: c.id, avg, diffPercent: Math.round(diffPercent), count: c.count };
-    }
-  }
-  if (!worst) return null;
-  worst.name = aiDirCashierName(owner, worst.id);
-  return worst;
-}
-
-function buildAiDirectorText(owner) {
-  const todayStart = aiDirDayStart(new Date());
-  const yestStart = new Date(todayStart.getTime() - 86400000);
-  const dayBeforeStart = new Date(todayStart.getTime() - 2 * 86400000);
-
-  const yesterday = aiDirCashBucket(owner, yestStart, todayStart);
-  const dayBefore = aiDirCashBucket(owner, dayBeforeStart, yestStart);
-  const incomeChangePercent = dayBefore.income > 0
-    ? Math.round(((yesterday.income - dayBefore.income) / dayBefore.income) * 100)
-    : null;
-
-  const topItem = aiDirTopItem(owner);
-  const runway = aiDirStockRunway(owner);
-  const urgentStock = runway.filter(r => r.daysLeft <= 3).slice(0, 3);
-  const declining = aiDirDecliningItems(owner);
-  const marginDrops = aiDirMarginDrops(owner);
-  const weakCashier = aiDirCashierAvgCheck(owner);
-
-  const lines = ['📊 <b>Bugungi holat</b>', ''];
-  lines.push(`Kecha tushum: <b>${fmtNum(yesterday.income)} so'm</b>` +
-    (incomeChangePercent !== null ? ` (${incomeChangePercent > 0 ? '+' : ''}${incomeChangePercent}%)` : ''));
-  lines.push(`Foyda: <b>${fmtNum(yesterday.net)} so'm</b>`);
-  if (topItem) lines.push(`Eng ko'p tushum keltirgan taom (7 kun): <b>${escapeHtmlServer(topItem.name)}</b>`);
-
-  if (urgentStock.length) {
-    lines.push('');
-    for (const s of urgentStock) {
-      lines.push(s.daysLeft < 1
-        ? `⚠️ ${escapeHtmlServer(s.name)} bugun tugashi mumkin.`
-        : `⚠️ ${escapeHtmlServer(s.name)} taxminan ${Math.floor(s.daysLeft)} kunga yetadi.`);
-    }
-  }
-
-  if (marginDrops.length) {
-    const m = marginDrops[0];
-    lines.push('');
-    lines.push(`📉 <b>${escapeHtmlServer(m.name)}</b>ning foyda marjasi pasaygan: ${m.prevMargin}% → ${m.curMargin}%.`);
-  }
-
-  if (weakCashier) {
-    lines.push('');
-    lines.push(`👤 <b>${escapeHtmlServer(weakCashier.name)}</b>ning o'rtacha cheki boshqalardan ${Math.abs(weakCashier.diffPercent)}% past (so'nggi 7 kun).`);
-  }
-
-  if (declining.length) {
-    const d = declining[0];
-    lines.push('');
-    lines.push(`Oxirgi 7 kunda <b>${escapeHtmlServer(d.name)}</b> savdosi ${Math.abs(d.changePercent)}% kamaygan.`);
-    lines.push('');
-    lines.push(`💡 <b>Tavsiya:</b> bugun ${escapeHtmlServer(d.name)} uchun aksiya qiling yoki xaridni kamaytiring.`);
-  }
-
-  return lines.join('\n');
-}
-
-async function sendAiDirectorDigest(owner, force) {
-  const todayKey = aiDirDateKey(new Date());
-  if (!force && owner.aiDirectorLastSent === todayKey) return false;
-  const text = buildAiDirectorText(owner);
-  for (const recipientId of ownerReportRecipientIds(owner)) {
-    await sendMessage(recipientId, text);
-  }
-  owner.aiDirectorLastSent = todayKey;
-  return true;
-}
-
-function buildAiWeeklyDirectorText(owner) {
-  const now = new Date();
-  const weekAgo = new Date(now.getTime() - 7 * 86400000);
-  const prevWeekAgo = new Date(now.getTime() - 14 * 86400000);
-
-  const thisWeek = aiDirCashBucket(owner, weekAgo, now);
-  const prevWeek = aiDirCashBucket(owner, prevWeekAgo, weekAgo);
-  const incomeChangePercent = prevWeek.income > 0
-    ? Math.round(((thisWeek.income - prevWeek.income) / prevWeek.income) * 100)
-    : null;
-
-  const itemStats = Array.from(aiDirItemStats(owner, weekAgo, now).values())
-    .sort((a, b) => b.revenue - a.revenue).slice(0, 3);
-
-  const runway = aiDirStockRunway(owner);
-  const urgentStock = runway.filter(r => r.daysLeft <= 3).slice(0, 5);
-  const declining = aiDirDecliningItems(owner);
-  const topCombo = aiDirTopComboProfit(owner);
-  const staffing = aiDirWeekdayStaffing(owner);
-
-  const lines = ['📅 <b>Haftalik hisobot</b>', ''];
-  lines.push(`Haftalik tushum: <b>${fmtNum(thisWeek.income)} so'm</b>` +
-    (incomeChangePercent !== null ? ` (${incomeChangePercent > 0 ? '+' : ''}${incomeChangePercent}%)` : ''));
-  lines.push(`Haftalik foyda: <b>${fmtNum(thisWeek.net)} so'm</b> (${thisWeek.orderCount} ta buyurtma)`);
-
-  if (itemStats.length) {
-    lines.push('');
-    lines.push('🏆 <b>Eng ko\'p sotilgan taomlar (7 kun):</b>');
-    itemStats.forEach((it, i) => lines.push(`${i + 1}. ${escapeHtmlServer(it.name)} — ${it.qty} dona (${fmtNum(it.revenue)} so'm)`));
-  }
-
-  if (topCombo) {
-    lines.push('');
-    lines.push(`🎁 Eng yuqori foyda keltirgan combo (30 kun): <b>${escapeHtmlServer(topCombo.name)}</b> — ${fmtNum(topCombo.profit)} so'm sof foyda.`);
-  }
-
-  if (staffing) {
-    lines.push('');
-    lines.push(`📈 <b>${escapeHtmlServer(staffing.dayLabel)}</b> kuni sotuv o'rtachadan ${staffing.diffPercent}% yuqori. Shu kuni xodim sonini ko'paytirishni o'ylab ko'ring.`);
-  }
-
-  if (urgentStock.length) {
-    lines.push('');
-    lines.push('⚠️ <b>Tez tugaydigan mahsulotlar:</b>');
-    for (const s of urgentStock) {
-      lines.push(s.daysLeft < 1
-        ? `• ${escapeHtmlServer(s.name)} — bugun-erta tugashi mumkin`
-        : `• ${escapeHtmlServer(s.name)} — taxminan ${Math.floor(s.daysLeft)} kunga yetadi`);
-    }
-  }
-
-  if (declining.length) {
-    const d = declining[0];
-    lines.push('');
-    lines.push(`Oxirgi 7 kunda <b>${escapeHtmlServer(d.name)}</b> savdosi ${Math.abs(d.changePercent)}% kamaygan.`);
-    lines.push(`💡 <b>Tavsiya:</b> ${escapeHtmlServer(d.name)} uchun aksiya qiling yoki keyingi haftaga xaridni kamaytiring.`);
-  }
-
-  return lines.join('\n');
-}
-
-async function sendAiWeeklyDirectorDigest(owner, force) {
-  const weekKey = aiDirWeekKey(new Date());
-  if (!force && owner.aiWeeklyLastSent === weekKey) return false;
-  const text = buildAiWeeklyDirectorText(owner);
-  for (const recipientId of ownerReportRecipientIds(owner)) {
-    await sendMessage(recipientId, text);
-  }
-  owner.aiWeeklyLastSent = weekKey;
-  return true;
-}
-
-// ---- Kunlik savdo/xarajat hisoboti — avtomatik yuborish (67-bosqich) ----
-// Bu Z-hisobot ("Kunni yopish") bilan bir xil ma'lumotni hisoblaydi, lekin
-// egasi qo'lda tugma bosishini kutmay, har kuni ertalab soat 08:00'da
-// (AI Direktor bilan bir vaqtda) O'TGAN KUNNING to'liq yopilgan
-// ma'lumotini o'zi Telegram'ga yuboradi. Shu bilan birga, agar o'sha kun
-// uchun hali Z-hisobot qo'lda yopilmagan bo'lsa — buni ham avtomatik
-// owner.zReports tarixiga yozib qo'yadi, shunda egasi "Kunni yopish"
-// tugmasini bosishni unutib qo'yса ham tarix uzilib qolmaydi.
-function buildDailyReportData(owner, dateKey) {
-  const dayStart = aiDirDayStartFromKey(dateKey);
-  const dayEnd = new Date(dayStart.getTime() + 86400000);
-
-  const orders = (owner.orders || []).filter(o => {
-    const t = new Date(o.createdAt);
-    return t >= dayStart && t < dayEnd;
-  });
-  const expenses = (owner.expenses || []).filter(e => {
-    const t = new Date(e.createdAt);
-    return t >= dayStart && t < dayEnd;
-  });
-
-  const dostavkaOrders = orders.filter(o => o.orderType === 'dostavka' && o.paymentType === 'dostavka_orqali');
-  const kassaOrders = orders.filter(o => !(o.orderType === 'dostavka' && o.paymentType === 'dostavka_orqali'));
-  const kassaIncome = kassaOrders.reduce((s, o) => s + orderIncomeAmount(o), 0);
-  const dostavkaIncome = dostavkaOrders.reduce((s, o) => s + orderIncomeAmount(o), 0);
-  const income = kassaIncome + dostavkaIncome;
-
-  const paymentBreakdown = {};
-  for (const key of Object.keys(PAYMENT_TYPES)) paymentBreakdown[key] = 0;
-  for (const o of orders) {
-    const pt = Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, o.paymentType) ? o.paymentType : 'naqd';
-    paymentBreakdown[pt] = (paymentBreakdown[pt] || 0) + orderIncomeAmount(o);
-  }
-
-  const expenseByCategory = {};
-  for (const key of Object.keys(EXPENSE_CATEGORIES)) expenseByCategory[key] = 0;
-  for (const e of expenses) {
-    const cat = Object.prototype.hasOwnProperty.call(EXPENSE_CATEGORIES, e.category) ? e.category : 'boshqa';
-    expenseByCategory[cat] = (expenseByCategory[cat] || 0) + (e.amount || 0);
-  }
-  const expense = expenses.reduce((s, e) => s + (e.amount || 0), 0);
-  const cancelledCount = (owner.orders || []).filter(o => {
-    const t = new Date(o.cancelledAt || o.createdAt);
-    return o.status === 'bekor_qilindi' && t >= dayStart && t < dayEnd;
-  }).length;
-
-  return {
-    date: dateKey,
-    income, kassaIncome, dostavkaIncome, orderCount: orders.length, cancelledCount,
-    paymentBreakdown, expense, expenseByCategory, net: income - expense
-  };
-}
-
-function buildDailyReportText(owner, dateKey) {
-  const r = buildDailyReportData(owner, dateKey);
-  const lines = [`📊 <b>Kunlik hisobot</b> — ${r.date}`, ''];
-  lines.push(`💰 Tushum: <b>${fmtNum(r.income)} so'm</b>`);
-  lines.push(`📦 Buyurtmalar: ${r.orderCount} ta` + (r.cancelledCount ? ` (${r.cancelledCount} ta bekor qilingan)` : ''));
-  lines.push('');
-  lines.push('💳 To\'lov turlari bo\'yicha:');
-  const mergedPaymentBreakdown = { ...r.paymentBreakdown };
-  mergedPaymentBreakdown.naqd = (mergedPaymentBreakdown.naqd || 0) + (mergedPaymentBreakdown.dostavka_orqali || 0);
-  mergedPaymentBreakdown.dostavka_orqali = 0;
-  for (const key of Object.keys(PAYMENT_TYPES)) {
-    if (key === 'dostavka_orqali') continue;
-    if (mergedPaymentBreakdown[key]) lines.push(`  • ${PAYMENT_TYPES[key]}: ${fmtNum(mergedPaymentBreakdown[key])} so'm`);
-  }
-  lines.push('');
-  lines.push(`🧾 Xarajat: <b>${fmtNum(r.expense)} so'm</b>`);
-  for (const key of Object.keys(EXPENSE_CATEGORIES)) {
-    if (r.expenseByCategory[key]) lines.push(`  • ${EXPENSE_CATEGORIES[key]}: ${fmtNum(r.expenseByCategory[key])} so'm`);
-  }
-  lines.push('');
-  lines.push(`📈 Sof foyda: <b>${fmtNum(r.net)} so'm</b>`);
-  return lines.join('\n');
-}
-
-async function sendDailyReportDigest(owner, force) {
-  const yesterdayKey = aiDirDateKey(new Date(Date.now() - 86400000));
-  if (!force && owner.dailyReportLastSent === yesterdayKey) return false;
-  const text = buildDailyReportText(owner, yesterdayKey);
-  for (const recipientId of ownerReportRecipientIds(owner)) {
-    await sendMessage(recipientId, text);
-  }
-  owner.dailyReportLastSent = yesterdayKey;
-
-  // Agar o'sha kun uchun hali Z-hisobot qo'lda yopilmagan bo'lsa, shu
-  // ma'lumot bilan avtomatik yozib qo'yamiz (tarix uzilib qolmasligi uchun).
-  if (!force) {
-    if (!owner.zReports) owner.zReports = [];
-    if (!owner.zReports.some(z => z.date === yesterdayKey)) {
-      const built = buildDailyReportData(owner, yesterdayKey);
-      owner.zReports.unshift(Object.assign({
-        id: crypto.randomBytes(4).toString('hex'),
-        createdAt: new Date().toISOString(),
-        createdBy: 'auto'
-      }, built));
-      if (owner.zReports.length > 90) owner.zReports.length = 90;
-    }
-  }
-  return true;
-}
-
-// ---- /hisobot buyrug'i — barcha hisobot va tahlillarni bittada yig'ib
-// yuboradi. Egasi va "Egasi (hamkor)" xodimlar uchun ochiq (qarang:
-// resolveOwnerContext — ikkalasi ham role === 'egasi' qaytaradi).
-function buildZReportSummaryText(owner) {
-  const list = (owner.zReports || []).slice().sort((a, b) => b.date.localeCompare(a.date)).slice(0, 7);
-  if (!list.length) return null;
-  const lines = ["🧾 <b>So'nggi kunlar (Z-hisobot):</b>"];
-  for (const z of list) {
-    lines.push(`  • ${z.date}: tushum ${fmtNum(z.income)} so'm, sof foyda ${fmtNum(z.net)} so'm`);
-  }
-  return lines.join('\n');
-}
-
-function buildStaffTopPerformerText(owner) {
-  if (!(owner.staff || []).length) return null;
-  const from = new Date(Date.now() - 30 * 86400000);
-  const log = (owner.staffActionLog || []).filter(e => new Date(e.createdAt) >= from);
-  if (!log.length) return null;
-  const report = (owner.staff || []).map(staff => {
-    const mine = log.filter(e => String(e.userId) === String(staff.id));
-    const actionCount = mine.length;
-    const errorCount = mine.reduce((s, e) => s + (e.errorCount || 0), 0);
-    return { name: staffDisplayName(staff), actionCount, errorCount, score: actionCount - errorCount * 2 };
-  }).filter(r => r.actionCount > 0);
-  if (!report.length) return null;
-  report.sort((a, b) => b.score - a.score);
-  const top = report[0];
-  return `👤 Oxirgi 30 kunda eng faol xodim: <b>${escapeHtmlServer(top.name)}</b> — ${top.actionCount} ta amal` +
-    (top.errorCount ? `, ${top.errorCount} ta xato` : '') + '.';
-}
-
-function buildFullHisobotText(owner) {
-  const sections = [];
-  sections.push(`📋 <b>To'liq hisobot</b> — ${escapeHtmlServer((owner.profile && owner.profile.name) || 'Oshxona')}`);
-
-  const yesterdayKey = aiDirDateKey(new Date(Date.now() - 86400000));
-  sections.push(buildDailyReportText(owner, yesterdayKey));
-
-  if (ownerCanUseFeature(owner, 'ai-analytics')) {
-    sections.push(buildAiDirectorText(owner));
-    sections.push(buildAiWeeklyDirectorText(owner));
-  }
-
-  if (ownerCanUseFeature(owner, 'z-report')) {
-    const zText = buildZReportSummaryText(owner);
-    if (zText) sections.push(zText);
-  }
-
-  if (ownerCanUseFeature(owner, 'staff-performance')) {
-    const staffText = buildStaffTopPerformerText(owner);
-    if (staffText) sections.push(staffText);
-  }
-
-  return sections.join('\n\n————————————\n\n');
-}
-
-setInterval(() => {
-  if (aiDirTashkentHour(new Date()) !== AI_DIRECTOR_HOUR) return;
-  const isWeeklyDay = aiDirTashkentWeekday(new Date()) === AI_DIRECTOR_WEEKLY_DAY;
-  const owners = pruneExpiredOwners();
-  let changed = false;
-  (async () => {
-    for (const owner of owners) {
-      if (!isOwnerAccessValid(owner)) continue;
-      if (owner.aiDirectorEnabled !== false) {
-        const sent = await sendAiDirectorDigest(owner, false);
-        if (sent) changed = true;
-      }
-      if (isWeeklyDay && owner.aiWeeklyEnabled !== false) {
-        const sentWeekly = await sendAiWeeklyDirectorDigest(owner, false);
-        if (sentWeekly) changed = true;
-      }
-      if (owner.dailyReportEnabled !== false && ownerCanUseFeature(owner, 'z-report')) {
-        const sentDaily = await sendDailyReportDigest(owner, false);
-        if (sentDaily) changed = true;
-      }
-    }
-    if (changed) saveOwners(owners);
-  })().catch(() => {});
-}, 10 * 60 * 1000);
-
-const CUSTOMER_AUTO_RECEIVE_MS = 2 * 60 * 60 * 1000;
-setInterval(() => {
-  const owners = loadOwners();
-  let changed = false;
-  for (const owner of owners) {
-    for (const order of (owner.orders || [])) {
-      if (order.orderType === 'dostavka') continue;
-      if (order.status !== 'tayyor') continue;
-      if (order.customerReceivedAt) continue;
-      const readyTime = new Date(order.readyAt || order.updatedAt || order.createdAt).getTime();
-      if (Date.now() - readyTime >= CUSTOMER_AUTO_RECEIVE_MS) {
-        order.customerReceivedAt = new Date().toISOString();
-        order.customerReceivedAuto = true;
-        changed = true;
-        sendOrderRatingRequest(owner, order);
-      }
-    }
-  }
-  if (changed) saveOwners(owners);
-}, 15 * 60 * 1000);
-
-// MUHIM: bu ikkita handler bo'lmasa, kod ichida istalgan joyda kutilmagan
-// (uncaught) xato chiqsa — butun Node.js process qulab tushar edi, Railway
-// uni qayta ishga tushirguncha (bir necha soniya) HAMMA foydalanuvchi uchun
-// server o'lik bo'lib turar, va aynan shu daqiqada mini-app'ni ochgan odam
-// oq ekran ko'rar edi. Endi bunday xatolar faqat log'ga yoziladi, server esa
-// ishlashda davom etadi.
-process.on('uncaughtException', (err) => {
-  console.error('[FATAL, lekin ushlab qolindi] uncaughtException:', err && err.stack || err);
-});
-process.on('unhandledRejection', (reason) => {
-  console.error('[FATAL, lekin ushlab qolindi] unhandledRejection:', reason && reason.stack || reason);
-});
-
-const server = http.createServer((req, res) => {
-  try {
-    return handleRequest(req, res);
-  } catch (err) {
-    console.error('[so\'rovni qayta ishlashda xatolik]', req.method, req.url, err && err.stack || err);
-    try {
-      if (!res.headersSent) {
-        sendJSON(res, 500, { ok: false, reason: 'Serverda vaqtinchalik xatolik. Qayta urinib ko\'ring.' });
-      } else {
-        res.end();
-      }
-    } catch (e2) {
-      try { res.end(); } catch (_) {}
-    }
-  }
-});
-
-// ==========================================================================
-// HTTP API — barcha endpointlar shu registry orqali ro'yxatga olinadi.
-//   route(url, fn)  — xom handler: fn(payload, res)
-//   authed(url, fn) — Telegram initData tekshirilgan: fn(payload, res, { user, userId })
-// Body o'qish, JSON xatosi va handler ichidagi istisnolar markazda ushlanadi.
-// ==========================================================================
-const API_ROUTES = new Map();
-function route(url, handler) { API_ROUTES.set(url, handler); }
-function authed(url, handler) {
-  API_ROUTES.set(url, (payload, res) => {
-    const check = verifyAuth(payload.initData);
-    if (!check.ok) return sendFail(res, check.reason);
-    return handler(payload, res, { user: check.user, userId: String(check.user && check.user.id) });
-  });
-}
-
-
-route('/api/verify', (payload, res) => {
-  const { initData } = payload;
-  if (!initData) return sendJSON(res, 400, { ok: false, reason: 'initData yo\'q' });
-
-  const result = verifyAuth(initData);
-  if (!result.ok) return sendFail(res, result.reason);
-
-  const userId = String(result.user && result.user.id);
-  const admin = isAdminId(userId);
-  const owners = pruneExpiredOwners();
-  const owner = findOwner(owners, userId);
-  const ownerOk = isOwnerAccessValid(owner);
-  const staffInfo = (!admin && !ownerOk) ? findStaffInfo(owners, userId) : null;
-
-  const staffBlocked = !!(staffInfo && staffInfo.rawRoles.length > 0 && staffInfo.roles.length === 0);
-  const ok = admin || ownerOk || !!(staffInfo && !staffBlocked);
-
-  return sendJSON(res, 200, {
-    ok,
-    isAdmin: admin,
-    isOwner: !admin && ownerOk,
-    role: staffInfo ? staffInfo.role : null,
-    roles: staffInfo ? staffInfo.roles : null,
-    roleLabel: staffInfo ? rolesLabel(staffInfo.roles) : null,
-    ownerRestaurantName: staffInfo ? staffInfo.ownerName : (ownerOk ? ((owner.profile && owner.profile.name) || null) : null),
-    ownerLogoUrl: staffInfo ? staffInfo.ownerLogoUrl : (ownerOk ? ((owner.profile && owner.profile.logoUrl) || null) : null),
-    ownerBrandColor: staffInfo ? staffInfo.ownerBrandColor : (ownerOk ? ((owner.profile && owner.profile.brandColor) || null) : null),
-    hasProfile: !admin && ownerOk && !!(owner && owner.profile && owner.profile.completedAt),
-
-    hasOwnerLogin: !admin && ownerOk && !!(owner && owner.login && owner.passwordHash),
-    personRegistered: admin || isRegisteredUser(userId),
-    reason: ok
-      ? null
-      : (staffBlocked
-          ? 'Lavozimingiz (' + rolesLabel(staffInfo.rawRoles) + ') joriy tarifda yopilgan. Administrator bilan bog\'laning.'
-          : 'Bu ilova faqat administrator, tasdiqlangan do\'kon egalari va ularning xodimlari uchun.')
-  });
-});
-
-authed('/api/profile-register', (payload, res, { user }) => {
-  const { firstName, lastName, phone } = payload;
-
-  const ism = String(firstName || '').trim();
-  const familiya = String(lastName || '').trim();
-  const raqam = String(phone || '').trim();
-
-  if (!ism || ism.length > 60) {
-    return sendFail(res, 'Ismingizni to\'g\'ri kiriting.');
-  }
-  if (!familiya || familiya.length > 60) {
-    return sendFail(res, 'Familiyangizni to\'g\'ri kiriting.');
-  }
-  if (!isPlausiblePhone(raqam)) {
-    return sendFail(res, 'Telefon raqam noto\'g\'ri formatda (masalan: +998901234567).');
-  }
-
-  const userId = String(user.id);
-  const profiles = loadProfiles();
-  const idx = profiles.findIndex(p => String(p.id) === userId);
-  const profile = {
-    id: userId,
-    username: (user && user.username) || null,
-    firstName: ism,
-    lastName: familiya,
-    phone: raqam,
-    registeredAt: new Date().toISOString()
-  };
-  if (idx >= 0) profiles[idx] = profile; else profiles.push(profile);
-  saveProfiles(profiles);
-
-  return sendOk(res);
-});
-
-authed('/api/staff-list', (payload, res, { userId }) => {
-  const owners = pruneExpiredOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi ko\'ra oladi');
-  const owner = ownerCtx.owner;
-
-  return sendOk(res, { staff: owner.staff || [] });
-});
-
-authed('/api/add-staff', async (payload, res, { userId }) => {
-  const { input, role, roles, branchId } = payload;
-
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi xodim qo\'sha oladi');
-  const owner = ownerCtx.owner;
-
-  const rolesArr = Array.isArray(roles) ? roles : (role ? [role] : []);
-  const uniqueRoles = [...new Set(rolesArr)].filter(isValidRole)
-    // 69-bosqich: 'egasi' boshqa rollar bilan birga tanlangan bo'lsa ham,
-    // har doim ro'yxat boshida bo'lishi kerak — chunki ctx.role (birinchi
-    // rol) 'egasi' bo'lgandagina to'liq egasi huquqi to'g'ri ishlaydi.
-    .sort((a, b) => (a === 'egasi' ? -1 : b === 'egasi' ? 1 : 0));
-  if (!uniqueRoles.length) {
-    return sendFail(res, 'Kamida bitta lavozim tanlang.');
-  }
-
-  let branchIdVal = null;
-  if (branchId) {
-    if (!findBranch(owner, branchId)) {
-      return sendFail(res, 'Bunday filial topilmadi.');
-    }
-    branchIdVal = branchId;
-  }
-
-  const resolved = await resolveUserInput(input);
-  if (resolved.error) return sendFail(res, resolved.error);
-
-  if (isAdminId(resolved.id)) {
-    return sendFail(res, 'Bu foydalanuvchi administrator, xodim qilib bo\'lmaydi.');
-  }
-  if (findOwner(owners, resolved.id)) {
-    return sendFail(res, 'Bu foydalanuvchi allaqachon oshxona egasi.');
-  }
-  const existingStaff = findStaffInfo(owners, resolved.id);
-  if (existingStaff) {
-    return sendFail(res, existingStaff.ownerId === owner.id
-      ? 'Bu foydalanuvchi allaqachon sizning xodimingiz.'
-      : 'Bu foydalanuvchi boshqa oshxonada xodim sifatida ro\'yxatda.');
-  }
-
-  if (!owner.staff) owner.staff = [];
-  owner.staff.push({
-    id: resolved.id,
-    username: resolved.username || null,
-    role: uniqueRoles[0],
-    roles: uniqueRoles,
-    branchId: branchIdVal,
-    addedAt: new Date().toISOString()
-  });
-  saveOwners(owners);
-
-  sendMessage(resolved.id,
-    `👋 Sizni <b>${(owner.profile && owner.profile.name) || 'oshxona'}</b> jamoasiga <b>${rolesLabel(uniqueRoles)}</b> sifatida qo\'shishdi.\nMini App tugmasi orqali oching.`);
-
-  return sendOk(res);
-});
-
-authed('/api/create-staff-invite', (payload, res, { userId }) => {
-  const { role, roles, branchId } = payload;
-
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi havola yarata oladi');
-  const owner = ownerCtx.owner;
-  if (!ownerCanUseFeature(owner, 'staff-invite')) return sendFeatureBlocked(res, 'staff-invite');
-
-  const rolesArr = Array.isArray(roles) ? roles : (role ? [role] : []);
-  const uniqueRoles = [...new Set(rolesArr)].filter(isValidRole)
-    // Havola orqali "Egasi (hamkor)" huquqi berilmaydi — bu faqat
-    // ID/username orqali to'g'ridan-to'g'ri qo'shishda mavjud, chunki
-    // havola har kimga yuborilishi va noto'g'ri odamga to'liq egasi
-    // huquqi tegib qolishi mumkin.
-    .filter(r => r !== 'egasi');
-  if (!uniqueRoles.length) {
-    return sendFail(res, 'Kamida bitta lavozim tanlang. Egasi (hamkor) huquqi havola orqali berilmaydi.');
-  }
-
-  let branchIdVal = null;
-  if (branchId) {
-    if (!findBranch(owner, branchId)) {
-      return sendFail(res, 'Bunday filial topilmadi.');
-    }
-    branchIdVal = branchId;
-  }
-
-  if (!BOT_USERNAME || BOT_USERNAME === 'BOT_USERNAME_BU_YERGA') {
-    return sendFail(res, 'Serverda BOT_USERNAME sozlanmagan.');
-  }
-
-  const token = crypto.randomBytes(16).toString('hex');
-  if (!owner.staffInvites) owner.staffInvites = [];
-
-  owner.staffInvites = owner.staffInvites.filter(inv => !inv.used && new Date(inv.expiresAt) > new Date());
-  owner.staffInvites.push({
-    token,
-    roles: uniqueRoles,
-    branchId: branchIdVal,
-    createdAt: new Date().toISOString(),
-    expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
-    used: false,
-    usedBy: null,
-    usedAt: null
-  });
-  saveOwners(owners);
-
-  const link = `https://t.me/${BOT_USERNAME}?start=staffinv_${owner.id}_${token}`;
-  return sendOk(res, { link, roles: uniqueRoles });
-});
-
-authed('/api/set-staff-roles', (payload, res, { userId }) => {
-  const { id, roles } = payload;
-
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'zgartira oladi');
-  const owner = ownerCtx.owner;
-  if (!ownerCanUseFeature(owner, 'staff-roles')) return sendFeatureBlocked(res, 'staff-roles');
-  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
-
-  const staff = (owner.staff || []).find(s => String(s.id) === String(id));
-  if (!staff) return sendFail(res, 'Bunday xodim topilmadi');
-
-  const uniqueRoles = [...new Set(Array.isArray(roles) ? roles : [])].filter(isValidRole);
-  if (!uniqueRoles.length) {
-    return sendFail(res, 'Kamida bitta lavozim tanlang.');
-  }
-
-  staff.roles = uniqueRoles;
-  staff.role = uniqueRoles[0];
-  saveOwners(owners);
-
-  return sendOk(res, { staff });
-});
-
-authed('/api/set-staff-branch', (payload, res, { userId }) => {
-  const { id, branchId } = payload;
-
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'zgartira oladi');
-  const owner = ownerCtx.owner;
-  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
-
-  const staff = (owner.staff || []).find(s => String(s.id) === String(id));
-  if (!staff) return sendFail(res, 'Bunday xodim topilmadi');
-
-  if (branchId) {
-    if (!findBranch(owner, branchId)) return sendFail(res, 'Bunday filial topilmadi.');
-    staff.branchId = branchId;
-  } else {
-    staff.branchId = null;
-  }
-  saveOwners(owners);
-
-  return sendOk(res, { staff });
-});
-
-authed('/api/remove-staff', (payload, res, { userId }) => {
-  const { id } = payload;
-
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'chira oladi');
-  const owner = ownerCtx.owner;
-  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
-
-  owner.staff = (owner.staff || []).filter(s => String(s.id) !== String(id));
-  saveOwners(owners);
-
-  return sendOk(res);
-});
-
-authed('/api/branch-list', (payload, res, { userId }) => {
-  const owners = pruneExpiredOwners();
-  const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
-  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
-
-  return sendOk(res, {
-    branches: ctx.owner.branches || [],
-    maxBranches: ownerMaxBranches(ctx.owner),
-    centralBranchName: ctx.owner.centralBranchName || null
-  });
-});
-
-authed('/api/central-branch-rename', (payload, res, { userId }) => {
-  const { name } = payload;
-
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'zgartira oladi');
-  const owner = ownerCtx.owner;
-
-  const trimmedName = String(name || '').trim();
-  owner.centralBranchName = trimmedName || null;
-  saveOwners(owners);
-
-  return sendOk(res, { centralBranchName: owner.centralBranchName });
-});
-
-authed('/api/branch-add', (payload, res, { userId }) => {
-  const { name, address, phone } = payload;
-
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi filial qo\'sha oladi');
-  const owner = ownerCtx.owner;
-  if (!ownerCanUseFeature(owner, 'branch-manage')) return sendFeatureBlocked(res, 'branch-manage');
-
-  const trimmedName = String(name || '').trim();
-  const trimmedAddress = String(address || '').trim();
-  if (!trimmedName || !trimmedAddress) {
-    return sendFail(res, 'Filial nomi va manzilini kiriting.');
-  }
-
-  const maxBranches = ownerMaxBranches(owner);
-  const currentCount = (owner.branches || []).length;
-  if (maxBranches && currentCount >= maxBranches) {
-    return sendJSON(res, 200, {
-      ok: false,
-      reason: `Joriy tarifingiz bo'yicha ko'pi bilan ${maxBranches} ta filial ochish mumkin. Kengaytirish uchun administrator bilan bog'laning.`,
-      blockedFeature: true,
-      featureId: 'branch-manage'
-    });
-  }
-
-  if (!owner.branches) owner.branches = [];
-  const newBranch = {
-    id: generateBranchId(),
-    name: trimmedName,
-    address: trimmedAddress,
-    phone: phone ? String(phone).trim() : null,
-    createdAt: new Date().toISOString(),
-    // 1-bosqich: markaziy menyu va bo'limlar boshlang'ich nuqta sifatida
-    // filialga nusxalanadi — shu paytdan boshlab filial menyusi mustaqil
-    // tahrirlanadi va markaziy menyudagi keyingi o'zgarishlarga bog'liq bo'lmaydi.
-    menu: JSON.parse(JSON.stringify(owner.menu || [])),
-    categories: JSON.parse(JSON.stringify(ensureOwnerCategories(owner)))
-  };
-  owner.branches.push(newBranch);
-  saveOwners(owners);
-
-  return sendOk(res, { branch: newBranch });
-});
-
-
-authed('/api/branch-remove', (payload, res, { userId }) => {
-  const { id } = payload;
-
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'chira oladi');
-  const owner = ownerCtx.owner;
-  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
-
-  owner.branches = (owner.branches || []).filter(b => String(b.id) !== String(id));
-  saveOwners(owners);
-
-  return sendOk(res);
-});
-
-authed('/api/menu-list', (payload, res, { userId }) => {
-  const owners = pruneExpiredOwners();
-  const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
-  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
-
-  const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
-  const pool = resolveMenuPool(ctx.owner, branchId);
-  if (!pool) return sendFail(res, 'Bunday filial topilmadi');
-  const stockPool = resolveStockPool(ctx.owner, branchId) || ctx.owner;
-
-  const menuWithStock = (pool.menu || []).map(m => Object.assign({}, m, { outOfStock: menuItemOutOfStock(stockPool, m) }));
-  return sendOk(res, { menu: menuWithStock, categories: sortedOwnerCategories(pool), role: ctx.role, branchId, branches: ctx.owner.branches || [] });
-});
-
-authed('/api/category-list', (payload, res, { userId }) => {
-  const owners = pruneExpiredOwners();
-  const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
-  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
-
-  const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
-  const pool = resolveMenuPool(ctx.owner, branchId);
-  if (!pool) return sendFail(res, 'Bunday filial topilmadi');
-
-  return sendOk(res, { categories: sortedOwnerCategories(pool), branchId });
-});
-
-authed('/api/category-add', (payload, res, { userId }) => {
-  const { name } = payload;
-
-  const owners = loadOwners();
-  const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
-  if (!ctx) return denyAccess(res, owners, userId, 'Faqat oshxona egasi bo\'limlarni boshqara oladi');
-  const owner = ctx.owner;
-  if (!ctx.isAdminActing && !ownerCanUseFeature(owner, 'category-manage')) return sendFeatureBlocked(res, 'category-manage');
-
-  const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
-  const pool = resolveMenuPool(owner, branchId);
-  if (!pool) return sendFail(res, 'Bunday filial topilmadi');
-
-  const nameTrim = String(name || '').trim();
-  if (!nameTrim) return sendFail(res, 'Bo\'lim nomini kiriting.');
-
-  const categories = ensureOwnerCategories(pool);
-  const exists = categories.some(c => c.name.toLowerCase() === nameTrim.toLowerCase());
-  if (exists) return sendFail(res, 'Bunday bo\'lim allaqachon mavjud.');
-
-  const maxOrder = categories.reduce((max, c) => Math.max(max, c.order), -1);
-  const category = { id: crypto.randomBytes(4).toString('hex'), name: nameTrim, order: maxOrder + 1 };
-  categories.push(category);
-  saveOwners(owners);
-
-  return sendOk(res, { category, categories: sortedOwnerCategories(pool) });
-});
-
-authed('/api/category-remove', (payload, res, { userId }) => {
-  const { id } = payload;
-
-  const owners = loadOwners();
-  const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
-  if (!ctx) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'chira oladi');
-  const owner = ctx.owner;
-  if (!ctx.isAdminActing && !ownerCanUseFeature(owner, 'category-manage')) return sendFeatureBlocked(res, 'category-manage');
-  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
-
-  const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
-  const pool = resolveMenuPool(owner, branchId);
-  if (!pool) return sendFail(res, 'Bunday filial topilmadi');
-
-  ensureOwnerCategories(pool);
-  pool.categories = pool.categories.filter(c => c.id !== id);
-
-  pool.categories.sort((a, b) => a.order - b.order).forEach((c, i) => { c.order = i; });
-  saveOwners(owners);
-
-  return sendOk(res, { categories: sortedOwnerCategories(pool) });
-});
-
-authed('/api/category-reorder', (payload, res, { userId }) => {
-  const { orderedIds } = payload;
-
-  const owners = loadOwners();
-  const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
-  if (!ctx) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'zgartira oladi');
-  const owner = ctx.owner;
-  if (!ctx.isAdminActing && !ownerCanUseFeature(owner, 'category-manage')) return sendFeatureBlocked(res, 'category-manage');
-  if (!Array.isArray(orderedIds)) return sendFail(res, 'Tartib ro\'yxati noto\'g\'ri.');
-
-  const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
-  const pool = resolveMenuPool(owner, branchId);
-  if (!pool) return sendFail(res, 'Bunday filial topilmadi');
-
-  const categories = ensureOwnerCategories(pool);
-  const byId = new Map(categories.map(c => [c.id, c]));
-  let nextOrder = 0;
-  orderedIds.forEach(id => {
-    const c = byId.get(String(id));
-    if (c) { c.order = nextOrder++; byId.delete(String(id)); }
-  });
-
-  categories.slice().sort((a, b) => a.order - b.order)
-    .filter(c => byId.has(c.id))
-    .forEach(c => { c.order = nextOrder++; });
-
-  saveOwners(owners);
-  return sendOk(res, { categories: sortedOwnerCategories(pool) });
-});
-
-authed('/api/menu-add', (payload, res, { userId }) => {
-  const { name, price, prices, category, description, imageUrl, directStockId } = payload;
-
-  const owners = loadOwners();
-  const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
-  if (!ctx) return denyAccess(res, owners, userId, 'Faqat oshxona egasi menyuni boshqara oladi');
-  const owner = ctx.owner;
-  if (!ctx.isAdminActing && !ownerCanUseFeature(owner, 'menu-manage')) return sendFeatureBlocked(res, 'menu-manage');
-
-  const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
-  const pool = resolveMenuPool(owner, branchId);
-  if (!pool) return sendFail(res, 'Bunday filial topilmadi');
-  const stockPool = resolveStockPool(owner, branchId);
-
-  const nameTrim = String(name || '').trim();
-  if (!nameTrim) return sendFail(res, 'Taom nomini kiriting.');
-
-  const pricesResult = normalizeMenuItemPrices(prices);
-  if (!pricesResult.ok) return sendFail(res, pricesResult.reason);
-
-  let priceNum;
-  if (pricesResult.list.length) {
-    priceNum = Math.min(...pricesResult.list.map(p => p.price));
-  } else {
-    priceNum = Number(price);
-    if (!Number.isFinite(priceNum) || priceNum <= 0) return sendFail(res, 'Narxni to\'g\'ri kiriting.');
-  }
-  const imageTrim = String(imageUrl || '').trim();
-  if (!isValidImageValue(imageTrim)) {
-    return sendFail(res, 'Rasm noto\'g\'ri formatda yoki hajmi katta (rasmni kichikroq tanlang).');
-  }
-
-  let directStockIdVal = null;
-  if (directStockId !== undefined && directStockId !== null && directStockId !== '') {
-    const stockItem = findStockItem(stockPool, directStockId);
-    if (!stockItem) return sendFail(res, 'Bunday sklad mahsuloti topilmadi.');
-    directStockIdVal = directStockId;
-  }
-
-  if (!pool.menu) pool.menu = [];
-  const item = {
-    id: crypto.randomBytes(4).toString('hex'),
-    name: nameTrim,
-    price: priceNum,
-    prices: pricesResult.list.length ? pricesResult.list : undefined,
-    category: String(category || '').trim() || null,
-    description: String(description || '').trim() || null,
-    imageUrl: imageTrim || null,
-    available: true,
-    directStockId: directStockIdVal,
-    addedAt: new Date().toISOString()
-  };
-  pool.menu.push(item);
-  saveOwners(owners);
-
-  return sendOk(res, { item });
-});
-
-authed('/api/menu-update', (payload, res, { userId }) => {
-  const { id, name, price, prices, category, description, imageUrl, available, directStockId } = payload;
-
-  const owners = loadOwners();
-  const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
-  if (!ctx) return denyAccess(res, owners, userId, 'Faqat oshxona egasi menyuni boshqara oladi');
-  const owner = ctx.owner;
-  if (!ctx.isAdminActing && !ownerCanUseFeature(owner, 'menu-manage')) return sendFeatureBlocked(res, 'menu-manage');
-  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
-
-  const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
-  const pool = resolveMenuPool(owner, branchId);
-  if (!pool) return sendFail(res, 'Bunday filial topilmadi');
-  const stockPool = resolveStockPool(owner, branchId);
-
-  const item = (pool.menu || []).find(m => m.id === id);
-  if (!item) return sendFail(res, 'Taom topilmadi.');
-
-  if (name !== undefined) {
-    const nameTrim = String(name || '').trim();
-    if (!nameTrim) return sendFail(res, 'Taom nomini kiriting.');
-    item.name = nameTrim;
-  }
-  if (prices !== undefined) {
-    const pricesResult = normalizeMenuItemPrices(prices);
-    if (!pricesResult.ok) return sendFail(res, pricesResult.reason);
-    if (pricesResult.list.length) {
-      item.prices = pricesResult.list;
-      item.price = Math.min(...pricesResult.list.map(p => p.price));
-    } else {
-      item.prices = undefined;
-    }
-  }
-  if (price !== undefined) {
-    const priceNum = Number(price);
-    if (!Number.isFinite(priceNum) || priceNum <= 0) return sendFail(res, 'Narxni to\'g\'ri kiriting.');
-    if (!Array.isArray(item.prices) || !item.prices.length) item.price = priceNum;
-  }
-  if (category !== undefined) item.category = String(category || '').trim() || null;
-  if (description !== undefined) item.description = String(description || '').trim() || null;
-  if (imageUrl !== undefined) {
-    const imageTrim = String(imageUrl || '').trim();
-    if (!isValidImageValue(imageTrim)) {
-      return sendFail(res, 'Rasm noto\'g\'ri formatda yoki hajmi katta (rasmni kichikroq tanlang).');
-    }
-    item.imageUrl = imageTrim || null;
-  }
-  if (available !== undefined) item.available = !!available;
-
-  if (directStockId !== undefined) {
-    const directTrim = String(directStockId || '').trim();
-    if (!directTrim) {
-      item.directStockId = null;
-    } else {
-
-      if (Array.isArray(item.recipe) && item.recipe.length) {
-        return sendFail(res, 'Bu taomda retsept bor — avval retseptni tozalang, keyin turi o\'zgartiring.');
-      }
-      const stockItem = findStockItem(stockPool, directTrim);
-      if (!stockItem) return sendFail(res, 'Bunday sklad mahsuloti topilmadi.');
-      item.directStockId = directTrim;
-    }
-  }
-  saveOwners(owners);
-
-  return sendOk(res, { item });
-});
-
-authed('/api/menu-remove', (payload, res, { userId }) => {
-  const { id } = payload;
-
-  const owners = loadOwners();
-  const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
-  if (!ctx) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'chira oladi');
-  const owner = ctx.owner;
-  if (!ctx.isAdminActing && !ownerCanUseFeature(owner, 'menu-manage')) return sendFeatureBlocked(res, 'menu-manage');
-  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
-
-  const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
-  const pool = resolveMenuPool(owner, branchId);
-  if (!pool) return sendFail(res, 'Bunday filial topilmadi');
-
-  pool.menu = (pool.menu || []).filter(m => m.id !== id);
-  saveOwners(owners);
-
-  return sendOk(res);
-});
-
-authed('/api/combo-list', (payload, res, { userId }) => {
-  const owners = pruneExpiredOwners();
-  const ctx = resolveOwnerContext(owners, userId);
-  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
-
-  const combos = (ctx.owner.combos || []).map(c => Object.assign({}, c, {
-    price: c.priceMode === 'auto' ? comboAutoPrice(ctx.owner, c.itemIds) : c.price,
-    outOfStock: comboOutOfStock(ctx.owner, c)
-  }));
-  return sendOk(res, { combos });
-});
-
-authed('/api/combo-add', (payload, res, { userId }) => {
-  const { name, itemIds, priceMode, price, category, imageUrl } = payload;
-
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi combo boshqara oladi');
-  const owner = ownerCtx.owner;
-  if (!ownerCanUseFeature(owner, 'combo-manage')) return sendFeatureBlocked(res, 'combo-manage');
-
-  const nameTrim = String(name || '').trim();
-  if (!nameTrim) return sendFail(res, 'Combo nomini kiriting.');
-
-  if (!Array.isArray(itemIds) || itemIds.length < 2) {
-    return sendFail(res, 'Combo tarkibida kamida 2 ta taom bo\'lishi kerak.');
-  }
-  const cleanItemIds = [];
-  for (const entry of itemIds) {
-    const menuItem = (owner.menu || []).find(m => m.id === entry.menuItemId);
-    if (!menuItem) return sendFail(res, 'Tarkibda menyuda mavjud bo\'lmagan taom bor.');
-    const qtyNum = Number(entry.qty) || 1;
-    if (qtyNum <= 0) return sendFail(res, 'Har bir taom miqdori musbat bo\'lishi kerak.');
-    cleanItemIds.push({ menuItemId: entry.menuItemId, qty: qtyNum });
-  }
-
-  const priceModeVal = priceMode === 'manual' ? 'manual' : 'auto';
-  let priceVal;
-  if (priceModeVal === 'manual') {
-    priceVal = Number(price);
-    if (!Number.isFinite(priceVal) || priceVal <= 0) return sendFail(res, 'Combo narxini to\'g\'ri kiriting.');
-  } else {
-    priceVal = comboAutoPrice(owner, cleanItemIds);
-  }
-
-  const imageTrim = String(imageUrl || '').trim();
-  if (!isValidImageValue(imageTrim)) {
-    return sendFail(res, 'Rasm noto\'g\'ri formatda yoki hajmi katta (rasmni kichikroq tanlang).');
-  }
-
-  if (!owner.combos) owner.combos = [];
-  const combo = {
-    id: crypto.randomBytes(4).toString('hex'),
-    name: nameTrim,
-    itemIds: cleanItemIds,
-    priceMode: priceModeVal,
-    price: priceVal,
-    category: String(category || '').trim() || null,
-    imageUrl: imageTrim || null,
-    available: true,
-    addedAt: new Date().toISOString()
-  };
-  owner.combos.push(combo);
-  saveOwners(owners);
-
-  return sendOk(res, { combo });
-});
-
-authed('/api/combo-update', (payload, res, { userId }) => {
-  const { id, name, itemIds, priceMode, price, category, imageUrl, available } = payload;
-
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi combo boshqara oladi');
-  const owner = ownerCtx.owner;
-  if (!ownerCanUseFeature(owner, 'combo-manage')) return sendFeatureBlocked(res, 'combo-manage');
-  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
-
-  const combo = findCombo(owner, id);
-  if (!combo) return sendFail(res, 'Combo topilmadi.');
-
-  if (name !== undefined) {
-    const nameTrim = String(name || '').trim();
-    if (!nameTrim) return sendFail(res, 'Combo nomini kiriting.');
-    combo.name = nameTrim;
-  }
-  if (itemIds !== undefined) {
-    if (!Array.isArray(itemIds) || itemIds.length < 2) {
-      return sendFail(res, 'Combo tarkibida kamida 2 ta taom bo\'lishi kerak.');
-    }
-    const cleanItemIds = [];
-    for (const entry of itemIds) {
-      const menuItem = (owner.menu || []).find(m => m.id === entry.menuItemId);
-      if (!menuItem) return sendFail(res, 'Tarkibda menyuda mavjud bo\'lmagan taom bor.');
-      const qtyNum = Number(entry.qty) || 1;
-      if (qtyNum <= 0) return sendFail(res, 'Har bir taom miqdori musbat bo\'lishi kerak.');
-      cleanItemIds.push({ menuItemId: entry.menuItemId, qty: qtyNum });
-    }
-    combo.itemIds = cleanItemIds;
-  }
-  if (priceMode !== undefined) combo.priceMode = priceMode === 'manual' ? 'manual' : 'auto';
-  if (combo.priceMode === 'manual') {
-    if (price !== undefined) {
-      const priceVal = Number(price);
-      if (!Number.isFinite(priceVal) || priceVal <= 0) return sendFail(res, 'Combo narxini to\'g\'ri kiriting.');
-      combo.price = priceVal;
-    }
-  } else {
-
-    combo.price = comboAutoPrice(owner, combo.itemIds);
-  }
-  if (category !== undefined) combo.category = String(category || '').trim() || null;
-  if (imageUrl !== undefined) {
-    const imageTrim = String(imageUrl || '').trim();
-    if (!isValidImageValue(imageTrim)) {
-      return sendFail(res, 'Rasm noto\'g\'ri formatda yoki hajmi katta (rasmni kichikroq tanlang).');
-    }
-    combo.imageUrl = imageTrim || null;
-  }
-  if (available !== undefined) combo.available = !!available;
-  saveOwners(owners);
-
-  return sendOk(res, { combo });
-});
-
-authed('/api/combo-remove', (payload, res, { userId }) => {
-  const { id } = payload;
-
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'chira oladi');
-  const owner = ownerCtx.owner;
-  if (!ownerCanUseFeature(owner, 'combo-manage')) return sendFeatureBlocked(res, 'combo-manage');
-  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
-
-  owner.combos = (owner.combos || []).filter(c => c.id !== id);
-  saveOwners(owners);
-
-  return sendOk(res);
-});
-
-// Mijoz Mini App ichida "Siz ham oshxona egasimisiz? Hamkor bo'ling"
-// havolasini bossa, shu endpoint bot username'ni qaytaradi — keyin
-// frontend Telegram.WebApp.openTelegramLink(`https://t.me/${botUsername}
-// ?start=owner_register`) chaqiradi. Owner'ga emas, HAR QANDAY ro'yxatdan
-// o'tgan Telegram foydalanuvchisiga ochiq (mijoz bo'lishi kerak, shu
-// sababli isOwnerAccessValid tekshiruvi YO'Q — faqat initData haqiqiyligi
-// tekshiriladi).
-authed('/api/partner-register-link', (payload, res) => {
-  if (!BOT_USERNAME || BOT_USERNAME === 'BOT_USERNAME_BU_YERGA') {
-    return sendFail(res, 'Serverda BOT_USERNAME sozlanmagan.');
-  }
-  return sendOk(res, { botUsername: BOT_USERNAME });
-});
-
-authed('/api/customer-link', (payload, res, { userId }) => {
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi ko\'ra oladi');
-  const owner = ownerCtx.owner;
-  if (!BOT_USERNAME || BOT_USERNAME === 'BOT_USERNAME_BU_YERGA') {
-    return sendFail(res, 'Serverda BOT_USERNAME sozlanmagan.');
-  }
-  const link = `https://t.me/${BOT_USERNAME}?start=menu_${owner.id}`;
-  return sendOk(res, { link });
-});
-
-authed('/api/delivery-group-status', (payload, res, { userId }) => {
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi ko\'ra oladi');
-  const owner = ownerCtx.owner;
-  if (!ownerCanUseFeature(owner, 'delivery-group')) return sendFeatureBlocked(res, 'delivery-group');
-  return sendOk(res, {
-    bound: !!owner.deliveryGroupId,
-    groupTitle: owner.deliveryGroupTitle || null,
-    threadBound: !!owner.deliveryGroupThreadId
-  });
-});
-
-authed('/api/delivery-group-remove', (payload, res, { userId }) => {
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'zgartira oladi');
-  const owner = ownerCtx.owner;
-  if (!ownerCanUseFeature(owner, 'delivery-group')) return sendFeatureBlocked(res, 'delivery-group');
-  owner.deliveryGroupId = null;
-  owner.deliveryGroupTitle = null;
-  owner.deliveryGroupThreadId = null;
-  saveOwners(owners);
-  return sendOk(res);
-});
-
-authed('/api/kitchen-group-status', (payload, res, { userId }) => {
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi ko\'ra oladi');
-  const owner = ownerCtx.owner;
-  if (!ownerCanUseFeature(owner, 'kitchen-group')) return sendFeatureBlocked(res, 'kitchen-group');
-  return sendOk(res, {
-    bound: !!owner.kitchenGroupId,
-    groupTitle: owner.kitchenGroupTitle || null,
-    threadBound: !!owner.kitchenGroupThreadId
-  });
-});
-
-authed('/api/kitchen-group-remove', (payload, res, { userId }) => {
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'zgartira oladi');
-  const owner = ownerCtx.owner;
-  if (!ownerCanUseFeature(owner, 'kitchen-group')) return sendFeatureBlocked(res, 'kitchen-group');
-  owner.kitchenGroupId = null;
-  owner.kitchenGroupTitle = null;
-  owner.kitchenGroupThreadId = null;
-  saveOwners(owners);
-  return sendOk(res);
-});
-
-authed('/api/promo-list', (payload, res, { userId }) => {
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi ko\'ra oladi');
-  const owner = ownerCtx.owner;
-  return sendOk(res, { promotions: owner.promotions || [] });
-});
-
-authed('/api/promo-add', (payload, res, { userId }) => {
-  const { title, description, discountPercent, minTotal } = payload;
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi qo\'sha oladi');
-  const owner = ownerCtx.owner;
-  if (!ownerCanUseFeature(owner, 'promo-manage')) return sendFeatureBlocked(res, 'promo-manage');
-
-  const titleTrim = String(title || '').trim();
-  const percentNum = Number(discountPercent);
-  if (!titleTrim) return sendFail(res, 'Aksiya nomini kiriting.');
-  if (!Number.isFinite(percentNum) || percentNum <= 0 || percentNum > 90) {
-    return sendFail(res, 'Chegirma foizi 1-90 oralig\'ida bo\'lishi kerak.');
-  }
-  let minTotalNum = null;
-  if (minTotal !== undefined && minTotal !== null && minTotal !== '') {
-    const n = Number(minTotal);
-    if (!Number.isFinite(n) || n < 0) return sendFail(res, 'Minimal summa noto\'g\'ri.');
-    minTotalNum = n;
-  }
-
-  if (!owner.promotions) owner.promotions = [];
-  const promo = {
-    id: crypto.randomBytes(4).toString('hex'),
-    title: titleTrim,
-    description: String(description || '').trim() || null,
-    discountPercent: percentNum,
-    minTotal: minTotalNum,
-    active: true,
-    createdAt: new Date().toISOString()
-  };
-  owner.promotions.push(promo);
-  saveOwners(owners);
-  return sendOk(res, { promo });
-});
-
-authed('/api/promo-toggle', (payload, res, { userId }) => {
-  const { id } = payload;
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'zgartira oladi');
-  const owner = ownerCtx.owner;
-
-  const promo = (owner.promotions || []).find(p => p.id === id);
-  if (!promo) return sendFail(res, 'Aksiya topilmadi.');
-  promo.active = !promo.active;
-  saveOwners(owners);
-  return sendOk(res, { promo });
-});
-
-authed('/api/promo-remove', (payload, res, { userId }) => {
-  const { id } = payload;
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'chira oladi');
-  const owner = ownerCtx.owner;
-  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
-
-  owner.promotions = (owner.promotions || []).filter(p => p.id !== id);
-  saveOwners(owners);
-  return sendOk(res);
-});
-
-function isBannerWithinWindow(banner) {
-  const now = Date.now();
-  if (banner.startAt && new Date(banner.startAt).getTime() > now) return false;
-  if (banner.endAt && new Date(banner.endAt).getTime() < now) return false;
-  // Banner faqat haftaning muayyan kunida (masalan har juma) ko'rinishi
-  // uchun bog'langan bo'lsa — bugun (Toshkent vaqti) o'sha kun bo'lmasa,
-  // ko'rsatilmaydi. Owner buni bir marta sozlaydi, keyin har hafta
-  // avtomatik o'zi chiqib-yashirinib turadi.
-  if (banner.weeklyDay !== null && banner.weeklyDay !== undefined) {
-    if (kitchenTashkentDate().getUTCDay() !== banner.weeklyDay) return false;
-  }
-  return true;
-}
-
-function activeOwnerBanners(owner) {
-  const regular = (owner.banners || [])
-    .filter(b => b.active !== false && isBannerWithinWindow(b))
-    .map(b => ({ id: b.id, imageUrl: b.imageUrl, title: b.title, link: b.link }));
-
-  // Juma banneri — bu oddiy bannerlar ro'yxatidan butunlay alohida
-  // saqlanadi (owner.fridayBanner). Faqat bugun (Toshkent vaqti bo'yicha)
-  // juma bo'lsa va o'chirib qo'yilmagan bo'lsa, mijozlar ekraniga
-  // qo'shilib chiqadi — boshqa bannerlarni boshqarishga hech qanday
-  // ta'sir qilmaydi.
-  const fb = owner.fridayBanner;
-  if (fb && fb.imageUrl && fb.active !== false && isTashkentFridayNow()) {
-    regular.unshift({ id: 'friday-banner', imageUrl: fb.imageUrl, title: fb.title, link: fb.link });
-  }
-  return regular;
-}
-
-authed('/api/banner-list', (payload, res, { userId }) => {
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi ko\'ra oladi');
-  const owner = ownerCtx.owner;
-  return sendOk(res, { banners: owner.banners || [] });
-});
-
-authed('/api/banner-add', (payload, res, { userId }) => {
-  const { imageUrl, title, link, startAt, endAt, weeklyDay } = payload;
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi qo\'sha oladi');
-  const owner = ownerCtx.owner;
-  if (!ownerCanUseFeature(owner, 'banner-manage')) return sendFeatureBlocked(res, 'banner-manage');
-
-  const imageTrim = String(imageUrl || '').trim();
-  if (!imageTrim) return sendFail(res, 'Banner uchun rasm tanlang.');
-  if (!isValidImageValue(imageTrim)) {
-    return sendFail(res, 'Rasm noto\'g\'ri formatda yoki hajmi katta (rasmni kichikroq tanlang).');
-  }
-  const linkTrim = String(link || '').trim();
-  if (linkTrim && !/^https?:\/\//i.test(linkTrim)) {
-    return sendFail(res, 'Havola http:// yoki https:// bilan boshlanishi kerak.');
-  }
-  let startAtVal = null;
-  if (startAt) {
-    const d = new Date(startAt);
-    if (isNaN(d.getTime())) return sendFail(res, 'Boshlanish sanasi noto\'g\'ri.');
-    startAtVal = d.toISOString();
-  }
-  let endAtVal = null;
-  if (endAt) {
-    const d = new Date(endAt);
-    if (isNaN(d.getTime())) return sendFail(res, 'Tugash sanasi noto\'g\'ri.');
-    endAtVal = d.toISOString();
-  }
-  if (startAtVal && endAtVal && new Date(endAtVal).getTime() <= new Date(startAtVal).getTime()) {
-    return sendFail(res, 'Tugash sanasi boshlanish sanasidan keyin bo\'lishi kerak.');
-  }
-  let weeklyDayVal = null;
-  if (weeklyDay !== undefined && weeklyDay !== null && weeklyDay !== '') {
-    const n = parseInt(weeklyDay, 10);
-    if (!Number.isInteger(n) || n < 0 || n > 6) return sendFail(res, 'Hafta kuni noto\'g\'ri.');
-    weeklyDayVal = n;
-  }
-
-  if (!owner.banners) owner.banners = [];
-  const banner = {
-    id: crypto.randomBytes(4).toString('hex'),
-    imageUrl: imageTrim,
-    title: String(title || '').trim() || null,
-    link: linkTrim || null,
-    active: true,
-    startAt: startAtVal,
-    endAt: endAtVal,
-    weeklyDay: weeklyDayVal,
-    createdAt: new Date().toISOString()
-  };
-  owner.banners.unshift(banner);
-  saveOwners(owners);
-  return sendOk(res, { banner });
-});
-
-
-authed('/api/banner-toggle', (payload, res, { userId }) => {
-  const { id } = payload;
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'zgartira oladi');
-  const owner = ownerCtx.owner;
-
-  const banner = (owner.banners || []).find(b => b.id === id);
-  if (!banner) return sendFail(res, 'Banner topilmadi.');
-  banner.active = !banner.active;
-  saveOwners(owners);
-  return sendOk(res, { banner });
-});
-
-authed('/api/banner-remove', (payload, res, { userId }) => {
-  const { id } = payload;
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'chira oladi');
-  const owner = ownerCtx.owner;
-  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
-
-  owner.banners = (owner.banners || []).filter(b => b.id !== id);
-  saveOwners(owners);
-  return sendOk(res);
-});
-
-// === Juma banneri (Friday banner) ===
-// Bu bo'lim yuqoridagi oddiy "Reklama bannerlari" (owner.banners) bilan
-// umuman bog'liq emas — alohida maydonda (owner.fridayBanner, bitta
-// obyekt) saqlanadi. Shu sababli bu yerdagi qo'shish/o'chirish/yoqish
-// amallari boshqa bannerlarga hech qanday tarzda aralashmaydi. Faqat
-// haftaning juma kuni avtomatik ko'rinadi (qarang: activeOwnerBanners).
-
-authed('/api/friday-banner-get', (payload, res, { userId }) => {
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi ko\'ra oladi');
-  const owner = ownerCtx.owner;
-  return sendOk(res, { banner: owner.fridayBanner || null });
-});
-
-authed('/api/friday-banner-save', (payload, res, { userId }) => {
-  const { imageUrl, title, link } = payload;
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi qo\'sha oladi');
-  const owner = ownerCtx.owner;
-  if (!ownerCanUseFeature(owner, 'banner-manage')) return sendFeatureBlocked(res, 'banner-manage');
-
-  const imageTrim = String(imageUrl || '').trim();
-  if (!imageTrim) return sendFail(res, 'Banner uchun rasm tanlang.');
-  if (!isValidImageValue(imageTrim)) {
-    return sendFail(res, 'Rasm noto\'g\'ri formatda yoki hajmi katta (rasmni kichikroq tanlang).');
-  }
-  const linkTrim = String(link || '').trim();
-  if (linkTrim && !/^https?:\/\//i.test(linkTrim)) {
-    return sendFail(res, 'Havola http:// yoki https:// bilan boshlanishi kerak.');
-  }
-  const prevActive = owner.fridayBanner ? owner.fridayBanner.active !== false : true;
-  owner.fridayBanner = {
-    imageUrl: imageTrim,
-    title: String(title || '').trim() || null,
-    link: linkTrim || null,
-    active: prevActive,
-    updatedAt: new Date().toISOString()
-  };
-  saveOwners(owners);
-  return sendOk(res, { banner: owner.fridayBanner });
-});
-
-authed('/api/friday-banner-toggle', (payload, res, { userId }) => {
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'zgartira oladi');
-  const owner = ownerCtx.owner;
-  if (!owner.fridayBanner) return sendFail(res, 'Juma banneri topilmagan.');
-  owner.fridayBanner.active = owner.fridayBanner.active === false ? true : false;
-  saveOwners(owners);
-  return sendOk(res, { banner: owner.fridayBanner });
-});
-
-authed('/api/friday-banner-remove', (payload, res, { userId }) => {
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'chira oladi');
-  const owner = ownerCtx.owner;
-  owner.fridayBanner = null;
-  saveOwners(owners);
-  return sendOk(res);
-});
-
-authed('/api/bonus-settings-get', (payload, res, { userId }) => {
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi ko\'ra oladi');
-  const owner = ownerCtx.owner;
-  if (!ownerCanUseFeature(owner, 'bonus-settings')) return sendFeatureBlocked(res, 'bonus-settings');
-  return sendOk(res, { settings: owner.bonusSettings || { enabled: false, earnPercent: 5 } });
-});
-
-authed('/api/bonus-settings-save', (payload, res, { userId }) => {
-  const { enabled, earnPercent } = payload;
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi saqlay oladi');
-  const owner = ownerCtx.owner;
-  if (!ownerCanUseFeature(owner, 'bonus-settings')) return sendFeatureBlocked(res, 'bonus-settings');
-
-  const percentNum = Number(earnPercent);
-  if (!Number.isFinite(percentNum) || percentNum < 0 || percentNum > 50) {
-    return sendFail(res, 'Bonus foizi 0-50 oralig\'ida bo\'lishi kerak.');
-  }
-  owner.bonusSettings = { enabled: !!enabled, earnPercent: percentNum };
-  saveOwners(owners);
-  return sendOk(res, { settings: owner.bonusSettings });
-});
-
-route('/api/restaurant-brand', (payload, res) => {
-  const { ownerId } = payload;
-  if (!ownerId) return sendJSON(res, 200, { ok: false });
-  const owner = findOwner(loadOwners(), ownerId);
-  if (!owner) return sendJSON(res, 200, { ok: false });
-  return sendOk(res, {
-    name: (owner.profile && owner.profile.name) || 'Oshxona',
-    logoUrl: (owner.profile && owner.profile.logoUrl) || null,
-    brandColor: (owner.profile && owner.profile.brandColor) || null
-  });
-});
-
-authed('/api/customer-restaurants-list', (payload, res) => {
-  const owners = pruneExpiredOwners();
-  const restaurants = owners
-    .filter(o => isOwnerAccessValid(o) && o.profile && o.profile.completedAt)
-    .map(o => {
-      const rating = ownerAverageRating(o);
-      return {
-        id: o.id,
-        name: o.profile.name,
-        address: o.profile.address,
-        logoUrl: o.profile.logoUrl || null,
-        brandColor: o.profile.brandColor || null,
-        avgRating: rating.avg,
-        ratingCount: rating.count
-      };
-    });
-
-  return sendOk(res, { restaurants });
-});
-
-authed('/api/customer-verify', (payload, res, { user }) => {
-  const { ownerId } = payload;
-  if (!ownerId) return sendFail(res, 'Oshxona aniqlanmadi.');
-
-  const userId = String(user.id);
-  const owners = pruneExpiredOwners();
-  const owner = findOwner(owners, ownerId);
-  if (!owner || !isOwnerAccessValid(owner)) {
-    return sendFail(res, 'Bu oshxona hozircha mavjud emas.');
-  }
-
-  const customer = findOrCreateCustomer(owner, userId, user);
-  saveOwners(owners);
-
-  return sendOk(res, {
-    restaurant: {
-      id: owner.id,
-      name: (owner.profile && owner.profile.name) || 'Oshxona',
-      address: (owner.profile && owner.profile.address) || null,
-      phone: (owner.profile && owner.profile.phone) || null,
-      workHours: (owner.profile && owner.profile.workHours) || null,
-      logoUrl: (owner.profile && owner.profile.logoUrl) || null,
-      brandColor: (owner.profile && owner.profile.brandColor) || null,
-      paymentCard: owner.customerPaymentCard || { cardNumber: '', cardHolder: '' },
-      // 3-bosqich: mijoz qaysi filialdan buyurtma berishini tanlashi uchun —
-      // filiallar ro'yxati (faqat mijozga kerakli maydonlar bilan).
-      centralBranchName: owner.centralBranchName || null,
-      branches: (owner.branches || []).map(b => ({ id: b.id, name: b.name, address: b.address || null }))
-    },
-    customer: { favorites: customer.favorites, addresses: customer.addresses || [], bonusPoints: customer.bonusPoints, cardOnlyRestricted: customerIsCardOnlyRestricted(owner, userId) },
-    personRegistered: isRegisteredUser(userId),
-    bonusEnabled: !!(owner.bonusSettings && owner.bonusSettings.enabled)
-  });
-});
-
-route('/api/kitchen-status', (payload, res) => {
-  const { initData, ownerId } = payload || {};
-  const owner = ownerId ? findOwner(loadOwners(), ownerId) : null;
-  const hours = getOwnerWorkHours(owner);
-  const open = isKitchenOpenNow(hours);
-  let alreadyReminded = false;
-  if (initData && ownerId) {
-    const check = verifyAuth(initData);
-    if (check.ok) {
-      const userId = String(check.user.id);
-      const reminders = loadKitchenReminders();
-      alreadyReminded = reminders.some(r => String(r.userId) === userId && String(r.ownerId) === String(ownerId));
-    }
-  }
-  return sendOk(res, {
-    open,
-    opensAt: open ? null : nextKitchenOpenAt(hours).toISOString(),
-    openHour: hours.openHour,
-    openMinute: hours.openMinute || 0,
-    closeHour: hours.closeHour,
-    closeMinute: hours.closeMinute || 0,
-    alreadyReminded
-  });
-});
-
-route('/api/kitchen-remind', (payload, res) => {
-  const { initData, ownerId } = payload || {};
-  const check = verifyAuth(initData);
-  if (!check.ok) return sendFail(res, check.reason);
-  if (!ownerId) return sendFail(res, 'Oshxona aniqlanmadi.');
-  const owner = findOwner(loadOwners(), ownerId);
-  if (isKitchenOpenNow(getOwnerWorkHours(owner))) return sendFail(res, 'Oshxona hozir ochiq.');
-
-  const userId = String(check.user.id);
-  const reminders = loadKitchenReminders();
-  const exists = reminders.some(r => String(r.userId) === userId && String(r.ownerId) === String(ownerId));
-  if (!exists) {
-    reminders.push({
-      id: crypto.randomBytes(4).toString('hex'),
-      userId,
-      ownerId: String(ownerId),
-      createdAt: new Date().toISOString()
-    });
-    saveKitchenReminders(reminders);
-  }
-  return sendOk(res);
-});
-
-authed('/api/customer-menu-list', (payload, res, { user }) => {
-  const { ownerId, branchId } = payload;
-  const owners = pruneExpiredOwners();
-  const owner = findOwner(owners, ownerId);
-  if (!owner || !isOwnerAccessValid(owner)) return sendFail(res, 'Bu oshxona hozircha mavjud emas.');
-  if (!ownerCanUseFeature(owner, 'customer-menu')) return sendFeatureBlocked(res, 'customer-menu');
-
-  // 3-bosqich: mijoz tanlagan filial mustaqil menyusini (va o'sha
-  // filialning skladiga bog'liq "tugadi" holatini) ko'rsatadi. branchId
-  // yuborilmasa (yoki filiallar umuman yo'q bo'lsa) — markaziy menyu.
-  const menuPool = resolveMenuPool(owner, branchId);
-  if (branchId && !menuPool) return sendFail(res, 'Bunday filial topilmadi.');
-  const stockPool = resolveStockPool(owner, branchId) || owner;
-
-  const menu = (menuPool.menu || []).filter(m => m.available !== false)
-    .map(m => Object.assign({}, m, { outOfStock: menuItemOutOfStock(stockPool, m) }));
-
-  const combos = (owner.combos || []).filter(c => c.available !== false).map(c => Object.assign({}, c, {
-    price: c.priceMode === 'auto' ? comboAutoPrice(owner, c.itemIds) : c.price,
-    outOfStock: comboOutOfStock(owner, c)
-  }));
-  const promotions = (owner.promotions || []).filter(p => p.active);
-
-  const banners = activeOwnerBanners(owner);
-  const recommendations = ownerCanUseFeature(owner, 'ai-waiter')
-    ? buildAiWaiterRecommendations(owner, String(user.id), menu)
-    : { favorites: [], similar: [] };
-  return sendOk(res, { menu, combos, promotions, banners, categories: sortedOwnerCategories(menuPool), recommendations, branchId: branchId || null });
-});
-
-authed('/api/customer-favorite-toggle', (payload, res, { user }) => {
-  const { ownerId, itemId } = payload;
-  if (!itemId) return sendFail(res, 'Taom ko\'rsatilmagan.');
-
-  const userId = String(user.id);
-  const owners = loadOwners();
-  const owner = findOwner(owners, ownerId);
-  if (!owner || !isOwnerAccessValid(owner)) return sendFail(res, 'Bu oshxona hozircha mavjud emas.');
-  if (!ownerCanUseFeature(owner, 'ai-waiter')) return sendFeatureBlocked(res, 'ai-waiter');
-
-  const customer = findOrCreateCustomer(owner, userId, user);
-  const idx = customer.favorites.indexOf(itemId);
-  if (idx >= 0) customer.favorites.splice(idx, 1);
-  else customer.favorites.push(itemId);
-  saveOwners(owners);
-
-  return sendOk(res, { favorites: customer.favorites });
-});
-
-authed('/api/customer-address-list', (payload, res, { user, userId }) => {
-  const { ownerId } = payload;
-
-  const owners = loadOwners();
-  const owner = findOwner(owners, ownerId);
-  if (!owner || !isOwnerAccessValid(owner)) return sendFail(res, 'Bu oshxona hozircha mavjud emas.');
-  if (!ownerCanUseFeature(owner, 'customer-account')) return sendFeatureBlocked(res, 'customer-account');
-
-  const customer = findOrCreateCustomer(owner, userId, user);
-  return sendOk(res, { addresses: customer.addresses || [] });
-});
-
-authed('/api/customer-address-save', (payload, res, { user, userId }) => {
-  const { ownerId, addressId, label, addressNote, location, extraPhone } = payload;
-
-  const owners = loadOwners();
-  const owner = findOwner(owners, ownerId);
-  if (!owner || !isOwnerAccessValid(owner)) return sendFail(res, 'Bu oshxona hozircha mavjud emas.');
-  if (!ownerCanUseFeature(owner, 'customer-account')) return sendFeatureBlocked(res, 'customer-account');
-
-  const labelTrim = String(label || '').trim().slice(0, 40);
-  if (!labelTrim) return sendFail(res, 'Manzil nomini kiriting (masalan: Uy, Ish).');
-
-  let loc = null;
-  if (location && typeof location.lat === 'number' && typeof location.lng === 'number' &&
-      Math.abs(location.lat) <= 90 && Math.abs(location.lng) <= 180) {
-    loc = { lat: location.lat, lng: location.lng };
-  }
-  const addressNoteTrim = String(addressNote || '').trim().slice(0, 300);
-  if (!loc && !addressNoteTrim) {
-    return sendFail(res, 'Joylashuvni aniqlang yoki manzilni yozib qoldiring.');
-  }
-  const extraPhoneTrim = String(extraPhone || '').trim().slice(0, 30);
-  if (extraPhoneTrim && !isPlausiblePhone(extraPhoneTrim)) {
-    return sendFail(res, 'Telefon raqamini O\'zbekiston formatida kiriting (masalan: +998901234567).');
-  }
-
-  const customer = findOrCreateCustomer(owner, userId, user);
-  if (!Array.isArray(customer.addresses)) customer.addresses = [];
-
-  let addr = addressId ? findCustomerAddress(customer, addressId) : null;
-  if (addr) {
-    addr.label = labelTrim;
-    addr.addressNote = addressNoteTrim;
-    addr.location = loc;
-    addr.extraPhone = extraPhoneTrim;
-    addr.updatedAt = new Date().toISOString();
-  } else {
-    if (customer.addresses.length >= MAX_CUSTOMER_ADDRESSES) {
-      return sendFail(res, `Ko'pi bilan ${MAX_CUSTOMER_ADDRESSES} ta manzil saqlash mumkin.`);
-    }
-    addr = {
-      id: crypto.randomBytes(4).toString('hex'),
-      label: labelTrim,
-      addressNote: addressNoteTrim,
-      location: loc,
-      extraPhone: extraPhoneTrim,
-      createdAt: new Date().toISOString()
-    };
-    customer.addresses.push(addr);
-  }
-  saveOwners(owners);
-  return sendOk(res, { addresses: customer.addresses });
-});
-
-authed('/api/customer-address-remove', (payload, res, { user }) => {
-  const { ownerId, addressId } = payload;
-  if (!addressId) return sendFail(res, 'Manzil ko\'rsatilmagan.');
-
-  const userId = String(user.id);
-  const owners = loadOwners();
-  const owner = findOwner(owners, ownerId);
-  if (!owner || !isOwnerAccessValid(owner)) return sendFail(res, 'Bu oshxona hozircha mavjud emas.');
-  if (!ownerCanUseFeature(owner, 'customer-account')) return sendFeatureBlocked(res, 'customer-account');
-
-  const customer = findOrCreateCustomer(owner, userId, user);
-  const idx = (customer.addresses || []).findIndex(a => a.id === addressId);
-  if (idx < 0) return sendFail(res, 'Manzil topilmadi.');
-  customer.addresses.splice(idx, 1);
-  saveOwners(owners);
-  return sendOk(res, { addresses: customer.addresses });
-});
-
-authed('/api/customer-orders-history', (payload, res, { userId }) => {
-  const { ownerId } = payload;
-
-  const owners = loadOwners();
-  const owner = findOwner(owners, ownerId);
-  if (!owner) return sendFail(res, 'Bu oshxona hozircha mavjud emas.');
-  if (!ownerCanUseFeature(owner, 'customer-account')) return sendFeatureBlocked(res, 'customer-account');
-
-  const orders = (owner.orders || [])
-    .filter(o => String(o.customerId) === userId)
-    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-    .slice(0, 50);
-
-  return sendOk(res, { orders });
-});
-
-authed('/api/customer-confirm-received', (payload, res, { userId }) => {
-  const { ownerId, orderId } = payload;
-
-  const owners = loadOwners();
-  const owner = findOwner(owners, ownerId);
-  if (!owner) return sendFail(res, 'Bu oshxona hozircha mavjud emas.');
-  if (!ownerCanUseFeature(owner, 'customer-account')) return sendFeatureBlocked(res, 'customer-account');
-
-  const order = (owner.orders || []).find(o => o.id === orderId);
-  if (!order) return sendFail(res, 'Buyurtma topilmadi.');
-  if (String(order.customerId) !== userId) return sendFail(res, 'Bu sizning buyurtmangiz emas.');
-  if (order.orderType === 'dostavka') return sendFail(res, 'Dostavka buyurtmalarini kuryer belgilaydi.');
-  if (order.status !== 'tayyor') return sendFail(res, 'Buyurtma hali tayyor emas.');
-  if (order.customerReceivedAt) return sendFail(res, 'Bu buyurtma allaqachon olingan deb belgilangan.');
-
-  order.customerReceivedAt = new Date().toISOString();
-  saveOwners(owners);
-
-  return sendOk(res, { order });
-});
-
-authed('/api/customer-notifications', (payload, res, { userId }) => {
-  const { ownerId } = payload;
-
-  const owners = loadOwners();
-  const owner = findOwner(owners, ownerId);
-  if (!owner) return sendFail(res, 'Bu oshxona hozircha mavjud emas.');
-  if (!ownerCanUseFeature(owner, 'customer-account')) return sendFeatureBlocked(res, 'customer-account');
-
-  const myOrders = (owner.orders || [])
-    .filter(o => String(o.customerId) === userId)
-    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
-    .slice(0, 30);
-
-  const notifications = [];
-  myOrders.forEach(o => {
-    const items = o.items || [];
-    const itemsText = items.slice(0, 3).map(it => it.name).join(', ') + (items.length > 3 ? ' va yana...' : '');
-
-    notifications.push({
-      id: `${o.id}-created`, type: 'order', icon: 'clipboard',
-      title: 'Buyurtma qabul qilindi',
-      text: `${itemsText} — ${fmtNum(o.total)} so'm`,
-      time: o.createdAt
-    });
-
-    if (o.status === 'tayyorlanmoqda' || (o.status === 'tayyor' && o.startedAt)) {
-      notifications.push({
-        id: `${o.id}-progress`, type: 'order', icon: 'chef-hat',
-        title: 'Buyurtmangiz tayyorlanmoqda',
-        text: itemsText,
-        time: o.startedAt || o.updatedAt || o.createdAt
-      });
-    }
-
-    if (o.status === 'tayyor') {
-      notifications.push({
-        id: `${o.id}-ready`, type: 'order', icon: 'check-circle',
-        title: o.orderType === 'dostavka' ? 'Buyurtmangiz tayyor — kuryerga topshirilmoqda' : 'Buyurtmangiz tayyor!',
-        text: itemsText,
-        time: o.readyAt || o.updatedAt || o.createdAt
-      });
-    }
-
-    if (o.deliveredAt) {
-      notifications.push({
-        id: `${o.id}-delivered`, type: 'order', icon: 'check-circle',
-        title: 'Buyurtmangiz yetkazib berildi',
-        text: itemsText,
-        time: o.deliveredAt
-      });
-    }
-
-    if (o.status === 'bekor_qilindi' && o.cancelledAt) {
-      notifications.push({
-        id: `${o.id}-cancelled`, type: 'order', icon: 'x-circle',
-        title: 'Dostavka bekor qilindi',
-        text: o.cancelReason || 'Kechirasiz, buyurtmangizni yetkazib bera olmadik.',
-        time: o.cancelledAt
-      });
-    }
-
-    if (o.paymentProofApprovedAt) {
-      notifications.push({
-        id: `${o.id}-payok`, type: 'order', icon: 'card',
-        title: 'To\'lovingiz tasdiqlandi',
-        text: itemsText,
-        time: o.paymentProofApprovedAt
-      });
-    }
-
-    if (o.paymentProofRejectedAt) {
-      notifications.push({
-        id: `${o.id}-payrej`, type: 'order', icon: 'x-circle',
-        title: 'To\'lov tasdiqlanmadi',
-        text: 'Iltimos, to\'g\'ri chekni qayta yuboring yoki oshxona bilan bog\'laning.',
-        time: o.paymentProofRejectedAt
-      });
-    }
-  });
-
-  (owner.promotions || []).filter(p => p.active).forEach(p => {
-    notifications.push({
-      id: `promo-${p.id}`, type: 'promo', icon: 'star',
-      title: `Yangi aksiya: ${p.title}`,
-      text: `${p.discountPercent}% chegirma${p.minTotal ? ` (${fmtNum(p.minTotal)} so'mdan buyurtmalarga)` : ''}`,
-      time: p.createdAt
-    });
-  });
-
-  notifications.sort((a, b) => new Date(b.time) - new Date(a.time));
-  return sendOk(res, { notifications: notifications.slice(0, 50) });
-});
-
-function supportThreadMessages(owner, customerId) {
-  return (owner.supportMessages || [])
-    .filter(m => String(m.customerId) === String(customerId))
-    .sort((a, b) => new Date(a.at) - new Date(b.at));
-}
-
-authed('/api/support-send', async (payload, res, { user, userId }) => {
-  const { ownerId, text } = payload;
-
-  const owners = loadOwners();
-  const owner = findOwner(owners, ownerId);
-  if (!owner || !isOwnerAccessValid(owner)) return sendFail(res, 'Bu oshxona hozircha mavjud emas.');
-  if (!ownerCanUseFeature(owner, 'support-chat')) return sendFeatureBlocked(res, 'support-chat');
-
-  const textTrim = String(text || '').trim().slice(0, 1000);
-  if (!textTrim) return sendFail(res, 'Xabar matni bo\'sh bo\'lmasligi kerak.');
-
-  if (!Array.isArray(owner.supportMessages)) owner.supportMessages = [];
-  const customer = findOrCreateCustomer(owner, userId, user);
-  const msg = {
-    id: crypto.randomBytes(4).toString('hex'),
-    customerId: userId,
-    from: 'customer',
-    text: textTrim,
-    at: new Date().toISOString(),
-    readByCustomer: true,
-    readByStaff: false
-  };
-  owner.supportMessages.push(msg);
-  saveOwners(owners);
-
-  const staffTargets = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'egasi') || staffHasRole(s, 'kassir')).map(s => s.id))];
-  const profile = findProfile(userId);
-  const alertText = `🆘 <b>Yordam so'rovi</b>\n${orderCustomerContactLabel({ customerName: customerDisplayName(userId, user), customerPhone: (profile && profile.phone) || null })}\n\n${escapeHtmlServer(textTrim)}`;
-  for (const targetId of new Set(staffTargets.map(String))) {
-    sendMessage(targetId, alertText);
-  }
-
-  return sendOk(res, { messages: supportThreadMessages(owner, userId) });
-});
-
-authed('/api/support-thread', (payload, res, { userId }) => {
-  const { ownerId } = payload;
-
-  const owners = loadOwners();
-  const owner = findOwner(owners, ownerId);
-  if (!owner) return sendFail(res, 'Bu oshxona hozircha mavjud emas.');
-  if (!ownerCanUseFeature(owner, 'support-chat')) return sendFeatureBlocked(res, 'support-chat');
-
-  let changed = false;
-  (owner.supportMessages || []).forEach(m => {
-    if (String(m.customerId) === userId && m.from === 'staff' && !m.readByCustomer) {
-      m.readByCustomer = true;
-      changed = true;
-    }
-  });
-  if (changed) saveOwners(owners);
-
-  return sendOk(res, { messages: supportThreadMessages(owner, userId) });
-});
-
-authed('/api/support-inbox', (payload, res, { userId }) => {
-  const owners = loadOwners();
-  const ctx = resolveOwnerContext(owners, userId);
-  if (!ctx || !ctxHasAnyRole(ctx, ['egasi', 'kassir'])) {
-    return sendFail(res, 'Bu bo\'limga faqat egasi/kassir kira oladi');
-  }
-  if (!ownerCanUseFeature(ctx.owner, 'support-chat')) return sendFeatureBlocked(res, 'support-chat');
-
-  const byCustomer = new Map();
-  for (const m of (ctx.owner.supportMessages || [])) {
-    const list = byCustomer.get(m.customerId) || [];
-    list.push(m);
-    byCustomer.set(m.customerId, list);
-  }
-  const threads = [];
-  for (const [customerId, msgs] of byCustomer.entries()) {
-    msgs.sort((a, b) => new Date(a.at) - new Date(b.at));
-    const last = msgs[msgs.length - 1];
-    const customer = findCustomer(ctx.owner, customerId);
-    threads.push({
-      customerId,
-      customerName: (customer && customer.firstName) || `ID: ${customerId}`,
-      lastText: last.text,
-      lastAt: last.at,
-      lastFrom: last.from,
-      unreadCount: msgs.filter(m => m.from === 'customer' && !m.readByStaff).length
-    });
-  }
-  threads.sort((a, b) => new Date(b.lastAt) - new Date(a.lastAt));
-
-  return sendOk(res, { threads });
-});
-
-authed('/api/support-thread-staff', (payload, res, { userId }) => {
-  const { customerId } = payload;
-
-  const owners = loadOwners();
-  const ctx = resolveOwnerContext(owners, userId);
-  if (!ctx || !ctxHasAnyRole(ctx, ['egasi', 'kassir'])) {
-    return sendFail(res, 'Bu bo\'limga faqat egasi/kassir kira oladi');
-  }
-  if (!ownerCanUseFeature(ctx.owner, 'support-chat')) return sendFeatureBlocked(res, 'support-chat');
-  if (!customerId) return sendFail(res, 'Mijoz tanlanmagan.');
-
-  let changed = false;
-  (ctx.owner.supportMessages || []).forEach(m => {
-    if (String(m.customerId) === String(customerId) && m.from === 'customer' && !m.readByStaff) {
-      m.readByStaff = true;
-      changed = true;
-    }
-  });
-  if (changed) saveOwners(owners);
-
-  return sendOk(res, { messages: supportThreadMessages(ctx.owner, customerId) });
-});
-
-authed('/api/support-reply', async (payload, res, { userId }) => {
-  const { customerId, text } = payload;
-
-  const owners = loadOwners();
-  const ctx = resolveOwnerContext(owners, userId);
-  if (!ctx || !ctxHasAnyRole(ctx, ['egasi', 'kassir'])) {
-    return sendFail(res, 'Bu bo\'limga faqat egasi/kassir kira oladi');
-  }
-  if (!ownerCanUseFeature(ctx.owner, 'support-chat')) return sendFeatureBlocked(res, 'support-chat');
-  if (!customerId) return sendFail(res, 'Mijoz tanlanmagan.');
-
-  const textTrim = String(text || '').trim().slice(0, 1000);
-  if (!textTrim) return sendFail(res, 'Xabar matni bo\'sh bo\'lmasligi kerak.');
-
-  if (!Array.isArray(ctx.owner.supportMessages)) ctx.owner.supportMessages = [];
-  const msg = {
-    id: crypto.randomBytes(4).toString('hex'),
-    customerId: String(customerId),
-    from: 'staff',
-    text: textTrim,
-    at: new Date().toISOString(),
-    readByCustomer: false,
-    readByStaff: true
-  };
-  ctx.owner.supportMessages.push(msg);
-  saveOwners(owners);
-
-  await sendMessage(customerId, `💬 <b>Oshxonadan javob</b>\n${escapeHtmlServer(textTrim)}`);
-
-  return sendOk(res, { messages: supportThreadMessages(ctx.owner, customerId) });
-});
-
-function adminSupportThreadMessages(ownerId) {
-  return loadAdminSupportMessages()
-    .filter(m => String(m.ownerId) === String(ownerId))
-    .sort((a, b) => new Date(a.at) - new Date(b.at));
-}
-
-authed('/api/owner-admin-support-send', async (payload, res, { userId }) => {
-  const { text } = payload;
-
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return sendFail(res, 'Faqat oshxona egasi adminga yoza oladi.');
-  const owner = ownerCtx.owner;
-
-  const textTrim = String(text || '').trim().slice(0, 1000);
-  if (!textTrim) return sendFail(res, 'Xabar matni bo\'sh bo\'lmasligi kerak.');
-
-  const msgs = loadAdminSupportMessages();
-  msgs.push({
-    id: crypto.randomBytes(4).toString('hex'),
-    ownerId: owner.id,
-    from: 'owner',
-    text: textTrim,
-    at: new Date().toISOString(),
-    readByOwner: true,
-    readByAdmin: false
-  });
-  saveAdminSupportMessages(msgs);
-
-  const alertText = `🆘 <b>Egadan xabar</b>\nOshxona: <b>${escapeHtmlServer((owner.profile && owner.profile.name) || owner.id)}</b> (ID: <code>${owner.id}</code>)\n\n${escapeHtmlServer(textTrim)}`;
-  for (const adminId of allAdminIds()) {
-    sendMessage(adminId, alertText);
-  }
-
-  return sendOk(res, { messages: adminSupportThreadMessages(owner.id) });
-});
-
-authed('/api/owner-admin-support-thread', (payload, res, { userId }) => {
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return sendFail(res, 'Faqat oshxona egasi ko\'ra oladi.');
-  const owner = ownerCtx.owner;
-
-  const msgs = loadAdminSupportMessages();
-  let changed = false;
-  msgs.forEach(m => {
-    if (String(m.ownerId) === owner.id && m.from === 'admin' && !m.readByOwner) {
-      m.readByOwner = true;
-      changed = true;
-    }
-  });
-  if (changed) saveAdminSupportMessages(msgs);
-
-  return sendOk(res, { messages: adminSupportThreadMessages(owner.id) });
-});
-
-authed('/api/admin-support-inbox', (payload, res, { userId }) => {
-  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin ko\'ra oladi');
-
-  const owners = loadOwners();
-  const msgs = loadAdminSupportMessages();
-  const byOwner = new Map();
-  for (const m of msgs) {
-    const list = byOwner.get(m.ownerId) || [];
-    list.push(m);
-    byOwner.set(m.ownerId, list);
-  }
-  const threads = [];
-  for (const [ownerId, list] of byOwner.entries()) {
-    list.sort((a, b) => new Date(a.at) - new Date(b.at));
-    const last = list[list.length - 1];
-    const owner = findOwner(owners, ownerId);
-    threads.push({
-      ownerId,
-      ownerName: (owner && owner.profile && owner.profile.name) || `ID: ${ownerId}`,
-      lastText: last.text,
-      lastAt: last.at,
-      lastFrom: last.from,
-      unreadCount: list.filter(m => m.from === 'owner' && !m.readByAdmin).length
-    });
-  }
-  threads.sort((a, b) => new Date(b.lastAt) - new Date(a.lastAt));
-
-  return sendOk(res, { threads });
-});
-
-authed('/api/admin-support-thread', (payload, res, { userId }) => {
-  const { ownerId } = payload;
-  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin ko\'ra oladi');
-  if (!ownerId) return sendFail(res, 'Oshxona tanlanmagan.');
-
-  const msgs = loadAdminSupportMessages();
-  let changed = false;
-  msgs.forEach(m => {
-    if (String(m.ownerId) === String(ownerId) && m.from === 'owner' && !m.readByAdmin) {
-      m.readByAdmin = true;
-      changed = true;
-    }
-  });
-  if (changed) saveAdminSupportMessages(msgs);
-
-  return sendOk(res, { messages: adminSupportThreadMessages(ownerId) });
-});
-
-authed('/api/admin-support-reply', async (payload, res, { userId }) => {
-  const { ownerId, text } = payload;
-  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin javob bera oladi');
-  if (!ownerId) return sendFail(res, 'Oshxona tanlanmagan.');
-
-  const textTrim = String(text || '').trim().slice(0, 1000);
-  if (!textTrim) return sendFail(res, 'Xabar matni bo\'sh bo\'lmasligi kerak.');
-
-  const msgs = loadAdminSupportMessages();
-  msgs.push({
-    id: crypto.randomBytes(4).toString('hex'),
-    ownerId: String(ownerId),
-    from: 'admin',
-    text: textTrim,
-    at: new Date().toISOString(),
-    readByOwner: false,
-    readByAdmin: true
-  });
-  saveAdminSupportMessages(msgs);
-
-  await sendMessage(ownerId, `💬 <b>Admindan xabar</b>\n${escapeHtmlServer(textTrim)}`);
-
-  return sendOk(res, { messages: adminSupportThreadMessages(ownerId) });
-});
-
-authed('/api/customer-order', async (payload, res, { user, userId }) => {
-  const { ownerId, items, orderType, paymentType, promoId, usePoints, location, addressNote, extraPhone, comment, requestId, branchId } = payload;
-
-  const owners = loadOwners();
-  const owner = findOwner(owners, ownerId);
-  if (!owner || !isOwnerAccessValid(owner)) return sendFail(res, 'Bu oshxona hozircha mavjud emas.');
-  if (!ownerCanUseFeature(owner, 'customer-menu')) return sendFeatureBlocked(res, 'customer-menu');
-
-  // 3-bosqich: mijoz tanlagan filialning mustaqil menyusi/skladi asosida
-  // buyurtma tekshiriladi va shakllantiriladi (branchId bo'lmasa — markaziy).
-  const menuPool = resolveMenuPool(owner, branchId);
-  if (branchId && !menuPool) return sendFail(res, 'Bunday filial topilmadi.');
-  const stockPool = resolveStockPool(owner, branchId) || owner;
-  const orderBranch = branchId ? findBranch(owner, branchId) : null;
-
-  if (!isRegisteredUser(userId)) {
-    return sendJSON(res, 200, {
-      ok: false,
-      reason: 'Buyurtma berishdan oldin ism, familiya va telefon raqamingizni kiritib ro\'yxatdan o\'ting.'
-    });
-  }
-
-  const cachedResponse = getCachedOrderResponse(owner.id, userId, requestId);
-  if (cachedResponse) return sendJSON(res, 200, cachedResponse);
-
-  if (!Array.isArray(items) || !items.length) {
-    return sendFail(res, 'Savat bo\'sh. Kamida bitta taom tanlang.');
-  }
-  if (!Object.prototype.hasOwnProperty.call(CUSTOMER_ORDER_TYPES, orderType)) {
-    return sendFail(res, 'Buyurtma turini tanlang.');
-  }
-  if (!Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, paymentType)) {
-    return sendFail(res, 'To\'lov turini tanlang.');
-  }
-  if (orderType === 'dostavka' && paymentType === 'naqd') {
-    return sendFail(res, 'Bu turdagi naqd to\'lov dostavka buyurtmalarida mavjud emas. "Naqd" (dostavka orqali) yoki Karta tanlang.');
-  }
-
-  if (orderType !== 'dostavka' && paymentType === 'dostavka_orqali') {
-    return sendFail(res, '"Naqd" to\'lovi (dostavkada) faqat Dostavka buyurtmalarida mavjud.');
-  }
-
-  if (orderType === 'dostavka' && paymentType === 'dostavka_orqali' && customerIsCardOnlyRestricted(owner, userId)) {
-    return sendFail(res, 'Avvalgi buyurtma(lar)ingizda kuryer sizga bog\'lana olmagani sababli, endi faqat Karta orqali oldindan to\'lov bilan buyurtma bera olasiz.');
-  }
-
-  let deliveryLocation = null;
-  if (orderType === 'dostavka') {
-    if (location && typeof location.lat === 'number' && typeof location.lng === 'number' &&
-        Math.abs(location.lat) <= 90 && Math.abs(location.lng) <= 180) {
-      deliveryLocation = { lat: location.lat, lng: location.lng };
-    }
-    if (!deliveryLocation) {
-      return sendFail(res, 'Dostavka uchun joylashuvingizni (location) yuborishingiz shart. Manzil izohi yetarli emas.');
-    }
-    if (!isWithinDeliveryZone(deliveryLocation)) {
-      return sendFail(res, `Kechirasiz, bu manzil xizmat zonasidan tashqarida (dostavka radiusi ${DELIVERY_ZONE_RADIUS_KM} km). Iltimos, xizmat zonamiz ichidagi manzilni tanlang.`);
-    }
-    const extraPhoneTrimmed = String(extraPhone || '').trim();
-    if (!isPlausiblePhone(extraPhoneTrimmed)) {
-      return sendFail(res, 'Telefon raqamini O\'zbekiston formatida kiriting (masalan: +998901234567).');
-    }
-  }
-  const addressNoteFinal = orderType === 'dostavka' ? String(addressNote || '').trim().slice(0, 300) : null;
-  const extraPhoneFinal = orderType === 'dostavka' ? String(extraPhone || '').trim().slice(0, 30) : null;
-  const commentFinal = String(comment || '').trim().slice(0, 300) || null;
-
-  const menu = (menuPool.menu || []).filter(m => m.available !== false);
-  const combosAvailable = (owner.combos || []).filter(c => c.available !== false);
-  const orderItems = [];
-  for (const it of items) {
-    const qty = parseInt(it.qty, 10);
-    if (!Number.isInteger(qty) || qty <= 0) return sendFail(res, 'Miqdor noto\'g\'ri.');
-    if (it.isCombo) {
-      const combo = combosAvailable.find(c => c.id === it.id);
-      if (!combo) return sendFail(res, 'Menyuda mavjud bo\'lmagan combo tanlangan.');
-      orderItems.push({ id: combo.id, name: combo.name, price: combo.price, qty, isCombo: true, category: combo.category || null });
-      continue;
-    }
-    const menuItem = menu.find(m => m.id === it.id);
-    if (!menuItem) return sendFail(res, 'Menyuda mavjud bo\'lmagan taom tanlangan.');
-    const priceOpt = resolveMenuItemPriceOption(menuItem, it.priceId);
-    if (!priceOpt.ok) return sendFail(res, priceOpt.reason);
-    orderItems.push({ id: menuItem.id, name: priceOpt.label ? `${menuItem.name} (${priceOpt.label})` : menuItem.name, price: priceOpt.price, priceId: priceOpt.priceId, qty, directStockId: menuItem.directStockId || null, category: menuItem.category || null });
-  }
-  const subtotal = orderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
-
-  const { promo, discountAmount: manualDiscountAmount } = applyPromoDiscount(owner, promoId, subtotal);
-  const buy4get1 = computeBuy4Get1FreePromo(orderItems);
-  const discountAmount = manualDiscountAmount + buy4get1.discountAmount;
-  let total = Math.max(0, subtotal - discountAmount);
-
-  const customer = findOrCreateCustomer(owner, userId, user);
-  let pointsUsed = 0;
-  if (usePoints) {
-    const requested = Math.max(0, Math.floor(Number(usePoints) || 0));
-    pointsUsed = Math.min(requested, customer.bonusPoints, total);
-    total -= pointsUsed;
-  }
-
-  if (!owner.stock) owner.stock = [];
-
-  const stockCheck = checkStockAvailabilityPooled(owner, orderItems, menu, stockPool);
-  if (!stockCheck.ok) {
-    return sendFail(res, stockCheck.reason);
-  }
-
-  for (const it of orderItems) {
-    if (it.isCombo) {
-      const combo = findCombo(owner, it.id);
-      if (combo) {
-        for (const need of comboStockNeeds(owner, combo, it.qty)) {
-          const stockItem = findStockItem(owner, need.stockId);
-          if (!stockItem) continue;
-          stockItem.qty = Math.max(0, Math.round((stockItem.qty - need.qty) * 1000) / 1000);
-          addStockMovement(owner, {
-            stockId: stockItem.id, stockName: stockItem.name, type: 'chiqim',
-            qty: need.qty, unit: stockItem.unit,
-            note: `Combo: ${combo.name} (${need.viaName}) x${it.qty}`,
-            userId
-          });
-          checkLowStockAlert(owner, stockItem, userId);
-        }
-      }
-      continue;
-    }
-    const menuItem = menu.find(m => m.id === it.id);
-
-    if (menuItem && menuItem.directStockId) {
-      const stockItem = findStockItem(stockPool, menuItem.directStockId);
-      if (stockItem) {
-        const consumeQty = it.qty;
-        stockItem.qty = Math.max(0, Math.round((stockItem.qty - consumeQty) * 1000) / 1000);
-        addStockMovement(stockPool, {
-          stockId: stockItem.id, stockName: stockItem.name, type: 'chiqim',
-          qty: consumeQty, unit: stockItem.unit,
-          note: `To'g'ridan sotildi: ${menuItem.name} x${it.qty}`,
-          userId
+      msgEl.textContent = '';
+      wrap.innerHTML = `
+        <div class="link-box">
+          <span id="inviteLinkText">${escapeHtml(res.link)}</span>
+          <button id="copyInviteBtn">${icon('link', 'icon-xs')}<span>Nusxalash</span></button>
+        </div>
+      `;
+      document.getElementById('copyInviteBtn').addEventListener('click', () => {
+        navigator.clipboard.writeText(res.link).then(() => {
+          setMsg(msgEl, 'Havola nusxalandi.', 'ok');
+        }).catch(() => {
+          setMsg(msgEl, 'Nusxalab bo\'lmadi, havolani qo\'lda ko\'chiring.', 'err');
         });
-        checkLowStockAlert(owner, stockItem, userId, branchId || null);
-      }
-      continue;
-    }
-    const recipe = (menuItem && Array.isArray(menuItem.recipe)) ? menuItem.recipe : [];
-    for (const ing of recipe) {
-      const stockItem = findStockItem(stockPool, ing.stockId);
-      if (!stockItem) continue;
-      const consumeQty = Math.round(ing.qty * it.qty * 1000) / 1000;
-      stockItem.qty = Math.max(0, Math.round((stockItem.qty - consumeQty) * 1000) / 1000);
-      addStockMovement(stockPool, {
-        stockId: stockItem.id, stockName: stockItem.name, type: 'chiqim',
-        qty: consumeQty, unit: stockItem.unit,
-        note: `Mijoz buyurtmasi: ${menuItem.name} x${it.qty}`,
-        userId
       });
-      checkLowStockAlert(owner, stockItem, userId, branchId || null);
-    }
-  }
+    });
 
-  let pointsEarned = 0;
-  if (owner.bonusSettings && owner.bonusSettings.enabled) {
-    pointsEarned = Math.floor(total * (owner.bonusSettings.earnPercent || 0) / 100);
-  }
-  customer.bonusPoints = Math.max(0, customer.bonusPoints - pointsUsed + pointsEarned);
-  customer.ordersCount = (customer.ordersCount || 0) + 1;
-  customer.totalSpent = (customer.totalSpent || 0) + total;
-
-  if (!customer.itemFrequency || typeof customer.itemFrequency !== 'object') customer.itemFrequency = {};
-  for (const it of orderItems) {
-    if (!it.id) continue;
-    customer.itemFrequency[it.id] = (customer.itemFrequency[it.id] || 0) + (it.qty || 1);
-  }
-  customer.lastOrderedAt = new Date().toISOString();
-
-  if (!owner.orders) owner.orders = [];
-  const order = {
-    id: crypto.randomBytes(4).toString('hex'),
-    orderNumber: getNextOrderNumber(owner),
-    items: orderItems,
-    subtotal,
-    promoId: promo ? promo.id : null,
-    promoTitle: promo ? promo.title : null,
-    discountAmount,
-    autoPromoNote: buy4get1.noteHtml,
-    pointsUsed,
-    pointsEarned,
-    total,
-    orderType,
-    location: deliveryLocation,
-    addressNote: addressNoteFinal,
-    extraPhone: extraPhoneFinal,
-    comment: commentFinal,
-    paymentType,
-    status: 'yangi',
-
-    paymentProofStatus: (paymentType === 'karta') ? 'kutilmoqda' : null,
-    paymentConfirmMethod: paymentType === 'karta' ? 'skrinshot' : null,
-    paymentProofFileId: null,
-
-    branchId: orderBranch ? orderBranch.id : null,
-    customerId: userId,
-    customerName: customerDisplayName(userId, user),
-    customerPhone: (findProfile(userId) || {}).phone || null,
-    source: 'customer',
-    createdAt: new Date().toISOString(),
-    createdBy: userId
-  };
-  owner.orders.push(order);
-  logStaffAction(owner, { userId, role: 'mijoz', action: 'buyurtma_yaratdi', orderId: order.id, note: `Mijoz buyurtmasi — ${fmtNum(total)} so'm` });
-  saveOwners(owners);
-
-  if (paymentType === 'karta') {
-
-    const payCard = owner.customerPaymentCard || {};
-    const cardLine = payCard.cardNumber
-      ? `\n\n💳 To'lov: <code>${escapeHtmlServer(payCard.cardNumber)}</code>` +
-        (payCard.cardHolder ? ` (${escapeHtmlServer(payCard.cardHolder)})` : '')
-      : '\n\n⚠️ Oshxona hali to\'lov kartasini kiritmagan — to\'lov uchun kassaga murojaat qiling.';
-    await sendMessage(userId,
-      '💳 Buyurtmangiz qabul qilindi, lekin hali <b>TASDIQLANMAGAN</b>.' + cardLine + '\n\n' +
-      'Iltimos, to\'lov chekining (skrinshotning) RASMINI shu botga yuboring - ' +
-      'kassir yoki oshxona egasi tekshirib tasdiqlagach, buyurtmangiz oshxonaga yuboriladi.');
-  } else {
-    const itemsText = orderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
-    const commentLine = order.comment ? `\n💬 Izoh: ${escapeHtmlServer(order.comment)}` : '';
-    const branchLine = orderBranch ? `\n🏬 Filial: ${escapeHtmlServer(orderBranch.name)}` : '';
-    const autoPromoLine = order.autoPromoNote ? `\n${order.autoPromoNote}` : '';
-    const notifyText = `🆕 <b>Yangi mijoz buyurtmasi</b> (${ORDER_TYPES[orderType]})\n` +
-      `${orderCustomerContactLabel(order)}\n${itemsText}\n\nJami: ${fmtNum(total)} so'm\nTo'lov: ${PAYMENT_TYPES[paymentType]}${commentLine}${branchLine}${autoPromoLine}`;
-    const notifyTargets = [owner.id, ...((owner.staff || []).filter(s => staffHasRole(s, 'oshpaz') || staffHasRole(s, 'kassir')).map(s => s.id))];
-    await notifyStaffList(owner, notifyTargets, notifyText, `Buyurtma #${order.id} (mijoz)`, 'newOrder');
-    notifyKitchenGroup(owner, order, orderCustomerContactLabel(order));
-    saveOwners(owners);
-  }
-
-  const successResponse = {
-    ok: true, orderId: order.id, total, discountAmount, pointsUsed, pointsEarned,
-    bonusBalance: customer.bonusPoints, paymentPending: !!order.paymentProofStatus,
-    paymentConfirmMethod: order.paymentConfirmMethod
-  };
-  setCachedOrderResponse(owner.id, userId, requestId, successResponse);
-  return sendJSON(res, 200, successResponse);
-});
-
-function checkStockAvailability(owner, orderItems, menu) {
-  const needed = new Map();
-  for (const it of orderItems) {
-    if (it.isCombo) {
-      const combo = findCombo(owner, it.id);
-      if (!combo) continue;
-      for (const need of comboStockNeeds(owner, combo, it.qty)) {
-        needed.set(need.stockId, Math.round(((needed.get(need.stockId) || 0) + need.qty) * 1000) / 1000);
+    document.getElementById('addOwnerBtn').addEventListener('click', () => {
+      const val = document.getElementById('ownerInput').value.trim();
+      const daysVal = document.getElementById('ownerDaysInput').value.trim();
+      const priceVal = document.getElementById('ownerPriceInput').value.trim();
+      const paidVal = document.getElementById('ownerPaidInput').checked;
+      const msgEl = document.getElementById('addMsg');
+      setMsg(msgEl, '');
+      if (!val) {
+        setMsg(msgEl, 'Iltimos, ID yoki username kiriting.', 'err');
+        return;
       }
-      continue;
-    }
-    const menuItem = menu.find(m => m.id === it.id);
-
-    if (menuItem && menuItem.directStockId) {
-      const consumeQty = it.qty;
-      needed.set(menuItem.directStockId, Math.round(((needed.get(menuItem.directStockId) || 0) + consumeQty) * 1000) / 1000);
-      continue;
-    }
-    const recipe = (menuItem && Array.isArray(menuItem.recipe)) ? menuItem.recipe : [];
-    for (const ing of recipe) {
-      const consumeQty = Math.round(ing.qty * it.qty * 1000) / 1000;
-      needed.set(ing.stockId, Math.round(((needed.get(ing.stockId) || 0) + consumeQty) * 1000) / 1000);
-    }
-  }
-  for (const [stockId, requiredQty] of needed) {
-    const stockItem = findStockItem(owner, stockId);
-    if (!stockItem) continue;
-    if (stockItem.qty < requiredQty) {
-      return {
-        ok: false,
-        reason: `Omborda "${stockItem.name}" yetarli emas (kerak: ${requiredQty} ${stockItem.unit}, mavjud: ${stockItem.qty} ${stockItem.unit}).`,
-        stockName: stockItem.name
-      };
-    }
-  }
-  return { ok: true };
-}
-
-// 3-bosqich: mijoz filial tanlab buyurtma berganda, taomning tarkibiy
-// qismlari (directStockId/recipe) o'sha FILIALNING skladidan hisoblanishi
-// kerak (chunki filial menyusi mustaqil bo'lgani kabi, uning skladi ham
-// mustaqil — /api/stock-* endpointlari buni allaqachon shunday boshqaradi).
-// Combo'lar esa hali ham markaziy ("owner") darajasida qoladi, chunki
-// combo tizimi filiallarga bog'lanmagan.
-function checkStockAvailabilityPooled(owner, orderItems, menu, stockPool) {
-  const neededCombo = new Map();
-  const neededPool = new Map();
-  for (const it of orderItems) {
-    if (it.isCombo) {
-      const combo = findCombo(owner, it.id);
-      if (!combo) continue;
-      for (const need of comboStockNeeds(owner, combo, it.qty)) {
-        neededCombo.set(need.stockId, Math.round(((neededCombo.get(need.stockId) || 0) + need.qty) * 1000) / 1000);
+      if (daysVal && (!/^\d+$/.test(daysVal) || parseInt(daysVal, 10) <= 0)) {
+        setMsg(msgEl, 'Kun soni musbat butun son bo\'lishi kerak, yoki bo\'sh qoldiring.', 'err');
+        return;
       }
-      continue;
-    }
-    const menuItem = menu.find(m => m.id === it.id);
-    if (menuItem && menuItem.directStockId) {
-      const consumeQty = it.qty;
-      neededPool.set(menuItem.directStockId, Math.round(((neededPool.get(menuItem.directStockId) || 0) + consumeQty) * 1000) / 1000);
-      continue;
-    }
-    const recipe = (menuItem && Array.isArray(menuItem.recipe)) ? menuItem.recipe : [];
-    for (const ing of recipe) {
-      const consumeQty = Math.round(ing.qty * it.qty * 1000) / 1000;
-      neededPool.set(ing.stockId, Math.round(((neededPool.get(ing.stockId) || 0) + consumeQty) * 1000) / 1000);
-    }
-  }
-  for (const [stockId, requiredQty] of neededCombo) {
-    const stockItem = findStockItem(owner, stockId);
-    if (!stockItem) continue;
-    if (stockItem.qty < requiredQty) {
-      return {
-        ok: false,
-        reason: `Omborda "${stockItem.name}" yetarli emas (kerak: ${requiredQty} ${stockItem.unit}, mavjud: ${stockItem.qty} ${stockItem.unit}).`,
-        stockName: stockItem.name
-      };
-    }
-  }
-  for (const [stockId, requiredQty] of neededPool) {
-    const stockItem = findStockItem(stockPool, stockId);
-    if (!stockItem) continue;
-    if (stockItem.qty < requiredQty) {
-      return {
-        ok: false,
-        reason: `Omborda "${stockItem.name}" yetarli emas (kerak: ${requiredQty} ${stockItem.unit}, mavjud: ${stockItem.qty} ${stockItem.unit}).`,
-        stockName: stockItem.name
-      };
-    }
-  }
-  return { ok: true };
-}
-
-const ORDER_STATUS_TRANSITIONS = {
-  yangi: ['tayyorlanmoqda'],
-  tayyorlanmoqda: ['tayyor'],
-  tayyor: []
-};
-
-function orderNeedsKitchen(order) {
-  const items = (order && order.items) || [];
-  if (!items.length) return true;
-  return items.some(it => !it.directStockId);
-}
-
-function canSetOrderStatus(ctx, order, newStatus) {
-  if (!Object.prototype.hasOwnProperty.call(ORDER_STATUSES, newStatus)) return false;
-
-  // To'lov (karta skrinshoti yoki stoldagi naqd) hali tasdiqlanmagan bo'lsa -
-  // buyurtma holatini HECH KIM (egasi ham) o'zgartira olmasligi kerak,
-  // aks holda mijoz to'lamasdan turib taom tayyorlana boshlaydi.
-  if (order && order.paymentProofStatus === 'kutilmoqda') return false;
-
-  if (ctxHasRole(ctx, 'egasi')) return true;
-
-  const currentStatus = order ? order.status : 'yangi';
-  let allowedNext = ORDER_STATUS_TRANSITIONS[currentStatus] || [];
-
-  if (currentStatus === 'yangi' && !orderNeedsKitchen(order)) {
-    allowedNext = allowedNext.concat('tayyor');
-  }
-  if (!allowedNext.includes(newStatus)) return false;
-
-  if (ctxHasRole(ctx, 'oshpaz') && (newStatus === 'tayyorlanmoqda' || newStatus === 'tayyor')) return true;
-  if (ctxHasRole(ctx, 'kassir') && newStatus === 'tayyor') return true;
-  return false;
-}
-
-authed('/api/create-order', async (payload, res, { user, userId }) => {
-  const { items, orderType, paymentType, requestId, comment } = payload;
-
-  const owners = loadOwners();
-  const ctx = resolveOwnerContext(owners, userId);
-  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
-  if (!ctxHasAnyRole(ctx, ['kassir', 'egasi'])) {
-    return sendFail(res, 'Faqat kassir buyurtma yaratishi mumkin');
-  }
-
-  const cachedResponse = getCachedOrderResponse(ctx.owner.id, userId, requestId);
-  if (cachedResponse) return sendJSON(res, 200, cachedResponse);
-
-  if (!Array.isArray(items) || !items.length) {
-    return sendFail(res, 'Savat bo\'sh. Kamida bitta taom tanlang.');
-  }
-  if (!Object.prototype.hasOwnProperty.call(ORDER_TYPES, orderType)) {
-    return sendFail(res, 'Buyurtma turini tanlang.');
-  }
-  if (!Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, paymentType)) {
-    return sendFail(res, 'To\'lov turini tanlang.');
-  }
-  if (orderType === 'dostavka' && paymentType === 'naqd') {
-    return sendFail(res, 'Bu turdagi naqd to\'lov dostavka buyurtmalarida mavjud emas. "Naqd" (dostavka orqali) yoki Karta tanlang.');
-  }
-
-  if (orderType !== 'dostavka' && paymentType === 'dostavka_orqali') {
-    return sendFail(res, '"Naqd" to\'lovi (dostavkada) faqat Dostavka buyurtmalarida mavjud.');
-  }
-
-  // 4-bosqich: kassir/ega o'zi biriktirilgan (yoki tanlagan) filialning
-  // mustaqil menyusi va skladi asosida buyurtma yaratadi. Combo'lar
-  // hamon markaziy darajada qoladi (filiallarga bog'lanmagan).
-  const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
-  const menuPool = resolveMenuPool(ctx.owner, branchId);
-  if (branchId && !menuPool) return sendFail(res, 'Bunday filial topilmadi.');
-  const stockPool = resolveStockPool(ctx.owner, branchId) || ctx.owner;
-
-  const menu = menuPool.menu || [];
-  const combosAvailable = ctx.owner.combos || [];
-  const orderItems = [];
-  for (const it of items) {
-    const qty = parseInt(it.qty, 10);
-    if (!Number.isInteger(qty) || qty <= 0) return sendFail(res, 'Miqdor noto\'g\'ri.');
-    if (it.isCombo) {
-      const combo = combosAvailable.find(c => c.id === it.id);
-      if (!combo) return sendFail(res, 'Menyuda mavjud bo\'lmagan combo tanlangan.');
-      orderItems.push({ id: combo.id, name: combo.name, price: combo.price, qty, isCombo: true, category: combo.category || null });
-      continue;
-    }
-    const menuItem = menu.find(m => m.id === it.id);
-    if (!menuItem) return sendFail(res, 'Menyuda mavjud bo\'lmagan taom tanlangan.');
-    const priceOpt = resolveMenuItemPriceOption(menuItem, it.priceId);
-    if (!priceOpt.ok) return sendFail(res, priceOpt.reason);
-    orderItems.push({ id: menuItem.id, name: priceOpt.label ? `${menuItem.name} (${priceOpt.label})` : menuItem.name, price: priceOpt.price, priceId: priceOpt.priceId, qty, directStockId: menuItem.directStockId || null, category: menuItem.category || null });
-  }
-  const subtotal = orderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
-  const buy4get1 = computeBuy4Get1FreePromo(orderItems);
-  const total = Math.max(0, subtotal - buy4get1.discountAmount);
-
-  if (!ctx.owner.stock) ctx.owner.stock = [];
-
-  const stockCheck = checkStockAvailabilityPooled(ctx.owner, orderItems, menu, stockPool);
-  if (!stockCheck.ok) {
-    return sendFail(res, stockCheck.reason);
-  }
-
-  for (const it of orderItems) {
-    if (it.isCombo) {
-      const combo = findCombo(ctx.owner, it.id);
-      if (combo) {
-        for (const need of comboStockNeeds(ctx.owner, combo, it.qty)) {
-          const stockItem = findStockItem(ctx.owner, need.stockId);
-          if (!stockItem) continue;
-          stockItem.qty = Math.max(0, Math.round((stockItem.qty - need.qty) * 1000) / 1000);
-          addStockMovement(ctx.owner, {
-            stockId: stockItem.id, stockName: stockItem.name, type: 'chiqim',
-            qty: need.qty, unit: stockItem.unit,
-            note: `Combo: ${combo.name} (${need.viaName}) x${it.qty}`,
-            userId
-          });
-          checkLowStockAlert(ctx.owner, stockItem, userId);
-        }
+      if (priceVal && (!/^\d+$/.test(priceVal) || parseInt(priceVal, 10) < 0)) {
+        setMsg(msgEl, 'Narx musbat son bo\'lishi kerak, yoki bo\'sh qoldiring.', 'err');
+        return;
       }
-      continue;
-    }
-    const menuItem = menu.find(m => m.id === it.id);
+      const muddat = daysVal ? `${daysVal} kunga` : 'doimiy';
+      const narxMatn = priceVal ? `, obuna narxi ${fmtNum(priceVal)} so'm/oy` : '';
+      document.getElementById('confirmText').textContent =
+        `"${val}" ni do'kon egasi sifatida qo'shib, ${muddat} mini appga kirish huquqini berasizmi${narxMatn}?`;
+      document.getElementById('confirmOverlay').classList.remove('hidden');
 
-    if (menuItem && menuItem.directStockId) {
-      const stockItem = findStockItem(stockPool, menuItem.directStockId);
-      if (stockItem) {
-        const consumeQty = it.qty;
-        stockItem.qty = Math.max(0, Math.round((stockItem.qty - consumeQty) * 1000) / 1000);
-        addStockMovement(stockPool, {
-          stockId: stockItem.id, stockName: stockItem.name, type: 'chiqim',
-          qty: consumeQty, unit: stockItem.unit,
-          note: `To'g'ridan sotildi: ${menuItem.name} x${it.qty}`,
-          userId
+      document.getElementById('confirmCancel').onclick = () => {
+        document.getElementById('confirmOverlay').classList.add('hidden');
+      };
+      document.getElementById('confirmOk').onclick = async () => {
+        document.getElementById('confirmOverlay').classList.add('hidden');
+        setMsg(msgEl, 'Qo\'shilmoqda...');
+        const res = await apiPost('/api/add-owner', {
+          input: val, days: daysVal || null,
+          price: priceVal || null, paid: paidVal
         });
-        checkLowStockAlert(ctx.owner, stockItem, userId, branchId);
-      }
-      continue;
-    }
-    const recipe = (menuItem && Array.isArray(menuItem.recipe)) ? menuItem.recipe : [];
-    for (const ing of recipe) {
-      const stockItem = findStockItem(stockPool, ing.stockId);
-      if (!stockItem) continue;
-      const consumeQty = Math.round(ing.qty * it.qty * 1000) / 1000;
-      stockItem.qty = Math.max(0, Math.round((stockItem.qty - consumeQty) * 1000) / 1000);
-      addStockMovement(stockPool, {
-        stockId: stockItem.id, stockName: stockItem.name, type: 'chiqim',
-        qty: consumeQty, unit: stockItem.unit,
-        note: `Buyurtma: ${menuItem.name} x${it.qty}`,
-        userId
-      });
-      checkLowStockAlert(ctx.owner, stockItem, userId, branchId);
-    }
-  }
-
-  if (!ctx.owner.orders) ctx.owner.orders = [];
-  const commentFinal = String(comment || '').trim().slice(0, 300) || null;
-  const order = {
-    id: crypto.randomBytes(4).toString('hex'),
-    orderNumber: getNextOrderNumber(ctx.owner),
-    items: orderItems,
-    subtotal,
-    discountAmount: buy4get1.discountAmount,
-    autoPromoNote: buy4get1.noteHtml,
-    total,
-    orderType,
-    paymentType,
-    comment: commentFinal,
-    status: 'yangi',
-    branchId,
-
-    createdAt: new Date().toISOString(),
-    createdBy: userId
-  };
-  ctx.owner.orders.push(order);
-  logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'buyurtma_yaratdi', orderId: order.id, note: `${ORDER_TYPES[orderType]} — ${fmtNum(total)} so'm` });
-  saveOwners(owners);
-
-  const itemsText = orderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
-  const commentLine = commentFinal ? `\n📝 Izoh: ${escapeHtmlServer(commentFinal)}` : '';
-  const autoPromoLine = order.autoPromoNote ? `\n${order.autoPromoNote}` : '';
-  const notifyText = `🆕 <b>Yangi buyurtma</b> (${ORDER_TYPES[orderType]})\n` +
-    `${itemsText}\n\nJami: ${fmtNum(total)} so'm\nTo'lov: ${PAYMENT_TYPES[paymentType]}${commentLine}${autoPromoLine}`;
-  const notifyTargets = [ctx.owner.id, ...((ctx.owner.staff || []).filter(s => staffHasRole(s, 'oshpaz')).map(s => s.id))];
-  await notifyStaffList(ctx.owner, notifyTargets, notifyText, `Buyurtma #${order.id} (kassir)`, 'newOrder');
-  notifyKitchenGroup(ctx.owner, order, `Yaratdi: ${escapeHtmlServer(displayName(user))} (kassir)`);
-  saveOwners(owners);
-
-  const successResponse = { ok: true, orderId: order.id, total };
-  setCachedOrderResponse(ctx.owner.id, userId, requestId, successResponse);
-  return sendJSON(res, 200, successResponse);
-});
-
-// Mavjud buyurtmani tahrirlash (kassir yoki egasi): mahsulot qo'shish/olib tashlash/
-// miqdorini o'zgartirish — mijoz qo'shimcha narsa xohlasa yangi buyurtma ochmasdan,
-// shu buyurtmani tahrirlab qo'yish uchun. Faqat hali oshxonaga "Tayyor" bo'lmagan
-// (yangi / tayyorlanmoqda) buyurtmalarni tahrirlash mumkin.
-authed('/api/edit-order', async (payload, res, { userId }) => {
-  const { orderId, items, orderType, paymentType, comment } = payload;
-
-  const owners = loadOwners();
-  const ctx = resolveOwnerContext(owners, userId);
-  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
-  if (!ctxHasAnyRole(ctx, ['kassir', 'egasi'])) {
-    return sendFail(res, 'Faqat kassir yoki ega buyurtmani tahrirlashi mumkin');
-  }
-  if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendFeatureBlocked(res, 'orders-manage');
-
-  const order = (ctx.owner.orders || []).find(o => o.id === orderId);
-  if (!order) return sendFail(res, 'Buyurtma topilmadi.');
-
-  if (order.paymentProofStatus === 'kutilmoqda') {
-    return sendFail(res, 'To\'lovi hali tasdiqlanmagan buyurtmani tahrirlab bo\'lmaydi.');
-  }
-  if (order.status === 'bekor_qilindi') {
-    return sendFail(res, 'Bekor qilingan buyurtmani tahrirlab bo\'lmaydi.');
-  }
-
-  if (!Array.isArray(items) || !items.length) {
-    return sendFail(res, 'Savat bo\'sh. Kamida bitta taom qoldiring.');
-  }
-
-  const finalOrderType = Object.prototype.hasOwnProperty.call(ORDER_TYPES, orderType) ? orderType : order.orderType;
-  const finalPaymentType = Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, paymentType) ? paymentType : order.paymentType;
-  if (finalOrderType === 'dostavka' && finalPaymentType === 'naqd') {
-    return sendFail(res, 'Bu turdagi naqd to\'lov dostavka buyurtmalarida mavjud emas. "Naqd" (dostavka orqali) yoki Karta tanlang.');
-  }
-  if (finalOrderType !== 'dostavka' && finalPaymentType === 'dostavka_orqali') {
-    return sendFail(res, '"Naqd" to\'lovi (dostavkada) faqat Dostavka buyurtmalarida mavjud.');
-  }
-
-  // 4-bosqich: buyurtma qaysi filialga tegishli bo'lsa (order.branchId),
-  // tahrirlash ham o'sha filialning mustaqil menyusi/skladi asosida
-  // amalga oshiriladi (combo'lar hamon markaziy darajada qoladi).
-  const branchId = order.branchId || null;
-  const menuPool = resolveMenuPool(ctx.owner, branchId) || ctx.owner;
-  const stockPool = resolveStockPool(ctx.owner, branchId) || ctx.owner;
-
-  const menu = menuPool.menu || [];
-  const combosAvailable = ctx.owner.combos || [];
-  const newOrderItems = [];
-  for (const it of items) {
-    const qty = parseInt(it.qty, 10);
-    if (!Number.isInteger(qty) || qty <= 0) return sendFail(res, 'Miqdor noto\'g\'ri.');
-    if (it.isCombo) {
-      const combo = combosAvailable.find(c => c.id === it.id);
-      if (!combo) return sendFail(res, 'Menyuda mavjud bo\'lmagan combo tanlangan.');
-      newOrderItems.push({ id: combo.id, name: combo.name, price: combo.price, qty, isCombo: true, category: combo.category || null });
-      continue;
-    }
-    const menuItem = menu.find(m => m.id === it.id);
-    if (!menuItem) return sendFail(res, 'Menyuda mavjud bo\'lmagan taom tanlangan.');
-    const priceOpt = resolveMenuItemPriceOption(menuItem, it.priceId);
-    if (!priceOpt.ok) return sendFail(res, priceOpt.reason);
-    newOrderItems.push({ id: menuItem.id, name: priceOpt.label ? `${menuItem.name} (${priceOpt.label})` : menuItem.name, price: priceOpt.price, priceId: priceOpt.priceId, qty, directStockId: menuItem.directStockId || null, category: menuItem.category || null });
-  }
-  const newSubtotal = newOrderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
-  const newBuy4get1 = computeBuy4Get1FreePromo(newOrderItems);
-  const newTotal = Math.max(0, newSubtotal - newBuy4get1.discountAmount);
-
-  // Buyurtma allaqachon "Tayyor" bo'lgan bo'lsa-yu, kassir shu tahrirlashda
-  // yangi mahsulot qo'shsa (yoki miqdorini oshirsa) — o'sha ORTIQCHA qismni
-  // aniqlab olamiz, keyinroq shuni alohida oshxona guruhiga yuboramiz.
-  const orderWasReady = order.status === 'tayyor';
-  const itemKey = (it) => `${it.isCombo ? 'combo:' : ''}${it.id}:${it.priceId || ''}`;
-  const oldQtyByKey = new Map();
-  (order.items || []).forEach(it => {
-    const k = itemKey(it);
-    oldQtyByKey.set(k, (oldQtyByKey.get(k) || 0) + it.qty);
-  });
-  const addedItems = [];
-  newOrderItems.forEach(it => {
-    const delta = it.qty - (oldQtyByKey.get(itemKey(it)) || 0);
-    if (delta > 0) addedItems.push({ name: it.name, qty: delta });
-  });
-
-  if (!ctx.owner.stock) ctx.owner.stock = [];
-
-  // Har bir mahsulot ro'yxati uchun kerakli ombor miqdorlarini hisoblaydi
-  // (create-order'dagi checkStockAvailabilityPooled bilan bir xil mantiq):
-  // combo'lar markaziy ombordan, oddiy taomlar esa filial (yoki markaziy)
-  // skladidan alohida hisoblanadi.
-  function stockNeedsForItems(orderItems) {
-    const neededCombo = new Map();
-    const neededPool = new Map();
-    for (const it of orderItems) {
-      if (it.isCombo) {
-        const combo = findCombo(ctx.owner, it.id);
-        if (!combo) continue;
-        for (const need of comboStockNeeds(ctx.owner, combo, it.qty)) {
-          neededCombo.set(need.stockId, Math.round(((neededCombo.get(need.stockId) || 0) + need.qty) * 1000) / 1000);
+        if (res.ok) {
+          setMsg(msgEl, 'Muvaffaqiyatli qo\'shildi.', 'ok');
+          document.getElementById('ownerInput').value = '';
+          document.getElementById('ownerDaysInput').value = '';
+          document.getElementById('ownerPriceInput').value = '';
+          document.getElementById('ownerPaidInput').checked = false;
+        } else {
+          setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
         }
-        continue;
-      }
-      const menuItem = menu.find(m => m.id === it.id);
-      if (menuItem && menuItem.directStockId) {
-        neededPool.set(menuItem.directStockId, Math.round(((neededPool.get(menuItem.directStockId) || 0) + it.qty) * 1000) / 1000);
-        continue;
-      }
-      const recipe = (menuItem && Array.isArray(menuItem.recipe)) ? menuItem.recipe : [];
-      for (const ing of recipe) {
-        const consumeQty = Math.round(ing.qty * it.qty * 1000) / 1000;
-        neededPool.set(ing.stockId, Math.round(((neededPool.get(ing.stockId) || 0) + consumeQty) * 1000) / 1000);
-      }
-    }
-    return { neededCombo, neededPool };
-  }
-
-  // Eski buyurtma allaqachon ombordan yechilgan edi — shuning uchun faqat
-  // ESKI va YANGI ehtiyoj o'rtasidagi FARQNI (delta) ombordan yechamiz yoki qaytaramiz.
-  const oldNeeds = stockNeedsForItems(order.items || []);
-  const newNeeds = stockNeedsForItems(newOrderItems);
-
-  function computeDeltas(oldMap, newMap) {
-    const ids = new Set([...oldMap.keys(), ...newMap.keys()]);
-    const deltas = new Map();
-    for (const id of ids) {
-      const delta = Math.round(((newMap.get(id) || 0) - (oldMap.get(id) || 0)) * 1000) / 1000;
-      if (delta !== 0) deltas.set(id, delta);
-    }
-    return deltas;
-  }
-
-  const comboDeltas = computeDeltas(oldNeeds.neededCombo, newNeeds.neededCombo);
-  const poolDeltas = computeDeltas(oldNeeds.neededPool, newNeeds.neededPool);
-
-  for (const [stockId, delta] of comboDeltas) {
-    if (delta <= 0) continue;
-    const stockItem = findStockItem(ctx.owner, stockId);
-    if (!stockItem) continue;
-    if (stockItem.qty < delta) {
-      return sendFail(res, `Omborda "${stockItem.name}" yetarli emas (kerak: ${delta} ${stockItem.unit}, mavjud: ${stockItem.qty} ${stockItem.unit}).`);
-    }
-  }
-  for (const [stockId, delta] of poolDeltas) {
-    if (delta <= 0) continue;
-    const stockItem = findStockItem(stockPool, stockId);
-    if (!stockItem) continue;
-    if (stockItem.qty < delta) {
-      return sendFail(res, `Omborda "${stockItem.name}" yetarli emas (kerak: ${delta} ${stockItem.unit}, mavjud: ${stockItem.qty} ${stockItem.unit}).`);
-    }
-  }
-
-  for (const [stockId, delta] of comboDeltas) {
-    const stockItem = findStockItem(ctx.owner, stockId);
-    if (!stockItem) continue;
-    stockItem.qty = Math.max(0, Math.round((stockItem.qty - delta) * 1000) / 1000);
-    addStockMovement(ctx.owner, {
-      stockId: stockItem.id, stockName: stockItem.name, type: delta > 0 ? 'chiqim' : 'kirim',
-      qty: Math.abs(delta), unit: stockItem.unit,
-      note: `Buyurtma tahrirlandi: #${order.orderNumber || order.id}`,
-      userId
-    });
-    checkLowStockAlert(ctx.owner, stockItem, userId);
-  }
-  for (const [stockId, delta] of poolDeltas) {
-    const stockItem = findStockItem(stockPool, stockId);
-    if (!stockItem) continue;
-    stockItem.qty = Math.max(0, Math.round((stockItem.qty - delta) * 1000) / 1000);
-    addStockMovement(stockPool, {
-      stockId: stockItem.id, stockName: stockItem.name, type: delta > 0 ? 'chiqim' : 'kirim',
-      qty: Math.abs(delta), unit: stockItem.unit,
-      note: `Buyurtma tahrirlandi: #${order.orderNumber || order.id}`,
-      userId
-    });
-    checkLowStockAlert(ctx.owner, stockItem, userId, branchId);
-  }
-
-  const oldItemsSummary = (order.items || []).map(it => `${it.name} x${it.qty}`).join(', ') || '—';
-  order.items = newOrderItems;
-  order.subtotal = newSubtotal;
-  order.discountAmount = newBuy4get1.discountAmount;
-  order.autoPromoNote = newBuy4get1.noteHtml;
-  order.total = newTotal;
-  order.orderType = finalOrderType;
-  order.paymentType = finalPaymentType;
-  if (Object.prototype.hasOwnProperty.call(payload, 'comment')) {
-    order.comment = String(comment || '').trim().slice(0, 300) || null;
-  }
-  order.editedAt = new Date().toISOString();
-  order.editedBy = userId;
-
-  logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'buyurtma_tahrirlandi', orderId: order.id, note: `Yangi: ${fmtNum(newTotal)} so'm (avvalgi: ${oldItemsSummary})` });
-  saveOwners(owners);
-
-  const itemsText = newOrderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
-  const editCommentLine = order.comment ? `\n📝 Izoh: ${escapeHtmlServer(order.comment)}` : '';
-  const editAutoPromoLine = order.autoPromoNote ? `\n${order.autoPromoNote}` : '';
-  const notifyText = `✏️ <b>Buyurtma tahrirlandi</b> (${ORDER_TYPES[finalOrderType]})\n${itemsText}\n\nJami: ${fmtNum(newTotal)} so'm\nTo'lov: ${PAYMENT_TYPES[finalPaymentType]}${editCommentLine}${editAutoPromoLine}`;
-  const notifyTargets = [ctx.owner.id, ...((ctx.owner.staff || []).filter(s => staffHasRole(s, 'oshpaz')).map(s => s.id))];
-  await notifyStaffList(ctx.owner, notifyTargets, notifyText, `Buyurtma #${order.id} tahrirlandi`, 'newOrder');
-  saveOwners(owners);
-
-  // Buyurtma "Tayyor" bo'lgach qo'shilgan mahsulotlar — alohida oshxona
-  // guruhiga, o'zining mustaqil "Tayyor" tugmasi bilan yuboriladi.
-  if (orderWasReady && addedItems.length) {
-    const addition = {
-      id: crypto.randomBytes(4).toString('hex'),
-      items: addedItems,
-      createdAt: new Date().toISOString(),
-      createdBy: userId,
-      ready: false,
-      readyBy: null,
-      readyAt: null
-    };
-    if (!order.additions) order.additions = [];
-    order.additions.push(addition);
-    saveOwners(owners);
-
-    const addGroups = resolveOrderGroupIds(ctx.owner, order);
-    if (addGroups.kitchenGroupId && ownerCanUseFeature(ctx.owner, 'kitchen-group')) {
-      const addItemsText = addedItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
-      const orderLabel = `#${order.orderNumber || order.id}`;
-      const addText = `➕ <b>Qo'shimcha buyurtma</b> (Buyurtma ${orderLabel})\n${addItemsText}`;
-      sendMessage(addGroups.kitchenGroupId, addText, {
-        inline_keyboard: [[
-          { text: '✅ Tayyor', callback_data: `kgaddready:${ctx.owner.id}:${order.id}:${addition.id}` }
-        ]]
-      }, addGroups.kitchenGroupThreadId).then(result => {
-        if (result && result.ok && result.result && result.result.message_id) {
-          const owners2 = loadOwners();
-          const o2 = findOwner(owners2, ctx.owner.id);
-          const ord2 = o2 && (o2.orders || []).find(x => x.id === order.id);
-          const add2 = ord2 && (ord2.additions || []).find(a => a.id === addition.id);
-          if (add2) {
-            add2.kitchenGroupMsgId = result.result.message_id;
-            saveOwners(owners2);
-          }
-        }
-      }).catch(err => {
-        console.error(`[kgaddready xabar xatosi] owner=${ctx.owner.id} order=${order.id}: ${(err && err.message) || err}`);
-      });
-    }
-  }
-
-  return sendOk(res, { order });
-});
-
-authed('/api/orders-list', (payload, res, { userId }) => {
-  const owners = pruneExpiredOwners();
-  const ctx = resolveOwnerContext(owners, userId);
-  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
-  if (!ctxHasAnyRole(ctx, ['egasi', 'kassir', 'oshpaz', 'dostavka'])) {
-    return sendFail(res, 'Bu bo\'limni ko\'rishga ruxsatingiz yo\'q');
-  }
-  if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendFeatureBlocked(res, 'orders-manage');
-
-  let orders = (ctx.owner.orders || [])
-    .slice()
-    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-
-  if (ctx.role === 'egasi') {
-    const branchId = Object.prototype.hasOwnProperty.call(payload, 'branchId') ? payload.branchId : undefined;
-    orders = orders.filter(o => matchesBranchFilter(o, branchId));
-  } else if (ctx.branchId) {
-    orders = orders.filter(o => (o.branchId || null) === ctx.branchId);
-  }
-
-  if (ctxHasRole(ctx, 'dostavka')) {
-    orders = orders.filter(o => o.orderType === 'dostavka' && o.status === 'tayyor' && !o.deliveredBy);
-  }
-
-  orders = orders.slice(0, 100);
-  return sendOk(res, { orders, role: ctx.role });
-});
-
-function filterOwnerOrderHistory(ctx, payload) {
-  const { dateFrom, dateTo, employeeId, paymentType, orderType } = payload;
-  let orders = (ctx.owner.orders || []).slice();
-
-  if (dateFrom) {
-    const from = new Date(dateFrom + 'T00:00:00');
-    if (!isNaN(from.getTime())) orders = orders.filter(o => new Date(o.createdAt) >= from);
-  }
-  if (dateTo) {
-    const to = new Date(dateTo + 'T23:59:59');
-    if (!isNaN(to.getTime())) orders = orders.filter(o => new Date(o.createdAt) <= to);
-  }
-  if (employeeId) {
-    orders = orders.filter(o => String(o.createdBy) === String(employeeId));
-  }
-  if (paymentType && Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, paymentType)) {
-    orders = orders.filter(o => o.paymentType === paymentType);
-  }
-  if (orderType && Object.prototype.hasOwnProperty.call(ORDER_TYPES, orderType)) {
-    orders = orders.filter(o => o.orderType === orderType);
-  }
-  orders.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-
-  const nameCache = new Map();
-  const staffNameById = (id) => {
-    if (!id) return null;
-    if (nameCache.has(id)) return nameCache.get(id);
-    let name;
-    if (String(id) === String(ctx.owner.id)) {
-      name = 'Egasi';
-    } else {
-      const staff = (ctx.owner.staff || []).find(s => String(s.id) === String(id));
-      name = staff ? staffDisplayName(staff) : `ID: ${id}`;
-    }
-    nameCache.set(id, name);
-    return name;
-  };
-
-  return { orders, staffNameById };
-}
-
-authed('/api/order-history', (payload, res, { userId }) => {
-  const owners = pruneExpiredOwners();
-  const ctx = resolveOwnerContext(owners, userId);
-  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
-  if (!isOwnerAccessValid(ctx.owner) || ctx.role !== 'egasi') {
-    return sendFail(res, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
-  }
-
-  let page = parseInt(payload.page, 10);
-  if (!Number.isFinite(page) || page < 1) page = 1;
-  const PAGE_SIZE = 30;
-
-  const { orders, staffNameById } = filterOwnerOrderHistory(ctx, payload);
-
-  const totalCount = orders.length;
-  const totalSum = orders.reduce((sum, o) => sum + (o.total || 0), 0);
-  const totalPages = Math.max(1, Math.ceil(totalCount / PAGE_SIZE));
-  if (page > totalPages) page = totalPages;
-  const pageOrders = orders.slice((page - 1) * PAGE_SIZE, page * PAGE_SIZE);
-
-  const resultOrders = pageOrders.map(o => ({
-    id: o.id,
-    items: o.items,
-    total: o.total,
-    orderType: o.orderType,
-    paymentType: o.paymentType,
-    status: o.status,
-    createdAt: o.createdAt,
-    createdBy: o.createdBy,
-    createdByName: staffNameById(o.createdBy)
-  }));
-
-  const employees = [{ id: ctx.owner.id, name: 'Egasi' }];
-  (ctx.owner.staff || []).forEach(s => {
-    employees.push({ id: s.id, name: staffDisplayName(s) });
-  });
-
-  return sendOk(res, {
-    orders: resultOrders,
-    page, totalPages, totalCount, totalSum,
-    pageSize: PAGE_SIZE,
-    employees
-  });
-});
-
-function pdfSanitizeText(s) {
-  return String(s == null ? '' : s).replace(/[\r\n\t]/g, ' ').split('').map(ch => {
-    const code = ch.charCodeAt(0);
-    return (code >= 0x20 && code <= 0x7E) || (code >= 0xA0 && code <= 0xFF) ? ch : '?';
-  }).join('');
-}
-function pdfEscapeText(s) {
-  return s.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
-}
-function pdfCellText(value, width, fontSize) {
-  const avgCharWidth = fontSize * 0.56;
-  const maxChars = Math.max(1, Math.floor(width / avgCharWidth));
-  let t = pdfSanitizeText(value);
-  if (t.length > maxChars) t = t.slice(0, Math.max(0, maxChars - 2)) + '..';
-  return pdfEscapeText(t);
-}
-
-function buildSimplePdfReport(title, generatedAtLabel, headers, colWidths, rows) {
-  const pageWidth = 595, pageHeight = 842;
-  const marginX = 40, topY = 802, bottomMargin = 40;
-  const titleFontSize = 13, headerFontSize = 8, cellFontSize = 7.5, lineHeight = 13;
-  const headerY = topY - 26;
-  const firstRowY = headerY - lineHeight - 2;
-  const rowsPerPage = Math.max(5, Math.floor((firstRowY - bottomMargin) / lineHeight));
-
-  const pages = [];
-  for (let i = 0; i < rows.length; i += rowsPerPage) pages.push(rows.slice(i, i + rowsPerPage));
-  if (!pages.length) pages.push([]);
-
-  function colX(idx) {
-    let x = marginX;
-    for (let i = 0; i < idx; i++) x += colWidths[i];
-    return x;
-  }
-
-  const pageStreams = pages.map((pageRows, pIdx) => {
-    let s = 'BT\n';
-    s += `/F1 ${titleFontSize} Tf\n1 0 0 1 ${marginX} ${topY} Tm\n(${pdfEscapeText(pdfSanitizeText(title))}) Tj\n`;
-    s += `/F1 7 Tf\n1 0 0 1 ${pageWidth - marginX - 130} ${topY} Tm\n(${pdfEscapeText(pdfSanitizeText(generatedAtLabel))}) Tj\n`;
-    s += `/F1 ${headerFontSize} Tf\n`;
-    headers.forEach((h, i) => {
-      s += `1 0 0 1 ${colX(i)} ${headerY} Tm\n(${pdfCellText(h, colWidths[i], headerFontSize)}) Tj\n`;
-    });
-    s += `/F1 ${cellFontSize} Tf\n`;
-    pageRows.forEach((row, ri) => {
-      const y = firstRowY - ri * lineHeight;
-      row.forEach((val, ci) => {
-        s += `1 0 0 1 ${colX(ci)} ${y} Tm\n(${pdfCellText(val, colWidths[ci], cellFontSize)}) Tj\n`;
-      });
-    });
-    s += `/F1 6.5 Tf\n1 0 0 1 ${marginX} ${bottomMargin - 15} Tm\n(${pdfEscapeText(String(pIdx + 1) + ' / ' + pages.length)}) Tj\n`;
-    s += 'ET';
-    return s;
-  });
-
-  const objects = [];
-  const pageCount = pageStreams.length;
-  const firstPageObjNum = 4;
-  const pageObjNums = [], contentObjNums = [];
-  for (let i = 0; i < pageCount; i++) {
-    pageObjNums.push(firstPageObjNum + i * 2);
-    contentObjNums.push(firstPageObjNum + i * 2 + 1);
-  }
-  objects[1] = `1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n`;
-  objects[2] = `2 0 obj\n<< /Type /Pages /Kids [${pageObjNums.map(n => n + ' 0 R').join(' ')}] /Count ${pageCount} >>\nendobj\n`;
-  objects[3] = `3 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>\nendobj\n`;
-  for (let i = 0; i < pageCount; i++) {
-    const pObjNum = pageObjNums[i], cObjNum = contentObjNums[i];
-    objects[pObjNum] = `${pObjNum} 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageWidth} ${pageHeight}] /Resources << /Font << /F1 3 0 R >> >> /Contents ${cObjNum} 0 R >>\nendobj\n`;
-    const streamBody = pageStreams[i];
-    const byteLen = Buffer.byteLength(streamBody, 'latin1');
-    objects[cObjNum] = `${cObjNum} 0 obj\n<< /Length ${byteLen} >>\nstream\n${streamBody}\nendstream\nendobj\n`;
-  }
-  const maxObjNum = 3 + pageCount * 2;
-  let pdf = '%PDF-1.4\n';
-  const offsets = new Array(maxObjNum + 1).fill(0);
-  for (let n = 1; n <= maxObjNum; n++) {
-    offsets[n] = Buffer.byteLength(pdf, 'latin1');
-    pdf += objects[n];
-  }
-  const xrefStart = Buffer.byteLength(pdf, 'latin1');
-  pdf += `xref\n0 ${maxObjNum + 1}\n0000000000 65535 f \n`;
-  for (let n = 1; n <= maxObjNum; n++) {
-    pdf += `${String(offsets[n]).padStart(10, '0')} 00000 n \n`;
-  }
-  pdf += `trailer\n<< /Size ${maxObjNum + 1} /Root 1 0 R >>\nstartxref\n${xrefStart}\n%%EOF`;
-  return Buffer.from(pdf, 'latin1');
-}
-
-function csvEscapeCell(value) {
-  const s = String(value == null ? '' : value);
-  return /[";\n,]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
-}
-
-authed('/api/order-history-export', (payload, res, { userId }) => {
-  const owners = pruneExpiredOwners();
-  const ctx = resolveOwnerContext(owners, userId);
-  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
-  if (!isOwnerAccessValid(ctx.owner) || ctx.role !== 'egasi') {
-    return sendFail(res, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
-  }
-  if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendFeatureBlocked(res, 'orders-manage');
-
-  const format = payload.format === 'pdf' ? 'pdf' : 'csv';
-  const { orders, staffNameById } = filterOwnerOrderHistory(ctx, payload);
-  const exportOrders = orders.slice(0, 2000);
-  const totalSum = orders.reduce((sum, o) => sum + (o.total || 0), 0);
-  const nowLabel = new Date().toLocaleString('uz-UZ', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-  const restaurantName = (ctx.owner.name || 'Oshxona');
-
-  const rows = exportOrders.map(o => {
-    const d = new Date(o.createdAt);
-    const sana = d.toLocaleString('uz-UZ', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-    const itemsText = (o.items || []).map(it => `${it.name} x${it.qty}`).join(', ');
-    return [
-      sana,
-      ORDER_TYPES[o.orderType] || o.orderType,
-      PAYMENT_TYPES[o.paymentType] || o.paymentType,
-      ORDER_STATUSES[o.status] || o.status,
-      itemsText,
-      String(o.total || 0),
-      staffNameById(o.createdBy) || ''
-    ];
-  });
-
-  if (format === 'csv') {
-    const headers = ['Sana', 'Turi', "To'lov", 'Holat', 'Taomlar', 'Summa', 'Xodim'];
-    let csv = headers.map(csvEscapeCell).join(',') + '\r\n';
-    csv += rows.map(r => r.map(csvEscapeCell).join(',')).join('\r\n');
-    csv += `\r\n\r\n${csvEscapeCell('Jami: ' + rows.length + ' ta buyurtma, ' + totalSum + ' so\'m')}\r\n`;
-    const filename = `buyurtmalar_${new Date().toISOString().slice(0, 10)}.csv`;
-
-    const content = '\uFEFF' + csv;
-    return sendOk(res, { format: 'csv', filename, mime: 'text/csv;charset=utf-8', content });
-  }
-
-  const headers = ['Sana', 'Turi', "To'lov", 'Holat', 'Summa', 'Xodim'];
-  const colWidths = [95, 65, 65, 70, 75, 145];
-  const pdfRows = rows.map(r => [r[0], r[1], r[2], r[3], r[5] + " so'm", r[6]]);
-  const pdfBuffer = buildSimplePdfReport(
-    `${restaurantName} — Buyurtmalar tarixi (${rows.length} ta, ${totalSum} so'm)`,
-    nowLabel, headers, colWidths, pdfRows
-  );
-  const filename = `buyurtmalar_${new Date().toISOString().slice(0, 10)}.pdf`;
-  return sendOk(res, { format: 'pdf', filename, mime: 'application/pdf', contentBase64: pdfBuffer.toString('base64') });
-});
-
-authed('/api/my-stats', (payload, res, { userId }) => {
-  const { period } = payload;
-
-  const owners = pruneExpiredOwners();
-  const ctx = resolveOwnerContext(owners, userId);
-  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
-  if (!ctxHasAnyRole(ctx, ['kassir', 'oshpaz', 'dostavka', 'sklad'])) {
-    return sendFail(res, 'Bu bo\'lim faqat xodimlarga ko\'rinadi');
-  }
-
-  const fromDate = resolvePeriodStart(period);
-  const orders = ctx.owner.orders || [];
-  const stats = { period: period || 'today' };
-
-  if (ctxHasRole(ctx, 'kassir')) {
-    const mine = orders.filter(o => String(o.createdBy) === userId && new Date(o.createdAt) >= fromDate);
-    stats.kassir = {
-      orderCount: mine.length,
-      totalAmount: mine.reduce((sum, o) => sum + (o.total || 0), 0)
-    };
-  }
-  if (ctxHasRole(ctx, 'oshpaz')) {
-
-    const mine = orders.filter(o => o.status === 'tayyor' && String(o.updatedBy) === userId && o.readyAt && new Date(o.readyAt) >= fromDate);
-    stats.oshpaz = {
-      orderCount: mine.length
-    };
-  }
-  if (ctxHasRole(ctx, 'dostavka')) {
-    const mine = orders.filter(o => o.orderType === 'dostavka' && String(o.deliveredBy) === userId && new Date(o.deliveredAt || o.createdAt) >= fromDate);
-    const totalAmount = mine.reduce((sum, o) => sum + (o.total || 0), 0);
-    const commissionPercent = Number.isFinite(ctx.owner.courierCommissionPercent) ? ctx.owner.courierCommissionPercent : 10;
-    stats.dostavka = {
-      orderCount: mine.length,
-      totalAmount,
-      commission: Math.round(totalAmount * commissionPercent / 100)
-    };
-  }
-  if (ctxHasRole(ctx, 'sklad')) {
-    const movements = (ctx.owner.stockMovements || []).filter(m => String(m.userId) === userId && new Date(m.createdAt) >= fromDate);
-    stats.sklad = {
-      movementCount: movements.length,
-      kirimCount: movements.filter(m => m.type === 'kirim').length,
-      chiqimCount: movements.filter(m => m.type === 'chiqim').length
-    };
-  }
-
-  return sendOk(res, { stats });
-});
-
-authed('/api/shift-status', (payload, res, { userId }) => {
-  const owners = pruneExpiredOwners();
-  const ctx = resolveOwnerContext(owners, userId);
-  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
-  if (!ctxHasAnyRole(ctx, ['kassir', 'oshpaz', 'egasi'])) {
-    return sendFail(res, 'Bu bo\'lim faqat kassir, oshpaz va egasi uchun');
-  }
-  const target = ctx.role === 'egasi' ? ctx.owner : (ctx.owner.staff || []).find(s => String(s.id) === userId);
-  if (!target) return sendFail(res, 'Xodim topilmadi');
-
-  return sendOk(res, { active: !!target.shiftActive, startedAt: target.shiftStartedAt || null });
-});
-
-authed('/api/shift-toggle', (payload, res, { userId }) => {
-  const owners = loadOwners();
-  const ctx = resolveOwnerContext(owners, userId);
-  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
-  if (!ctxHasAnyRole(ctx, ['kassir', 'oshpaz', 'egasi'])) {
-    return sendFail(res, 'Bu bo\'lim faqat kassir, oshpaz va egasi uchun');
-  }
-  const target = ctx.role === 'egasi' ? ctx.owner : (ctx.owner.staff || []).find(s => String(s.id) === userId);
-  if (!target) return sendFail(res, 'Xodim topilmadi');
-  if (!ownerCanUseFeature(ctx.owner, 'shift-toggle')) return sendFeatureBlocked(res, 'shift-toggle');
-
-  const now = new Date().toISOString();
-  if (target.shiftActive) {
-    if (!ctx.owner.shiftHistory) ctx.owner.shiftHistory = [];
-    ctx.owner.shiftHistory.unshift({
-      id: crypto.randomBytes(4).toString('hex'),
-      userId,
-      role: ctx.role,
-      startedAt: target.shiftStartedAt || now,
-      endedAt: now
-    });
-    if (ctx.owner.shiftHistory.length > 1000) ctx.owner.shiftHistory.length = 1000;
-    target.shiftActive = false;
-    target.shiftStartedAt = null;
-    logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'smena_tugatdi', note: 'Ish smenasini tugatdi' });
-  } else {
-    target.shiftActive = true;
-    target.shiftStartedAt = now;
-    logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'smena_boshladi', note: 'Ish smenasini boshladi' });
-  }
-  saveOwners(owners);
-
-  return sendOk(res, { active: !!target.shiftActive, startedAt: target.shiftStartedAt || null });
-});
-
-authed('/api/update-order-status', async (payload, res, { userId }) => {
-  const { orderId, status } = payload;
-
-  const owners = loadOwners();
-  const ctx = resolveOwnerContext(owners, userId);
-  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
-  if (!ctxHasAnyRole(ctx, ['egasi', 'kassir', 'oshpaz'])) {
-    return sendFail(res, 'Bu amalga ruxsatingiz yo\'q');
-  }
-  if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendFeatureBlocked(res, 'orders-manage');
-
-  if (!Object.prototype.hasOwnProperty.call(ORDER_STATUSES, status)) {
-    return sendFail(res, 'Noto\'g\'ri holat.');
-  }
-
-  const order = (ctx.owner.orders || []).find(o => o.id === orderId);
-  if (!order) return sendFail(res, 'Buyurtma topilmadi.');
-  if (order.status === status) {
-    return sendOk(res, { order });
-  }
-  if (!canSetOrderStatus(ctx, order, status)) {
-    const reason = order.paymentProofStatus === 'kutilmoqda'
-      ? 'Mijozning to\'lovi hali tasdiqlanmagan - avval to\'lovni tasdiqlang, shundan keyin buyurtma holatini o\'zgartirish mumkin.'
-      : 'Bu buyurtma hozirgi holatidan bunday o\'tishni qabul qilmaydi (masalan, "Tayyorlanmoqda" bosqichisiz "Tayyor" deb belgilab bo\'lmaydi).';
-    return sendJSON(res, 200, { ok: false, reason });
-  }
-
-  order.status = status;
-  order.updatedAt = new Date().toISOString();
-  order.updatedBy = userId;
-  if (status === 'tayyorlanmoqda' && !order.startedAt) order.startedAt = order.updatedAt;
-  if (status === 'tayyor' && !order.readyAt) order.readyAt = order.updatedAt;
-
-  logStaffAction(ctx.owner, { userId, role: ctx.role, action: `holat_${status}`, orderId: order.id, note: `Buyurtma ${ORDER_STATUSES[status]} deb belgilandi` });
-  saveOwners(owners);
-
-  syncGroupMessagesForOrder(ctx.owner, order);
-  if (status === 'tayyor') notifyDeliveryGroupOrderReady(ctx.owner, order);
-
-  if (status === 'tayyor') {
-    const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
-    const orderLabel = `${ORDER_TYPES[order.orderType] || order.orderType}`;
-    const readyText = `✅ <b>Buyurtma tayyor</b> (${orderLabel})\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm`;
-
-    const staffList = ctx.owner.staff || [];
-    const targetRoles = order.orderType === 'dostavka' ? ['kassir', 'dostavka'] : ['kassir'];
-    const targetIds = staffList.filter(s => targetRoles.includes(s.role)).map(s => s.id);
-    for (const targetId of new Set(targetIds)) {
-      if (String(targetId) === userId) continue;
-      sendMessage(targetId, readyText);
-    }
-  }
-
-  return sendOk(res, { order });
-});
-
-authed('/api/staff-mark-received', (payload, res, { userId }) => {
-  const { orderId } = payload;
-
-  const owners = loadOwners();
-  const ctx = resolveOwnerContext(owners, userId);
-  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
-  if (!ctxHasAnyRole(ctx, ['egasi', 'kassir'])) {
-    return sendFail(res, 'Bu amalga ruxsatingiz yo\'q');
-  }
-  if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendFeatureBlocked(res, 'orders-manage');
-
-  const order = (ctx.owner.orders || []).find(o => o.id === orderId);
-  if (!order) return sendFail(res, 'Buyurtma topilmadi.');
-  if (order.orderType === 'dostavka') return sendFail(res, 'Dostavka buyurtmalarini kuryer belgilaydi.');
-  if (order.status !== 'tayyor') return sendFail(res, 'Buyurtma hali tayyor emas.');
-  if (order.customerReceivedAt) return sendFail(res, 'Bu buyurtma allaqachon olingan deb belgilangan.');
-
-  order.customerReceivedAt = new Date().toISOString();
-  order.customerReceivedBy = userId;
-  logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'mijoz_oldi', orderId: order.id, note: `${fmtNum(order.total)} so'm — mijoz oldi deb belgilandi` });
-  saveOwners(owners);
-
-  // Dostavka buyurtmalarida (/api/deliver-order) qilingani kabi — mijoz
-  // buyurtmasini olgach, xizmatni yulduzcha bilan baholashi so'raladi.
-  sendOrderRatingRequest(ctx.owner, order);
-
-  return sendOk(res, { order });
-});
-
-authed('/api/deliver-order', (payload, res, { userId }) => {
-  const { orderId } = payload;
-
-  const owners = loadOwners();
-  const ctx = resolveOwnerContext(owners, userId);
-  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
-  if (!ctxHasAnyRole(ctx, ['dostavka', 'egasi'])) {
-    return sendFail(res, 'Faqat kuryer bu amalni bajara oladi');
-  }
-  if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendFeatureBlocked(res, 'orders-manage');
-
-  const order = (ctx.owner.orders || []).find(o => o.id === orderId);
-  if (!order) return sendFail(res, 'Buyurtma topilmadi.');
-  if (order.orderType !== 'dostavka') {
-    return sendFail(res, 'Bu buyurtma dostavka turi emas.');
-  }
-  if (order.deliveredBy) {
-    return sendFail(res, 'Bu buyurtma allaqachon yetkazilgan deb belgilangan.');
-  }
-
-  order.deliveredBy = userId;
-  order.deliveredAt = new Date().toISOString();
-  logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'yetkazdi', orderId: order.id, note: `${fmtNum(order.total)} so'm — yetkazib berildi` });
-  saveOwners(owners);
-
-  sendOrderRatingRequest(ctx.owner, order);
-
-  return sendOk(res, { order });
-});
-
-authed('/api/reject-delivery-order', (payload, res, { userId }) => {
-  const { orderId, reason, returnedItems } = payload;
-
-  const owners = loadOwners();
-  const ctx = resolveOwnerContext(owners, userId);
-  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
-  if (!ctxHasAnyRole(ctx, ['dostavka', 'egasi'])) {
-    return sendFail(res, 'Faqat kuryer bu amalni bajara oladi');
-  }
-  if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendFeatureBlocked(res, 'orders-manage');
-
-  const order = (ctx.owner.orders || []).find(o => o.id === orderId);
-  if (!order) return sendFail(res, 'Buyurtma topilmadi.');
-  if (order.orderType !== 'dostavka') {
-    return sendFail(res, 'Bu buyurtma dostavka turi emas.');
-  }
-  if (order.deliveredBy) {
-    return sendFail(res, 'Bu buyurtma allaqachon yetkazilgan deb belgilangan.');
-  }
-  if (order.status === 'bekor_qilindi') {
-    return sendOk(res, { order });
-  }
-
-  const trimmedReason = String(reason || '').trim();
-  if (!trimmedReason) {
-    return sendFail(res, 'Bekor qilish sababini yozish majburiy.');
-  }
-
-  order.status = 'bekor_qilindi';
-  order.cancelReason = trimmedReason.slice(0, 200);
-  order.cancelledBy = userId;
-  order.cancelledAt = new Date().toISOString();
-
-  const returnedNotes = [];
-  if (Array.isArray(returnedItems)) {
-    for (const r of returnedItems) {
-      const idx = Number(r && r.index);
-      if (!Number.isInteger(idx) || idx < 0 || idx >= order.items.length) continue;
-      const orderItem = order.items[idx];
-      if (!orderItem || !orderItem.directStockId) continue;
-      const returnQty = Math.min(Math.max(0, Math.floor(Number(r.qty) || 0)), orderItem.qty);
-      if (returnQty <= 0) continue;
-      const stockItem = findStockItem(ctx.owner, orderItem.directStockId);
-      if (!stockItem) continue;
-      stockItem.qty = Math.round((stockItem.qty + returnQty) * 1000) / 1000;
-      addStockMovement(ctx.owner, {
-        stockId: stockItem.id, stockName: stockItem.name, type: 'kirim',
-        qty: returnQty, unit: stockItem.unit,
-        note: `Bekor qilingan buyurtma #${order.id} — ochilmagan, skladga qaytarildi: ${orderItem.name} x${returnQty}`,
-        userId
-      });
-      returnedNotes.push(`${orderItem.name} x${returnQty}`);
-    }
-  }
-  if (returnedNotes.length) order.returnedToStock = returnedNotes;
-
-  logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'dostavka_bekor', orderId: order.id, note: order.cancelReason });
-  saveOwners(owners);
-
-  syncGroupMessagesForOrder(ctx.owner, order);
-
-  const itemsText = order.items.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
-  const staffRecord = (ctx.owner.staff || []).find(s => String(s.id) === userId);
-  const courierLabel = staffDisplayName(staffRecord) || `ID: ${userId}`;
-  const returnedLine = returnedNotes.length
-    ? `\nSkladga qaytarildi: ${escapeHtmlServer(returnedNotes.join(', '))}`
-    : '';
-  const alertText = `❌ <b>Dostavka bekor qilindi</b>\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm\nSabab: ${escapeHtmlServer(order.cancelReason)}\nKuryer: ${escapeHtmlServer(courierLabel)}${returnedLine}`;
-  const staffList = ctx.owner.staff || [];
-  const targetIds = staffList.filter(s => ['egasi', 'kassir'].includes(s.role)).map(s => s.id);
-  for (const targetId of new Set([ctx.owner.id, ...targetIds])) {
-    if (String(targetId) === userId) continue;
-    sendMessage(targetId, alertText);
-  }
-
-  if (order.customerId) {
-    sendMessage(order.customerId, '❌ Kechirasiz, dostavka buyurtmangiz bekor qilindi (yetkazib berish amalga oshmadi). Savol bo\'lsa, oshxonaga murojaat qiling.');
-  }
-
-  return sendOk(res, { order });
-});
-
-authed('/api/undo-deliver-order', (payload, res, { userId }) => {
-  const { orderId } = payload;
-
-  const owners = loadOwners();
-  const ctx = resolveOwnerContext(owners, userId);
-  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
-  if (!ctxHasRole(ctx, 'egasi')) {
-    return sendFail(res, 'Faqat oshxona egasi bu amalni bajara oladi');
-  }
-  if (!ownerCanUseFeature(ctx.owner, 'orders-manage')) return sendFeatureBlocked(res, 'orders-manage');
-
-  const order = (ctx.owner.orders || []).find(o => o.id === orderId);
-  if (!order) return sendFail(res, 'Buyurtma topilmadi.');
-  if (!order.deliveredBy) {
-    return sendFail(res, 'Bu buyurtma "Yetkazildi" deb belgilanmagan.');
-  }
-
-  const previousDeliveredBy = order.deliveredBy;
-  order.deliveredBy = null;
-  order.deliveredAt = null;
-  logStaffAction(ctx.owner, {
-    userId, role: ctx.role, action: 'yetkazish_bekor',
-    orderId: order.id,
-    note: `"Yetkazildi" belgisi bekor qilindi (avval: ${previousDeliveredBy})`
-  });
-  saveOwners(owners);
-
-  return sendOk(res, { order });
-});
-
-authed('/api/stock-list', (payload, res, { userId }) => {
-  const owners = pruneExpiredOwners();
-  const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
-  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
-  if (!ctxHasAnyRole(ctx, ['egasi', 'sklad'])) {
-    return sendFail(res, 'Bu bo\'limni ko\'rishga ruxsatingiz yo\'q');
-  }
-
-  const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
-  const pool = resolveStockPool(ctx.owner, branchId);
-  if (!pool) return sendFail(res, 'Bunday filial topilmadi');
-
-  const stock = (pool.stock || []).slice().sort((a, b) => a.name.localeCompare(b.name, 'uz'));
-  return sendOk(res, { stock, units: STOCK_UNITS, branches: ctx.owner.branches || [], branchId });
-});
-
-authed('/api/stock-add', (payload, res, { userId }) => {
-  const { name, qty, unit, price, minQty } = payload;
-
-  const owners = loadOwners();
-  const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
-  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
-  if (!ctxHasAnyRole(ctx, ['egasi', 'sklad'])) {
-    return sendFail(res, 'Bu amalga ruxsatingiz yo\'q');
-  }
-  if (!ctx.isAdminActing && !ownerCanUseFeature(ctx.owner, 'stock-manage')) return sendFeatureBlocked(res, 'stock-manage');
-
-  const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
-  const pool = resolveStockPool(ctx.owner, branchId);
-  if (!pool) return sendFail(res, 'Bunday filial topilmadi');
-
-  const nameTrim = String(name || '').trim();
-  const qtyNum = Number(qty);
-  if (!nameTrim) return sendFail(res, 'Mahsulot nomini kiriting.');
-  if (!Object.prototype.hasOwnProperty.call(STOCK_UNITS, unit)) {
-    return sendFail(res, 'Birlikni tanlang (kg, g, l, ml, dona).');
-  }
-  if (!Number.isFinite(qtyNum) || qtyNum <= 0) {
-    return sendFail(res, 'Miqdorni to\'g\'ri kiriting.');
-  }
-
-  if (price === undefined || price === null || price === '') {
-    return sendFail(res, 'Narxni kiriting — u avtomatik xarajat yozish uchun kerak.');
-  }
-  const priceNum = Number(price);
-  if (!Number.isFinite(priceNum) || priceNum <= 0) {
-    return sendFail(res, 'Narx musbat son bo\'lishi kerak.');
-  }
-  let minQtyNum = null;
-  if (minQty !== undefined && minQty !== null && minQty !== '') {
-    minQtyNum = Number(minQty);
-    if (!Number.isFinite(minQtyNum) || minQtyNum < 0) return sendFail(res, 'Kam qolish chegarasi musbat son bo\'lishi kerak.');
-  }
-
-  if (!pool.stock) pool.stock = [];
-  let item = pool.stock.find(s => s.name.toLowerCase() === nameTrim.toLowerCase() && s.unit === unit);
-
-  if (item) {
-    item.qty = Math.round((item.qty + qtyNum) * 1000) / 1000;
-    if (priceNum) item.price = priceNum;
-    if (minQtyNum !== null) item.minQty = minQtyNum;
-  } else {
-    item = {
-      id: crypto.randomBytes(4).toString('hex'),
-      name: nameTrim,
-      qty: qtyNum,
-      unit,
-      price: priceNum,
-      minQty: minQtyNum,
-      lowStockAlertSent: false,
-      addedAt: new Date().toISOString()
-    };
-    pool.stock.push(item);
-  }
-
-  addStockMovement(pool, {
-    stockId: item.id, stockName: item.name, type: 'kirim',
-    qty: qtyNum, unit, note: 'Qo\'lda kiritildi', userId
-  });
-  checkLowStockAlert(ctx.owner, item, userId, branchId);
-  logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'sklad_kirim', note: `${item.name}: +${qtyNum} ${unit}` });
-
-  if (!ctx.owner.expenses) ctx.owner.expenses = [];
-  ctx.owner.expenses.unshift({
-    id: crypto.randomBytes(4).toString('hex'),
-    amount: Math.round(qtyNum * priceNum * 100) / 100,
-    category: 'sklad_xarid',
-    note: `${item.name} — ${qtyNum} ${unit}`,
-    createdAt: new Date().toISOString(),
-    createdBy: userId,
-    source: 'stock',
-    stockId: item.id
-  });
-  if (ctx.owner.expenses.length > 500) ctx.owner.expenses.length = 500;
-
-  saveOwners(owners);
-
-  return sendOk(res, { item });
-});
-
-authed('/api/stock-remove', (payload, res, { userId }) => {
-  const { id, branchId } = payload;
-
-  const owners = loadOwners();
-  const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
-  if (!ctx) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'chira oladi');
-  const owner = ctx.owner;
-  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
-
-  const pool = resolveStockPool(owner, branchId || null);
-  if (!pool) return sendFail(res, 'Bunday filial topilmadi');
-
-  pool.stock = (pool.stock || []).filter(s => s.id !== id);
-
-  if (!branchId) {
-    (owner.menu || []).forEach(m => {
-      if (Array.isArray(m.recipe)) m.recipe = m.recipe.filter(r => r.stockId !== id);
-    });
-  }
-  saveOwners(owners);
-
-  return sendOk(res);
-});
-
-// Buzilgan/isrof bo'lgan sklad mahsulotini spisaniya qilish (masalan: katlet
-// kuysa, non qotib qolsa yoki yirtilsa) — miqdor ombordan ayiriladi, sababi
-// harakatlar tarixiga yoziladi va yo'qotish summasi Moliyaga xarajat sifatida tushadi.
-authed('/api/stock-writeoff', (payload, res, { userId }) => {
-  const { id, qty, reason, note, branchId } = payload;
-
-  const owners = loadOwners();
-  const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
-  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
-  if (!ctxHasAnyRole(ctx, ['egasi', 'sklad'])) {
-    return sendFail(res, 'Bu amalga ruxsatingiz yo\'q');
-  }
-  if (!ctx.isAdminActing && !ownerCanUseFeature(ctx.owner, 'stock-manage')) return sendFeatureBlocked(res, 'stock-manage');
-
-  const resolvedBranchId = ctx.role === 'egasi' ? (branchId || null) : ctx.branchId;
-  const pool = resolveStockPool(ctx.owner, resolvedBranchId);
-  if (!pool) return sendFail(res, 'Bunday filial topilmadi');
-
-  if (!id) return sendFail(res, 'Mahsulot tanlanmagan.');
-  const item = findStockItem(pool, id);
-  if (!item) return sendFail(res, 'Bunday mahsulot omborda topilmadi.');
-
-  const qtyNum = Number(qty);
-  if (!Number.isFinite(qtyNum) || qtyNum <= 0) {
-    return sendFail(res, 'Miqdorni to\'g\'ri kiriting.');
-  }
-  if (qtyNum > item.qty) {
-    return sendFail(res, `Omborda yetarli emas (bor: ${item.qty} ${item.unit}).`);
-  }
-  if (!Object.prototype.hasOwnProperty.call(WRITEOFF_REASONS, reason)) {
-    return sendFail(res, 'Spisaniya sababini tanlang.');
-  }
-  const noteTrim = String(note || '').trim().slice(0, 200);
-  if (reason === 'boshqa' && !noteTrim) {
-    return sendFail(res, '"Boshqa sabab" tanlansa, izoh yozish shart.');
-  }
-
-  item.qty = Math.max(0, Math.round((item.qty - qtyNum) * 1000) / 1000);
-  const reasonLabel = WRITEOFF_REASONS[reason];
-  const movementNote = `Spisaniya: ${reasonLabel}${noteTrim ? ' — ' + noteTrim : ''}`;
-
-  addStockMovement(pool, {
-    stockId: item.id, stockName: item.name, type: 'chiqim',
-    qty: qtyNum, unit: item.unit, note: movementNote, userId
-  });
-  checkLowStockAlert(ctx.owner, item, userId, resolvedBranchId);
-  logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'sklad_spisaniya', note: `${item.name}: -${qtyNum} ${item.unit} (${reasonLabel})` });
-
-  const lossAmount = Math.round(qtyNum * (item.price || 0) * 100) / 100;
-  if (lossAmount > 0) {
-    if (!ctx.owner.expenses) ctx.owner.expenses = [];
-    ctx.owner.expenses.unshift({
-      id: crypto.randomBytes(4).toString('hex'),
-      amount: lossAmount,
-      category: 'spisaniya',
-      note: `${item.name} — ${qtyNum} ${item.unit} (${reasonLabel}${noteTrim ? ': ' + noteTrim : ''})`,
-      createdAt: new Date().toISOString(),
-      createdBy: userId,
-      source: 'stock',
-      stockId: item.id
-    });
-    if (ctx.owner.expenses.length > 500) ctx.owner.expenses.length = 500;
-  }
-
-  saveOwners(owners);
-  return sendOk(res, { item, lossAmount });
-});
-
-authed('/api/stock-movements', (payload, res, { userId }) => {
-  const owners = pruneExpiredOwners();
-  const ctx = resolveOwnerContext(owners, userId);
-  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
-  if (!ctxHasAnyRole(ctx, ['egasi', 'sklad'])) {
-    return sendFail(res, 'Bu bo\'limni ko\'rishga ruxsatingiz yo\'q');
-  }
-
-  const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
-  const pool = resolveStockPool(ctx.owner, branchId);
-  if (!pool) return sendFail(res, 'Bunday filial topilmadi');
-
-  const movements = (pool.stockMovements || []).slice(0, 200);
-  return sendOk(res, { movements });
-});
-
-authed('/api/stock-transfer', (payload, res, { userId }) => {
-  const { stockId, branchId, qty } = payload;
-
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi transfer qila oladi');
-  const owner = ownerCtx.owner;
-
-  if (!branchId) return sendFail(res, 'Qaysi filialga o\'tkazishni tanlang.');
-  const branch = findBranch(owner, branchId);
-  if (!branch) return sendFail(res, 'Bunday filial topilmadi.');
-
-  const centralItem = findStockItem(owner, stockId);
-  if (!centralItem) return sendFail(res, 'Markaziy skladda bunday mahsulot topilmadi.');
-
-  const qtyNum = Number(qty);
-  if (!Number.isFinite(qtyNum) || qtyNum <= 0) {
-    return sendFail(res, 'Miqdorni to\'g\'ri kiriting.');
-  }
-  if (qtyNum > centralItem.qty) {
-    return sendFail(res, `Markaziy skladda yetarli emas (bor: ${centralItem.qty} ${centralItem.unit}).`);
-  }
-
-  centralItem.qty = Math.round((centralItem.qty - qtyNum) * 1000) / 1000;
-  addStockMovement(owner, {
-    stockId: centralItem.id, stockName: centralItem.name, type: 'chiqim',
-    qty: qtyNum, unit: centralItem.unit,
-    note: `Filialga o'tkazildi: ${branch.name}`, userId
-  });
-  checkLowStockAlert(owner, centralItem, userId, null);
-
-  if (!branch.stock) branch.stock = [];
-  let branchItem = branch.stock.find(s => s.name.toLowerCase() === centralItem.name.toLowerCase() && s.unit === centralItem.unit);
-  if (branchItem) {
-    branchItem.qty = Math.round((branchItem.qty + qtyNum) * 1000) / 1000;
-  } else {
-    branchItem = {
-      id: crypto.randomBytes(4).toString('hex'),
-      name: centralItem.name,
-      qty: qtyNum,
-      unit: centralItem.unit,
-      price: centralItem.price || 0,
-      minQty: null,
-      lowStockAlertSent: false,
-      addedAt: new Date().toISOString()
-    };
-    branch.stock.push(branchItem);
-  }
-  addStockMovement(branch, {
-    stockId: branchItem.id, stockName: branchItem.name, type: 'kirim',
-    qty: qtyNum, unit: branchItem.unit,
-    note: 'Markaziy skladdan transfer', userId
-  });
-  checkLowStockAlert(owner, branchItem, userId, branchId);
-
-  saveOwners(owners);
-  return sendOk(res, { centralItem, branchItem });
-});
-
-authed('/api/menu-set-recipe', (payload, res, { userId }) => {
-  const { menuId, recipe } = payload;
-
-  const owners = loadOwners();
-  const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
-  if (!ctx) return denyAccess(res, owners, userId, 'Faqat oshxona egasi retsept belgilay oladi');
-  const owner = ctx.owner;
-
-  const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
-  const pool = resolveMenuPool(owner, branchId);
-  if (!pool) return sendFail(res, 'Bunday filial topilmadi');
-  const stockPool = resolveStockPool(owner, branchId);
-
-  const menuItem = (pool.menu || []).find(m => m.id === menuId);
-  if (!menuItem) return sendFail(res, 'Taom topilmadi.');
-  if (!Array.isArray(recipe)) return sendFail(res, 'Noto\'g\'ri retsept formati.');
-
-  if (menuItem.directStockId && recipe.length) {
-    return sendFail(res, 'Bu taom "to\'g\'ridan skladdan" turida — unga alohida retsept qo\'shib bo\'lmaydi.');
-  }
-
-  const cleanRecipe = [];
-  for (const r of recipe) {
-    const stockItem = findStockItem(stockPool, r.stockId);
-    if (!stockItem) return sendFail(res, 'Retseptda mavjud bo\'lmagan sklad mahsuloti bor.');
-    const qtyNum = Number(r.qty);
-    if (!Number.isFinite(qtyNum) || qtyNum <= 0) return sendFail(res, 'Retsept miqdori musbat son bo\'lishi kerak.');
-    cleanRecipe.push({ stockId: r.stockId, qty: qtyNum });
-  }
-
-  menuItem.recipe = cleanRecipe;
-  saveOwners(owners);
-
-  return sendOk(res, { menuItem });
-});
-
-authed('/api/audit-submit', (payload, res, { userId }) => {
-  const { entries } = payload;
-
-  const owners = loadOwners();
-  const ctx = resolveOwnerContext(owners, userId);
-  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
-  if (!ctxHasAnyRole(ctx, ['egasi', 'sklad'])) {
-    return sendFail(res, 'Bu amalga ruxsatingiz yo\'q');
-  }
-  if (!ownerCanUseFeature(ctx.owner, 'audit')) return sendFeatureBlocked(res, 'audit');
-  if (!Array.isArray(entries) || !entries.length) {
-    return sendFail(res, 'Audit uchun kamida bitta mahsulot kiriting.');
-  }
-
-  const branchId = ctx.role === 'egasi' ? (payload.branchId || null) : ctx.branchId;
-  const pool = resolveStockPool(ctx.owner, branchId);
-  if (!pool) return sendFail(res, 'Bunday filial topilmadi');
-
-  const auditEntries = [];
-  for (const e of entries) {
-    const stockItem = findStockItem(pool, e.stockId);
-    if (!stockItem) continue;
-    const actualNum = Number(e.actualQty);
-    if (!Number.isFinite(actualNum) || actualNum < 0) {
-      return sendFail(res, `${stockItem.name} uchun haqiqiy qoldiqni to\'g\'ri kiriting.`);
-    }
-    const systemQty = stockItem.qty;
-    const diff = Math.round((actualNum - systemQty) * 1000) / 1000;
-    auditEntries.push({ stockId: stockItem.id, name: stockItem.name, unit: stockItem.unit, systemQty, actualQty: actualNum, diff });
-
-    if (diff !== 0) {
-      addStockMovement(pool, {
-        stockId: stockItem.id, stockName: stockItem.name, type: 'audit_tuzatish',
-        qty: diff, unit: stockItem.unit,
-        note: diff > 0 ? 'Audit: ortiqcha topildi' : 'Audit: kamomad topildi',
-        userId
-      });
-    }
-    stockItem.qty = actualNum;
-    checkLowStockAlert(ctx.owner, stockItem, userId, branchId);
-  }
-
-  if (!auditEntries.length) {
-    return sendFail(res, 'Hech qanday mos mahsulot topilmadi.');
-  }
-
-  if (!pool.audits) pool.audits = [];
-  const audit = {
-    id: crypto.randomBytes(4).toString('hex'),
-    date: new Date().toISOString().slice(0, 10),
-    branchId,
-    entries: auditEntries,
-    createdBy: userId,
-    createdAt: new Date().toISOString()
-  };
-  pool.audits.unshift(audit);
-  if (pool.audits.length > 60) pool.audits.length = 60;
-
-  const kamomadCount = auditEntries.filter(e => e.diff < 0).length;
-  const ortiqchaCount = auditEntries.filter(e => e.diff > 0).length;
-  logStaffAction(ctx.owner, {
-    userId, role: ctx.role, action: 'audit_topshirdi',
-    note: `${auditEntries.length} mahsulot tekshirildi${kamomadCount ? `, ${kamomadCount} ta kamomad` : ''}${ortiqchaCount ? `, ${ortiqchaCount} ta ortiqcha` : ''}`,
-    errorCount: kamomadCount
-  });
-
-  saveOwners(owners);
-  return sendOk(res, { audit });
-});
-
-
-const TASHKENT_OFFSET_MS = 5 * 60 * 60 * 1000;
-
-function tzDateKey(input) {
-  const d = (input instanceof Date) ? input : new Date(input);
-  return new Date(d.getTime() + TASHKENT_OFFSET_MS).toISOString().slice(0, 10);
-}
-
-function tzDayStartFromKey(dateKey) {
-  return new Date(new Date(dateKey + 'T00:00:00.000Z').getTime() - TASHKENT_OFFSET_MS);
-}
-
-function tzDayStart(input) {
-  return tzDayStartFromKey(tzDateKey(input));
-}
-
-function tzWeekStart(input) {
-  const d = (input instanceof Date) ? input : new Date(input);
-  const shifted = new Date(d.getTime() + TASHKENT_OFFSET_MS);
-  const day = shifted.getUTCDay();
-  const diffToMonday = (day === 0 ? -6 : 1) - day;
-  const mondayKey = new Date(shifted.getTime() + diffToMonday * 86400000).toISOString().slice(0, 10);
-  return tzDayStartFromKey(mondayKey);
-}
-
-function tzMonthStart(input) {
-  const d = (input instanceof Date) ? input : new Date(input);
-  const shifted = new Date(d.getTime() + TASHKENT_OFFSET_MS);
-  const monthKey = `${shifted.getUTCFullYear()}-${String(shifted.getUTCMonth() + 1).padStart(2, '0')}-01`;
-  return tzDayStartFromKey(monthKey);
-}
-
-// branchId === undefined -> barcha joylashuvlar (markaziy + filiallar) birga.
-// branchId === null -> faqat markaziy. branchId === '<id>' -> faqat shu filial.
-function matchesBranchFilter(item, branchId) {
-  if (branchId === undefined) return true;
-  return (item.branchId || null) === (branchId || null);
-}
-
-function cashflowBucket(owner, fromDate, branchId) {
-  const orders = (owner.orders || []).filter(o => new Date(o.createdAt) >= fromDate && matchesBranchFilter(o, branchId));
-  const expenses = (owner.expenses || []).filter(e => new Date(e.createdAt) >= fromDate && matchesBranchFilter(e, branchId));
-
-  const dostavkaOrders = orders.filter(o => o.orderType === 'dostavka' && o.paymentType === 'dostavka_orqali');
-  const kassaOrders = orders.filter(o => !(o.orderType === 'dostavka' && o.paymentType === 'dostavka_orqali'));
-  const kassaIncome = kassaOrders.reduce((sum, o) => sum + orderIncomeAmount(o), 0);
-  const dostavkaIncome = dostavkaOrders.reduce((sum, o) => sum + orderIncomeAmount(o), 0);
-  const income = kassaIncome + dostavkaIncome;
-  const expense = expenses.reduce((sum, e) => sum + (e.amount || 0), 0);
-
-  const paymentBreakdown = {};
-  for (const key of Object.keys(PAYMENT_TYPES)) paymentBreakdown[key] = 0;
-  for (const o of orders) {
-    const pt = Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, o.paymentType) ? o.paymentType : 'naqd';
-    paymentBreakdown[pt] = (paymentBreakdown[pt] || 0) + orderIncomeAmount(o);
-  }
-
-  const kassaBreakdown = {};
-  for (const key of Object.keys(PAYMENT_TYPES)) kassaBreakdown[key] = 0;
-  for (const o of kassaOrders) {
-    const pt = Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, o.paymentType) ? o.paymentType : 'naqd';
-    kassaBreakdown[pt] = (kassaBreakdown[pt] || 0) + orderIncomeAmount(o);
-  }
-
-  const byCategory = {};
-  for (const key of Object.keys(EXPENSE_CATEGORIES)) byCategory[key] = 0;
-  for (const e of expenses) {
-    const cat = Object.prototype.hasOwnProperty.call(EXPENSE_CATEGORIES, e.category) ? e.category : 'boshqa';
-    byCategory[cat] = (byCategory[cat] || 0) + (e.amount || 0);
-  }
-
-  return {
-    income, expense, net: income - expense, orderCount: orders.length, byCategory,
-    kassaIncome, dostavkaIncome, dostavkaOrderCount: dostavkaOrders.length, paymentBreakdown, kassaBreakdown
-  };
-}
-
-function computeCashflow(owner, branchId) {
-  const now = new Date();
-  const todayStart = tzDayStart(now);
-  const weekStart = tzWeekStart(now);
-  const monthStart = tzMonthStart(now);
-
-  const orders = (owner.orders || []).filter(o => matchesBranchFilter(o, branchId));
-  const expenses = (owner.expenses || []).filter(e => matchesBranchFilter(e, branchId));
-  const dailySeries = [];
-
-  for (let i = 13; i >= 0; i--) {
-    const dayStart = new Date(todayStart.getTime() - i * 86400000);
-    const dayEnd = new Date(dayStart.getTime() + 86400000);
-    const key = tzDateKey(dayStart);
-    const dayIncome = orders.filter(o => { const t = new Date(o.createdAt); return t >= dayStart && t < dayEnd; }).reduce((s, o) => s + orderIncomeAmount(o), 0);
-    const dayExpense = expenses.filter(e => { const t = new Date(e.createdAt); return t >= dayStart && t < dayEnd; }).reduce((s, e) => s + (e.amount || 0), 0);
-    dailySeries.push({ date: key, income: dayIncome, expense: dayExpense, net: dayIncome - dayExpense });
-  }
-
-  return {
-    today: cashflowBucket(owner, todayStart, branchId),
-    week: cashflowBucket(owner, weekStart, branchId),
-    month: cashflowBucket(owner, monthStart, branchId),
-    dailySeries
-  };
-}
-
-authed('/api/expense-add', (payload, res, { userId }) => {
-  const { amount, note, category, branchId } = payload;
-
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi xarajat kirita oladi');
-  const owner = ownerCtx.owner;
-  if (!ownerCanUseFeature(owner, 'expense-manage')) return sendFeatureBlocked(res, 'expense-manage');
-
-  const amountNum = Number(amount);
-  if (!Number.isFinite(amountNum) || amountNum <= 0) {
-    return sendFail(res, 'Summani to\'g\'ri kiriting.');
-  }
-  const categoryKey = Object.prototype.hasOwnProperty.call(EXPENSE_CATEGORIES, category) ? category : 'boshqa';
-  const noteStr = String(note || '').trim().slice(0, 200);
-  let branchIdVal = null;
-  if (branchId) {
-    if (!findBranch(owner, branchId)) return sendFail(res, 'Bunday filial topilmadi.');
-    branchIdVal = branchId;
-  }
-
-  if (!owner.expenses) owner.expenses = [];
-  const expense = {
-    id: crypto.randomBytes(4).toString('hex'),
-    amount: amountNum,
-    category: categoryKey,
-    note: noteStr,
-    branchId: branchIdVal,
-    createdAt: new Date().toISOString(),
-    createdBy: userId
-  };
-  owner.expenses.unshift(expense);
-  if (owner.expenses.length > 500) owner.expenses.length = 500;
-  saveOwners(owners);
-
-  return sendOk(res, { expense });
-});
-
-authed('/api/expense-remove', (payload, res, { userId }) => {
-  const { id } = payload;
-
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'chira oladi');
-  const owner = ownerCtx.owner;
-  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
-
-  const before = (owner.expenses || []).length;
-  owner.expenses = (owner.expenses || []).filter(e => e.id !== id);
-  saveOwners(owners);
-
-  return sendOk(res, { removed: before !== owner.expenses.length });
-});
-
-authed('/api/cashflow', (payload, res, { userId }) => {
-  const owners = pruneExpiredOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
-  const owner = ownerCtx.owner;
-  if (!ownerCanUseFeature(owner, 'cashflow')) return sendFeatureBlocked(res, 'cashflow');
-
-  const branchId = Object.prototype.hasOwnProperty.call(payload, 'branchId') ? (payload.branchId || null) : undefined;
-  const cashflow = computeCashflow(owner, branchId);
-  const recentExpenses = (owner.expenses || []).filter(e => matchesBranchFilter(e, branchId)).slice(0, 30);
-
-  return sendOk(res, { cashflow, expenses: recentExpenses, categories: EXPENSE_CATEGORIES, branches: owner.branches || [], centralBranchName: owner.centralBranchName || null });
-});
-
-authed('/api/dashboard-summary', (payload, res, { userId }) => {
-  const owners = pruneExpiredOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
-  const owner = ownerCtx.owner;
-  if (!ownerCanUseFeature(owner, 'dashboard')) return sendFeatureBlocked(res, 'dashboard');
-
-  const branchId = Object.prototype.hasOwnProperty.call(payload, 'branchId') ? payload.branchId : undefined;
-
-  const now = new Date();
-  const todayStart = tzDayStart(now);
-  const yesterdayStart = new Date(todayStart.getTime() - 86400000);
-
-  const today = cashflowBucket(owner, todayStart, branchId);
-
-  const yesterdayOrders = (owner.orders || []).filter(o => {
-    const d = new Date(o.createdAt);
-    return d >= yesterdayStart && d < todayStart && matchesBranchFilter(o, branchId);
-  });
-  const yesterdayIncome = yesterdayOrders.reduce((s, o) => s + orderIncomeAmount(o), 0);
-  const yesterdayExpense = (owner.expenses || []).filter(e => {
-    const d = new Date(e.createdAt);
-    return d >= yesterdayStart && d < todayStart && matchesBranchFilter(e, branchId);
-  }).reduce((s, e) => s + (e.amount || 0), 0);
-
-  const todayCourierDeliveries = (owner.orders || []).filter(o =>
-    o.orderType === 'dostavka' && o.deliveredBy && new Date(o.deliveredAt || o.createdAt) >= todayStart && matchesBranchFilter(o, branchId)).length;
-  const yesterdayCourierDeliveries = (owner.orders || []).filter(o => {
-    if (o.orderType !== 'dostavka' || !o.deliveredBy) return false;
-    const d = new Date(o.deliveredAt || o.createdAt);
-    return d >= yesterdayStart && d < todayStart && matchesBranchFilter(o, branchId);
-  }).length;
-
-  const summary = {
-    todaySales: today.income,
-    yesterdaySales: yesterdayIncome,
-    todayNetProfit: today.net,
-    yesterdayNetProfit: yesterdayIncome - yesterdayExpense,
-    todayOrderCount: today.orderCount,
-    yesterdayOrderCount: yesterdayOrders.length,
-    todayCourierDeliveries,
-    yesterdayCourierDeliveries
-  };
-
-  return sendOk(res, { summary });
-});
-
-authed('/api/order-status-counts', (payload, res, { userId }) => {
-  const owners = pruneExpiredOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
-  const owner = ownerCtx.owner;
-  if (!ownerCanUseFeature(owner, 'dashboard')) return sendFeatureBlocked(res, 'dashboard');
-
-  const branchId = Object.prototype.hasOwnProperty.call(payload, 'branchId') ? payload.branchId : undefined;
-
-  const now = new Date();
-  const todayStart = tzDayStart(now);
-  const thresholdMs = ORDER_DELAY_THRESHOLD_MINUTES * 60 * 1000;
-
-  const todaysOrders = (owner.orders || []).filter(o => new Date(o.createdAt) >= todayStart && matchesBranchFilter(o, branchId));
-
-  let yangi = 0, tayyorlanmoqda = 0, tayyor = 0, kechikayotgan = 0;
-  for (const o of todaysOrders) {
-    if (o.status === 'bekor_qilindi') continue;
-    if (o.status === 'tayyor') { tayyor += 1; continue; }
-    const ageMs = now - new Date(o.createdAt);
-    if (ageMs > thresholdMs) { kechikayotgan += 1; continue; }
-    if (o.status === 'tayyorlanmoqda') tayyorlanmoqda += 1;
-    else yangi += 1;
-  }
-
-  return sendOk(res, {
-    counts: { yangi, tayyorlanmoqda, tayyor, kechikayotgan },
-    delayThresholdMinutes: ORDER_DELAY_THRESHOLD_MINUTES
-  });
-});
-
-authed('/api/dashboard-alerts', (payload, res, { userId }) => {
-  const owners = pruneExpiredOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
-  const owner = ownerCtx.owner;
-  if (!ownerCanUseFeature(owner, 'dashboard')) return sendFeatureBlocked(res, 'dashboard');
-
-  const branchId = Object.prototype.hasOwnProperty.call(payload, 'branchId') ? payload.branchId : undefined;
-  const alerts = [];
-
-  const stockPools = branchId === undefined
-    ? [owner, ...(owner.branches || [])]
-    : (branchId === null ? [owner] : [findBranch(owner, branchId)].filter(Boolean));
-  let lowStockCount = 0;
-  for (const pool of stockPools) {
-    for (const item of (pool.stock || [])) {
-      if (item.minQty === null || item.minQty === undefined) continue;
-      if (item.qty <= item.minQty) lowStockCount += 1;
-    }
-  }
-  if (lowStockCount > 0) {
-    alerts.push({
-      type: 'low_stock', level: 'error', text: 'Tugayotgan mahsulotlar bor',
-      count: lowStockCount, screen: 'ombor'
+      };
     });
   }
 
-  const now = new Date();
-  const todayStart = tzDayStart(now);
-  const thresholdMs = ORDER_DELAY_THRESHOLD_MINUTES * 60 * 1000;
-  const todaysOrders = (owner.orders || []).filter(o => new Date(o.createdAt) >= todayStart && matchesBranchFilter(o, branchId));
-  let delayedCount = 0;
-  for (const o of todaysOrders) {
-    if (o.status === 'tayyor') continue;
-    if ((now - new Date(o.createdAt)) > thresholdMs) delayedCount += 1;
-  }
-  if (delayedCount > 0) {
-    alerts.push({
-      type: 'delayed_orders', level: 'warning', text: 'Kechikayotgan buyurtmalar',
-      count: delayedCount, screen: 'buyurtmalar_kechikkan'
-    });
-  }
-
-  const todayDateKey = tzDateKey(now);
-  const dailyReportClosed = (owner.zReports || []).some(z => z.date === todayDateKey && (branchId === undefined || (z.branchId || null) === (branchId || null)));
-  if (!dailyReportClosed) {
-    alerts.push({
-      type: 'daily_report_open', level: 'info', text: 'Bugungi kun yakuni uchun hisob yopilmagan',
-      count: null, screen: 'zreport'
-    });
+  function logoPickerHtml(idPrefix, currentValue) {
+    return `
+      <label class="field-label">Logotip</label>
+      <div class="logo-picker">
+        <div class="logo-picker-preview-wrap">
+          ${currentValue
+            ? `<img id="${idPrefix}Preview" class="logo-picker-preview" src="${escapeHtml(currentValue)}" onerror="this.style.display='none'">`
+            : `<div id="${idPrefix}Preview" class="logo-picker-preview logo-picker-preview-empty">${icon('restaurant', 'icon-md')}</div>`}
+        </div>
+        <div class="logo-picker-actions">
+          <label class="logo-picker-btn" for="${idPrefix}FileInput">${icon('link', 'icon-xs')} Galereyadan tanlash</label>
+          <input type="file" id="${idPrefix}FileInput" accept="image/*" class="logo-picker-file-input">
+          ${currentValue ? `<button type="button" class="logo-picker-remove" id="${idPrefix}RemoveBtn">O'chirish</button>` : ''}
+        </div>
+      </div>
+      <div class="xabar" id="${idPrefix}Err"></div>
+    `;
   }
 
-  return sendOk(res, { alerts });
-});
-
-function resolvePeriodStart(period) {
-  const now = new Date();
-  if (period === 'week') return tzWeekStart(now);
-  if (period === 'month') return tzMonthStart(now);
-  if (period === 'all') return new Date(0);
-  return tzDayStart(now);
-}
-
-authed('/api/branch-report', (payload, res, { userId }) => {
-  const { period } = payload;
-
-  const owners = pruneExpiredOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
-  const owner = ownerCtx.owner;
-
-  const fromDate = resolvePeriodStart(period);
-  const orders = (owner.orders || []).filter(o => new Date(o.createdAt) >= fromDate);
-
-  const buckets = new Map();
-  buckets.set(null, { branchId: null, branchName: owner.centralBranchName || 'Markaziy', orderCount: 0, income: 0, kassaIncome: 0, dostavkaIncome: 0 });
-  for (const b of (owner.branches || [])) {
-    buckets.set(b.id, { branchId: b.id, branchName: b.name, orderCount: 0, income: 0, kassaIncome: 0, dostavkaIncome: 0 });
-  }
-
-  for (const o of orders) {
-    const key = buckets.has(o.branchId || null) ? (o.branchId || null) : null;
-    const bucket = buckets.get(key);
-    bucket.orderCount += 1;
-    bucket.income += orderIncomeAmount(o);
-    if (o.orderType === 'dostavka' && o.paymentType === 'dostavka_orqali') bucket.dostavkaIncome += orderIncomeAmount(o);
-    else bucket.kassaIncome += orderIncomeAmount(o);
-  }
-
-  const report = Array.from(buckets.values())
-    .map(b => Object.assign({}, b, { avgCheck: b.orderCount ? Math.round(b.income / b.orderCount) : 0 }))
-    .sort((a, b) => b.income - a.income);
-
-  return sendOk(res, { report });
-});
-
-authed('/api/restricted-customers', (payload, res, { userId }) => {
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
-  const owner = ownerCtx.owner;
-
-  const customers = [];
-  for (const c of (owner.customers || [])) {
-    const cancelledCount = customerCancelledDeliveryCount(owner, c.id);
-    if (cancelledCount < CARD_ONLY_AFTER_CANCELLED_DELIVERIES) continue;
-    const recentCancellations = (owner.orders || [])
-      .filter(o => String(o.customerId) === String(c.id) && o.orderType === 'dostavka' && o.status === 'bekor_qilindi')
-      .sort((a, b) => new Date(b.cancelledAt || b.createdAt) - new Date(a.cancelledAt || a.createdAt))
-      .slice(0, 5)
-      .map(o => ({ reason: o.cancelReason || null, cancelledAt: o.cancelledAt || o.createdAt, total: o.total || 0 }));
-    customers.push({
-      id: c.id,
-      name: c.firstName || c.username || `ID: ${c.id}`,
-      username: c.username || null,
-      cancelledCount,
-      restricted: customerIsCardOnlyRestricted(owner, c.id),
-      recentCancellations
-    });
-  }
-  customers.sort((a, b) => b.cancelledCount - a.cancelledCount);
-
-  return sendOk(res, { customers });
-});
-
-authed('/api/owner-reviews', (payload, res, { userId }) => {
-  const { targetOwnerId } = payload;
-
-  const owners = loadOwners();
-  let owner;
-  if (targetOwnerId && isAdminId(userId)) {
-    owner = findOwner(owners, targetOwnerId);
-    if (!owner) return sendFail(res, 'Bunday oshxona topilmadi.');
-  } else {
-    owner = findOwner(owners, userId);
-    if (!isOwnerAccessValid(owner)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga (yoki adminga) ko\'rinadi');
-  }
-
-  const rating = ownerAverageRating(owner);
-  const reviews = ownerRatedOrders(owner)
-    .sort((a, b) => new Date(b.customerRatedAt) - new Date(a.customerRatedAt))
-    .slice(0, 200)
-    .map(o => ({
-      orderId: o.id,
-      stars: o.customerRating,
-      comment: o.customerComment || null,
-      ratedAt: o.customerRatedAt,
-      customerName: (findCustomer(owner, o.customerId) || {}).firstName || o.customerName || null
-    }));
-
-  return sendOk(res, { avgRating: rating.avg, ratingCount: rating.count, reviews });
-});
-
-authed('/api/toggle-customer-restriction', (payload, res, { userId }) => {
-  const { customerId, action } = payload;
-
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
-  const owner = ownerCtx.owner;
-
-  if (!customerId) return sendFail(res, 'Mijoz tanlanmagan.');
-  if (!Array.isArray(owner.cardOnlyOverrides)) owner.cardOnlyOverrides = [];
-
-  if (action === 'clear') {
-    if (!owner.cardOnlyOverrides.some(id => String(id) === String(customerId))) {
-      owner.cardOnlyOverrides.push(String(customerId));
-    }
-  } else if (action === 'restore') {
-    owner.cardOnlyOverrides = owner.cardOnlyOverrides.filter(id => String(id) !== String(customerId));
-  } else {
-    return sendFail(res, 'Noto\'g\'ri amal.');
-  }
-
-  saveOwners(owners);
-  return sendOk(res, { restricted: customerIsCardOnlyRestricted(owner, customerId) });
-});
-
-function buildZReport(owner, dateKey, branchId) {
-  const dayStart = tzDayStartFromKey(dateKey);
-  const dayEnd = new Date(dayStart.getTime() + 86400000);
-
-  const orders = (owner.orders || []).filter(o => {
-    const t = new Date(o.createdAt);
-    return t >= dayStart && t < dayEnd && matchesBranchFilter(o, branchId);
-  });
-  const expenses = (owner.expenses || []).filter(e => {
-    const t = new Date(e.createdAt);
-    return t >= dayStart && t < dayEnd && matchesBranchFilter(e, branchId);
-  });
-
-  const dostavkaOrders = orders.filter(o => o.orderType === 'dostavka' && o.paymentType === 'dostavka_orqali');
-  const kassaOrders = orders.filter(o => !(o.orderType === 'dostavka' && o.paymentType === 'dostavka_orqali'));
-  const kassaIncome = kassaOrders.reduce((s, o) => s + orderIncomeAmount(o), 0);
-  const dostavkaIncome = dostavkaOrders.reduce((s, o) => s + orderIncomeAmount(o), 0);
-  const income = kassaIncome + dostavkaIncome;
-
-  const paymentBreakdown = {};
-  for (const key of Object.keys(PAYMENT_TYPES)) paymentBreakdown[key] = 0;
-  for (const o of orders) {
-    const pt = Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, o.paymentType) ? o.paymentType : 'naqd';
-    paymentBreakdown[pt] = (paymentBreakdown[pt] || 0) + orderIncomeAmount(o);
-  }
-
-  const kassaBreakdown = {};
-  for (const key of Object.keys(PAYMENT_TYPES)) kassaBreakdown[key] = 0;
-  for (const o of kassaOrders) {
-    const pt = Object.prototype.hasOwnProperty.call(PAYMENT_TYPES, o.paymentType) ? o.paymentType : 'naqd';
-    kassaBreakdown[pt] = (kassaBreakdown[pt] || 0) + orderIncomeAmount(o);
-  }
-
-  const expenseByCategory = {};
-  for (const key of Object.keys(EXPENSE_CATEGORIES)) expenseByCategory[key] = 0;
-  for (const e of expenses) {
-    const cat = Object.prototype.hasOwnProperty.call(EXPENSE_CATEGORIES, e.category) ? e.category : 'boshqa';
-    expenseByCategory[cat] = (expenseByCategory[cat] || 0) + (e.amount || 0);
-  }
-  const expense = expenses.reduce((s, e) => s + (e.amount || 0), 0);
-
-  return {
-    date: dateKey,
-    income, kassaIncome, dostavkaIncome, orderCount: orders.length,
-    paymentBreakdown, expense, expenseByCategory, net: income - expense, kassaBreakdown
-  };
-}
-
-authed('/api/z-report-create', (payload, res, { userId }) => {
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
-  const owner = ownerCtx.owner;
-  if (!ownerCanUseFeature(owner, 'z-report')) return sendFeatureBlocked(res, 'z-report');
-
-  const branchId = payload.branchId ? (findBranch(owner, payload.branchId) ? payload.branchId : null) : null;
-  const dateKey = tzDateKey(new Date());
-  const built = buildZReport(owner, dateKey, branchId);
-
-  if (!owner.zReports) owner.zReports = [];
-  const existing = owner.zReports.find(z => z.date === dateKey && (z.branchId || null) === (branchId || null));
-  const report = Object.assign({
-    id: existing ? existing.id : crypto.randomBytes(4).toString('hex'),
-    branchId: branchId || null,
-    createdAt: new Date().toISOString(),
-    createdBy: userId
-  }, built);
-
-  if (existing) {
-    Object.assign(existing, report);
-  } else {
-    owner.zReports.unshift(report);
-  }
-  if (owner.zReports.length > 90) owner.zReports.length = 90;
-  saveOwners(owners);
-
-  return sendOk(res, { report, wasUpdate: !!existing });
-});
-
-authed('/api/z-report-list', (payload, res, { userId }) => {
-  const owners = pruneExpiredOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
-  const owner = ownerCtx.owner;
-
-  const branchId = Object.prototype.hasOwnProperty.call(payload, 'branchId') ? (payload.branchId || null) : undefined;
-  const reports = (owner.zReports || [])
-    .filter(z => matchesBranchFilter(z, branchId))
-    .slice().sort((a, b) => b.date.localeCompare(a.date)).slice(0, 30);
-  return sendOk(res, { reports, branches: owner.branches || [], centralBranchName: owner.centralBranchName || null });
-});
-
-const UZ_WEEKDAYS = ['Yakshanba', 'Dushanba', 'Seshanba', 'Chorshanba', 'Payshanba', 'Juma', 'Shanba'];
-
-function computeTopItems(owner, fromDate, limit) {
-  const orders = (owner.orders || []).filter(o => new Date(o.createdAt) >= fromDate);
-  const byId = new Map();
-  for (const o of orders) {
-    for (const it of (o.items || [])) {
-      const cur = byId.get(it.id) || { id: it.id, name: it.name, qty: 0, revenue: 0 };
-      cur.qty += it.qty;
-      cur.revenue += it.price * it.qty;
-      byId.set(it.id, cur);
-    }
-  }
-  return Array.from(byId.values()).sort((a, b) => b.qty - a.qty).slice(0, limit || 5);
-}
-
-function computePeakTimes(owner, fromDate) {
-  const orders = (owner.orders || []).filter(o => new Date(o.createdAt) >= fromDate);
-  const byHour = new Array(24).fill(0);
-  const byDay = new Array(7).fill(0);
-  for (const o of orders) {
-    const d = new Date(o.createdAt);
-    byHour[d.getHours()]++;
-    byDay[d.getDay()]++;
-  }
-  const hours = byHour.map((count, hour) => ({ hour, count })).sort((a, b) => b.count - a.count);
-  const days = byDay.map((count, day) => ({ day, dayLabel: UZ_WEEKDAYS[day], count })).sort((a, b) => b.count - a.count);
-  return { byHour, byDay, topHours: hours.filter(h => h.count > 0).slice(0, 3), topDays: days.filter(d => d.count > 0).slice(0, 3) };
-}
-
-function computeStockForecast(owner, branchId) {
-  const pool = resolveStockPool(owner, branchId || null);
-  if (!pool) return [];
-  const since = new Date(Date.now() - 7 * 86400000);
-  const usageById = new Map();
-  for (const m of (pool.stockMovements || [])) {
-    if (m.type !== 'chiqim') continue;
-    if (!m.note || !m.note.startsWith('Buyurtma:')) continue;
-    if (new Date(m.createdAt) < since) continue;
-    usageById.set(m.stockId, (usageById.get(m.stockId) || 0) + m.qty);
-  }
-  const forecast = [];
-  for (const item of (pool.stock || [])) {
-    const used7d = usageById.get(item.id) || 0;
-    if (used7d <= 0) continue;
-    const avgDaily = Math.round((used7d / 7) * 1000) / 1000;
-    const predictedNeed = Math.round(avgDaily * 1000) / 1000;
-
-    const daysLeft = avgDaily > 0 ? Math.round((item.qty / avgDaily) * 10) / 10 : null;
-    forecast.push({
-      stockId: item.id, name: item.name, unit: item.unit,
-      currentQty: item.qty, avgDailyUsage: avgDaily, predictedNeed,
-      shortage: item.qty < predictedNeed,
-      daysLeft, urgent: daysLeft !== null && daysLeft <= 3
-    });
-  }
-  forecast.sort((a, b) => {
-    const aLeft = a.daysLeft === null ? Infinity : a.daysLeft;
-    const bLeft = b.daysLeft === null ? Infinity : b.daysLeft;
-    return aLeft - bLeft;
-  });
-  return forecast;
-}
-
-function callAnthropicApi(systemPrompt, userText) {
-  return new Promise((resolve, reject) => {
-    if (!ANTHROPIC_API_KEY) return reject(new Error('ANTHROPIC_API_KEY sozlanmagan'));
-    const body = JSON.stringify({
-      model: AI_MODEL,
-      max_tokens: 500,
-      system: systemPrompt,
-      messages: [{ role: 'user', content: userText }]
-    });
-    const reqOptions = {
-      hostname: 'api.anthropic.com',
-      path: '/v1/messages',
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': ANTHROPIC_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'Content-Length': Buffer.byteLength(body)
-      }
-    };
-    const apiReq = https.request(reqOptions, apiRes => {
-      let data = '';
-      apiRes.on('data', chunk => { data += chunk; });
-      apiRes.on('end', () => {
+  function attachLogoPickerHandlers(idPrefix, setValue) {
+    const fileInput = document.getElementById(`${idPrefix}FileInput`);
+    const errEl = document.getElementById(`${idPrefix}Err`);
+    if (fileInput) {
+      fileInput.addEventListener('change', async () => {
+        const file = fileInput.files && fileInput.files[0];
+        if (!file) return;
+        setMsg(errEl, '');
         try {
-          const parsed = JSON.parse(data);
-          const text = (parsed.content || []).map(c => c.text || '').join('\n').trim();
-          if (!text) return reject(new Error('AI javob bo\'sh qaytdi'));
-          resolve(text);
-        } catch (e) { reject(e); }
+          const dataUrl = await readImageFileAsCompressedDataUrl(file, 400, 0.75);
+          setValue(dataUrl || '');
+          const preview = document.getElementById(`${idPrefix}Preview`);
+          if (preview && preview.tagName === 'IMG') {
+            preview.src = dataUrl;
+          } else if (preview) {
+            preview.outerHTML = `<img id="${idPrefix}Preview" class="logo-picker-preview" src="${dataUrl}">`;
+          }
+        } catch (e) {
+          setMsg(errEl, e.message || "Rasmni yuklab bo'lmadi.", 'err');
+        }
+        fileInput.value = '';
+      });
+    }
+    const removeBtn = document.getElementById(`${idPrefix}RemoveBtn`);
+    if (removeBtn) {
+      removeBtn.addEventListener('click', () => {
+        setValue('');
+        const preview = document.getElementById(`${idPrefix}Preview`);
+        if (preview) preview.outerHTML = `<div id="${idPrefix}Preview" class="logo-picker-preview logo-picker-preview-empty">${icon('restaurant', 'icon-md')}</div>`;
+        removeBtn.remove();
+      });
+    }
+  }
+
+  function formatUptime(sec) {
+    const d = Math.floor(sec / 86400);
+    const h = Math.floor((sec % 86400) / 3600);
+    const m = Math.floor((sec % 3600) / 60);
+    const parts = [];
+    if (d) parts.push(`${d} kun`);
+    if (h) parts.push(`${h} soat`);
+    parts.push(`${m} daqiqa`);
+    return parts.join(' ');
+  }
+
+  function systemStatusModalHtml(s) {
+    const row = (label, value) => `
+      <div class="profile-row"><b>${escapeHtml(label)}:</b> ${value}</div>
+    `;
+    return `
+      <div class="modal" style="max-width:380px; text-align:left;">
+        <h3>${icon('settings', 'icon-xs')} System status</h3>
+        ${row('Server ishlayapti', formatUptime(s.uptimeSeconds))}
+        ${row('Node versiyasi', escapeHtml(s.nodeVersion))}
+        ${row('Xotira (RSS)', `${s.memoryRssMb} MB`)}
+        ${row('Bot tokeni', s.botConfigured ? '✅ sozlangan' : '⚠️ sozlanmagan')}
+        ${row('PUBLIC_URL', s.publicUrlConfigured ? '✅ sozlangan' : '⚠️ sozlanmagan')}
+        <div class="kartochka" style="margin-top:10px;">
+          <h2 style="font-size:14px;">Do'kon egalari</h2>
+          ${row('Jami', String(s.owners.total))}
+          ${row('Faol', String(s.owners.active))}
+          ${row('Muddati o\'tgan', String(s.owners.expired))}
+        </div>
+        <div class="kartochka">
+          <h2 style="font-size:14px;">Faoliyat</h2>
+          ${row('Jami xodimlar', String(s.totalStaff))}
+          ${row('Jami buyurtmalar', String(s.totalOrders))}
+          ${row('Bugungi buyurtmalar', String(s.todayOrders))}
+          ${row('Bildirishnoma xatolari', String(s.notificationErrors))}
+        </div>
+        <div class="kartochka">
+          <h2 style="font-size:14px;">Webhook</h2>
+          ${row('Qabul qilingan', String(s.webhook.received))}
+          ${row('Xatoliklar', String(s.webhook.errors))}
+          ${row('Oxirgisi', s.webhook.lastAt ? timeAgo(s.webhook.lastAt) : '—')}
+        </div>
+        <div class="kartochka">
+          <h2 style="font-size:14px;">Ma'lumot fayllari</h2>
+          ${row('owners.json', `${s.dataFiles.owners.sizeKb} KB`)}
+          ${row('invites.json', `${s.dataFiles.invites.sizeKb} KB`)}
+          ${row('requests.json', `${s.dataFiles.requests.sizeKb} KB`)}
+          ${row('profiles.json', `${s.dataFiles.profiles.sizeKb} KB`)}
+        </div>
+        <div class="btn-row">
+          <button class="btn" id="systemStatusOkBtn">Yopish</button>
+        </div>
+      </div>
+    `;
+  }
+
+  async function loadAndShowSystemStatus() {
+    const overlay = openOverlay(`<div class="modal" style="max-width:380px;"><div class="bosh">Yuklanmoqda...</div></div>`);
+    const res = await apiPost('/api/system-status');
+    if (!res.ok) {
+      overlay.innerHTML = `
+        <div class="modal" style="max-width:380px;">
+          <div class="bosh">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>
+          <div class="btn-row"><button class="btn" id="systemStatusOkBtn">Yopish</button></div>
+        </div>
+      `;
+      document.getElementById('systemStatusOkBtn').onclick = () => overlay.remove();
+      return;
+    }
+    overlay.innerHTML = systemStatusModalHtml(res.status);
+    document.getElementById('systemStatusOkBtn').onclick = () => overlay.remove();
+  }
+
+  function tariffItemHtml(t) {
+    const enabledCount = t.features ? Object.values(t.features).filter(Boolean).length : 0;
+    return `
+      <div class="owner-item" data-tariff-id="${escapeHtml(t.id)}">
+        <div>
+          <div class="owner-id">${escapeHtml(t.name)}</div>
+          <div class="owner-username">${t.price ? cfFormatSum(t.price) + ' / oy' : 'Narx belgilanmagan'} · ${enabledCount} ta funksiya yoqilgan · Eslatma: ${t.reminderDays || 1} kun oldin</div>
+          <div class="owner-username">${icon('store', 'icon-xs icon-muted')} Filiallar: ${t.maxBranches ? t.maxBranches + ' tagacha' : 'Cheklanmagan'}</div>
+          <div class="owner-username">${icon('users', 'icon-xs icon-muted')} ${t.ownerCount || 0} ta do'kon</div>
+        </div>
+        <div class="btn-row" style="margin-top:0;">
+          <button class="btn ikkinchi" data-tariff-features="${escapeHtml(t.id)}" style="width:auto; min-height:36px; padding:6px 12px;">${icon('check-circle', 'icon-xs')}</button>
+          <button class="btn ikkinchi" data-tariff-edit="${escapeHtml(t.id)}" style="width:auto; min-height:36px; padding:6px 12px;">${icon('edit', 'icon-xs')}</button>
+          <button class="btn xavfli" data-tariff-remove="${escapeHtml(t.id)}" style="width:auto; min-height:36px; padding:6px 12px;">${icon('x', 'icon-xs')}</button>
+        </div>
+      </div>
+    `;
+  }
+
+  async function renderPaymentSettingsScreen(onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">To'lov sozlamalari</div>
+        <button class="btn ikkinchi" id="paySettingsBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="kartochka">
+          <h2>${icon('card', 'icon-xs')} To'lov rekvizitlari</h2>
+          <div class="bosh">Do'kon egalari "💳 Obuna" bo'limida tarif tanlaganda shu ma'lumotlarni ko'radi.</div>
+          <label class="field-label" style="margin-top:10px;">Karta raqami</label>
+          <input type="text" id="payCardNumberInput" placeholder="8600 **** **** ****">
+          <label class="field-label">Karta egasining F.I.Sh</label>
+          <input type="text" id="payCardHolderInput" placeholder="Masalan: ISMOILOV FAYZULLA">
+          <label class="field-label">Click raqami</label>
+          <input type="text" id="payClickNumberInput" placeholder="+998 90 000 00 00">
+          <label class="field-label">Payme raqami</label>
+          <input type="text" id="payPaymeNumberInput" placeholder="+998 90 000 00 00">
+          <button class="btn" id="paySettingsSaveBtn" style="margin-top:10px;">Saqlash</button>
+          <div class="xabar" id="paySettingsMsg"></div>
+        </div>
+      </div>
+    `);
+    document.getElementById('paySettingsBackBtn').addEventListener('click', () => onBack());
+
+    const msgEl = document.getElementById('paySettingsMsg');
+    const res = await apiPost('/api/admin-payment-requisites-get');
+    if (res.ok) {
+      document.getElementById('payCardNumberInput').value = res.requisites.cardNumber || '';
+      document.getElementById('payCardHolderInput').value = res.requisites.cardHolder || '';
+      document.getElementById('payClickNumberInput').value = res.requisites.clickNumber || '';
+      document.getElementById('payPaymeNumberInput').value = res.requisites.paymeNumber || '';
+    } else {
+      setMsg(msgEl, res.reason || 'Yuklab bo\'lmadi.', 'err');
+    }
+
+    document.getElementById('paySettingsSaveBtn').addEventListener('click', async () => {
+      const cardNumber = document.getElementById('payCardNumberInput').value.trim();
+      const cardHolder = document.getElementById('payCardHolderInput').value.trim();
+      const clickNumber = document.getElementById('payClickNumberInput').value.trim();
+      const paymeNumber = document.getElementById('payPaymeNumberInput').value.trim();
+      setMsg(msgEl, 'Saqlanmoqda...');
+      const saveRes = await apiPost('/api/admin-payment-requisites-set', {
+        cardNumber, cardHolder, clickNumber, paymeNumber
+      });
+      if (saveRes.ok) {
+        setMsg(msgEl, 'Saqlandi.', 'ok');
+      } else {
+        setMsg(msgEl, saveRes.reason || 'Xatolik yuz berdi.', 'err');
+      }
+    });
+  }
+
+  const BROADCAST_TARGET_LABELS = { all: 'Hammaga', customer: 'Mijozlar', owner: "Oshxona egalari", staff: 'Xizmatchilar (xodimlar)' };
+
+  function broadcastHistoryRowHtml(b) {
+    const dateLabel = new Date(b.sentAt).toLocaleString('uz-UZ');
+    return `
+      <div class="owner-item" style="align-items:flex-start;">
+        <div style="flex:1; min-width:0;">
+          <div class="owner-id">${escapeHtml(BROADCAST_TARGET_LABELS[b.targetType] || b.targetType)}${b.hadImage ? ' · 🖼' : ''}</div>
+          <div class="owner-username" style="white-space:pre-wrap;">${escapeHtml(b.text.length > 140 ? b.text.slice(0, 140) + '…' : b.text)}</div>
+          <div class="owner-username">${dateLabel} · ✅ ${b.deliveredCount} ${b.failedCount ? `· ❌ ${b.failedCount}` : ''} / ${b.totalTargets}</div>
+        </div>
+      </div>
+    `;
+  }
+
+  async function loadBroadcastHistoryAndRender() {
+    const listEl = document.getElementById('broadcastHistoryList');
+    if (!listEl) return;
+    const res = await apiPost('/api/broadcast-history');
+    if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, loadBroadcastHistoryAndRender); return; }
+    if (!res.ok || !res.broadcasts.length) {
+      listEl.innerHTML = `<div class="bosh">Hali e'lon yuborilmagan.</div>`;
+      return;
+    }
+    listEl.innerHTML = res.broadcasts.map(broadcastHistoryRowHtml).join('');
+  }
+
+  async function renderBroadcastScreen(onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">E'lon yuborish</div>
+        <button class="btn ikkinchi" id="broadcastBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="kartochka">
+          <h2>${icon('send', 'icon-xs')} Yangi e'lon</h2>
+          <div class="bosh">Xabar tanlangan toifadagi BARCHA foydalanuvchilarga (barcha oshxonalar bo'yicha) yuboriladi.</div>
+          <label class="field-label" style="margin-top:10px;">Qabul qiluvchi</label>
+          <select id="broadcastTargetInput">
+            <option value="all">Hammaga</option>
+            <option value="customer">Mijozlar</option>
+            <option value="owner">Oshxona egalari</option>
+            <option value="staff">Xizmatchilar (xodimlar)</option>
+          </select>
+          <label class="field-label">Xabar matni *</label>
+          <textarea id="broadcastTextInput" placeholder="E'lon matnini kiriting..." rows="4"></textarea>
+          <label class="field-label">Rasm (ixtiyoriy)</label>
+          <input type="file" id="broadcastImageFileInput" accept="image/*">
+          <div class="staff-hint" style="margin-top:4px;">Rasmni telefon galereyasidan tanlang, YOKI pastga havola qo'yishingiz mumkin</div>
+          <img id="broadcastImagePreview" class="logo-preview" style="display:none; width:120px; height:120px; margin-top:8px;">
+          <input type="text" id="broadcastImageInput" placeholder="https://..." style="margin-top:8px;">
+          <label class="field-label">Tugma matni (ixtiyoriy)</label>
+          <input type="text" id="broadcastBtnTextInput" placeholder="Masalan: Batafsil">
+          <label class="field-label">Tugma havolasi (ixtiyoriy, https://...)</label>
+          <input type="text" id="broadcastBtnUrlInput" placeholder="https://...">
+          <button class="btn" id="broadcastSendBtn" style="margin-top:10px;">Yuborish</button>
+          <div class="xabar" id="broadcastMsg"></div>
+        </div>
+        <div class="kartochka">
+          <h2>Yuborilganlar tarixi</h2>
+          <div class="owner-list" id="broadcastHistoryList"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+      </div>
+    `);
+    document.getElementById('broadcastBackBtn').addEventListener('click', () => onBack());
+
+    document.getElementById('broadcastImageFileInput').addEventListener('change', async (e) => {
+      const file = e.target.files && e.target.files[0];
+      const msgEl = document.getElementById('broadcastMsg');
+      const preview = document.getElementById('broadcastImagePreview');
+      if (!file) return;
+      try {
+        const dataUrl = await readImageFileAsCompressedDataUrl(file);
+        document.getElementById('broadcastImageInput').value = dataUrl || '';
+        preview.src = dataUrl;
+        preview.style.display = 'block';
+      } catch (err) {
+        setMsg(msgEl, err.message || 'Rasmni yuklab bo\'lmadi.', 'err');
+        e.target.value = '';
+      }
+    });
+
+    document.getElementById('broadcastImageInput').addEventListener('input', (e) => {
+      if (!e.target.value.startsWith('data:image/')) {
+        document.getElementById('broadcastImageFileInput').value = '';
+        document.getElementById('broadcastImagePreview').style.display = 'none';
+      }
+    });
+
+    document.getElementById('broadcastSendBtn').addEventListener('click', async () => {
+      const targetType = document.getElementById('broadcastTargetInput').value;
+      const text = document.getElementById('broadcastTextInput').value.trim();
+      const imageUrl = document.getElementById('broadcastImageInput').value.trim();
+      const buttonText = document.getElementById('broadcastBtnTextInput').value.trim();
+      const buttonUrl = document.getElementById('broadcastBtnUrlInput').value.trim();
+      const msgEl = document.getElementById('broadcastMsg');
+      if (!text) {
+        setMsg(msgEl, 'Xabar matnini kiriting.', 'err');
+        return;
+      }
+      const confirmWho = targetType === 'all' ? 'platformadagi BARCHA foydalanuvchilarga (mijoz, oshxona egasi va xizmatchilar)' : `${BROADCAST_TARGET_LABELS[targetType]} toifasidagi BARCHA foydalanuvchilarga`;
+      if (!confirm(`${confirmWho} shu xabarni yuborishni tasdiqlaysizmi?`)) return;
+
+      const btn = document.getElementById('broadcastSendBtn');
+      btn.disabled = true;
+      setMsg(msgEl, 'Yuborilmoqda... (bu bir necha soniya vaqt olishi mumkin)');
+      const res = await apiPost('/api/broadcast-send', { targetType, text, imageUrl, buttonText, buttonUrl });
+      btn.disabled = false;
+      if (res.ok) {
+        const r = res.result;
+        setMsg(msgEl, `Yuborildi: ✅ ${r.deliveredCount} ta yetdi${r.failedCount ? `, ❌ ${r.failedCount} ta yetmadi` : ''} (jami ${r.totalTargets}).`, 'ok');
+        document.getElementById('broadcastTextInput').value = '';
+        document.getElementById('broadcastImageInput').value = '';
+        document.getElementById('broadcastImageFileInput').value = '';
+        document.getElementById('broadcastImagePreview').style.display = 'none';
+        document.getElementById('broadcastBtnTextInput').value = '';
+        document.getElementById('broadcastBtnUrlInput').value = '';
+        loadBroadcastHistoryAndRender();
+      } else {
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+      }
+    });
+
+    loadBroadcastHistoryAndRender();
+  }
+
+  function trashRowHtml(t) {
+    return `
+      <div class="owner-item">
+        <div>
+          <div class="owner-id">${escapeHtml(t.restaurantName || t.ownerLabel)}</div>
+          <div class="owner-username">${escapeHtml(t.ownerLabel)} · ${t.daysLeft} kun qoldi
+            ${t.restoreStatus === 'pending' ? ' · 🕓 tiklash so\'ralgan' : ''}
+            ${t.restoreStatus === 'rejected' ? ' · ❌ so\'rov rad etilgan' : ''}
+          </div>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:6px; align-items:flex-end;">
+          <button class="row-action-btn brand" data-trash-restore="${escapeHtml(t.id)}">Tiklash</button>
+          <button class="row-action-btn danger" data-trash-purge="${escapeHtml(t.id)}">Butunlay o'chirish</button>
+        </div>
+      </div>
+    `;
+  }
+
+  async function renderTrashScreen(onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">${icon('trash', 'icon-sm')} Savatcha</div>
+        <button class="btn ikkinchi" id="trashBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="bosh" style="margin-bottom:10px;">O'chirilgan do'kon egalari shu yerda 3 kun saqlanadi (menyu, xodimlar, sozlamalari bilan birga). 3 kundan keyin avtomatik, butunlay o'chiriladi.</div>
+        <div class="kartochka">
+          <h2>${icon('users', 'icon-xs')} Savatchadagilar</h2>
+          <div class="owner-list" id="trashList"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+        <div class="kartochka">
+          <h2>${icon('clipboard', 'icon-xs')} Loglar</h2>
+          <div id="trashLogList"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+      </div>
+    `);
+    document.getElementById('trashBackBtn').addEventListener('click', () => onBack());
+    await loadTrashListAndRender(onBack);
+    await loadTrashLogAndRender();
+  }
+
+  async function loadTrashListAndRender(onBack) {
+    const listEl = document.getElementById('trashList');
+    if (!listEl) return;
+    const res = await apiPost('/api/trash-list');
+    if (!res.ok) { listEl.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`; return; }
+    if (!res.trash.length) { listEl.innerHTML = `<div class="bosh">Savatcha bo'sh.</div>`; return; }
+    listEl.innerHTML = res.trash.map(trashRowHtml).join('');
+
+    listEl.querySelectorAll('[data-trash-restore]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!confirm("Bu do'kon egasini tiklaysizmi? Barcha ma'lumotlari qaytariladi.")) return;
+        btn.disabled = true;
+        const r = await apiPost('/api/trash-restore', { trashId: btn.getAttribute('data-trash-restore') });
+        if (!r.ok) { alert(r.reason || 'Xatolik yuz berdi.'); btn.disabled = false; return; }
+        await loadTrashListAndRender(onBack);
+        await loadTrashLogAndRender();
       });
     });
-    apiReq.on('error', reject);
-    apiReq.write(body);
-    apiReq.end();
-  });
-}
-
-function ruleBasedAiAnswer(question, ctx) {
-  const q = String(question || '').toLowerCase();
-
-  if (/bugun/.test(q) && /foyda|savdo|kirim/.test(q)) {
-    return `Bugungi kirim: ${fmtNum(ctx.cashflow.today.income)} so'm, xarajat: ${fmtNum(ctx.cashflow.today.expense)} so'm, sof foyda: ${fmtNum(ctx.cashflow.today.net)} so'm (${ctx.cashflow.today.orderCount} ta buyurtma).`;
-  }
-  if (/hafta/.test(q) && /foyda|savdo|kirim/.test(q)) {
-    return `Shu hafta kirim: ${fmtNum(ctx.cashflow.week.income)} so'm, xarajat: ${fmtNum(ctx.cashflow.week.expense)} so'm, sof foyda: ${fmtNum(ctx.cashflow.week.net)} so'm (${ctx.cashflow.week.orderCount} ta buyurtma).`;
-  }
-  if (/oy/.test(q) && /foyda|savdo|kirim/.test(q)) {
-    return `Shu oy kirim: ${fmtNum(ctx.cashflow.month.income)} so'm, xarajat: ${fmtNum(ctx.cashflow.month.expense)} so'm, sof foyda: ${fmtNum(ctx.cashflow.month.net)} so'm (${ctx.cashflow.month.orderCount} ta buyurtma).`;
-  }
-  if (/top|eng ko'p sotilgan|mashhur|qaysi taom/.test(q)) {
-    if (!ctx.topItems.length) return 'Hozircha (so\'nggi 30 kunda) buyurtma tarixi yo\'q.';
-    const list = ctx.topItems.slice(0, 3).map((it, i) => `${i + 1}. ${it.name} — ${it.qty} dona (${fmtNum(it.revenue)} so'm)`).join('\n');
-    return `Eng ko'p sotilgan taomlar (so'nggi 30 kun):\n${list}`;
-  }
-  if (/pik|band vaqt|qaysi soat|eng gavjum/.test(q)) {
-    if (!ctx.peak.topHours.length) return 'Hozircha buyurtma tarixi yo\'q.';
-    const h = ctx.peak.topHours[0];
-    return `Eng band soat: ${h.hour}:00 atrofida (${h.count} ta buyurtma, so'nggi 30 kun). Eng band kun: ${ctx.peak.topDays[0] ? ctx.peak.topDays[0].dayLabel : 'ma\'lumot yo\'q'}.`;
-  }
-  if (/kam qolgan|tugab qolayotgan|sklad|zaxira/.test(q)) {
-    const low = (ctx.forecast || []).filter(f => f.shortage);
-    if (!low.length) return 'Hozircha ertangi kunga yetarli zaxira bor ko\'rinadi (oxirgi 7 kunlik iste\'mol bo\'yicha).';
-    const list = low.slice(0, 5).map(f => `• ${f.name}: bor ${fmtNum(f.currentQty)} ${f.unit}, kunlik o'rtacha sarf ${fmtNum(f.avgDailyUsage)} ${f.unit}`).join('\n');
-    return `Ertaga yetishmasligi mumkin bo'lgan mahsulotlar:\n${list}`;
-  }
-
-  const topLine = ctx.topItems[0] ? `Eng ko'p sotilgan: ${ctx.topItems[0].name}.` : '';
-  return `Aniq javob topa olmadim, lekin umumiy holat shunday: bugungi sof foyda ${fmtNum(ctx.cashflow.today.net)} so'm, shu hafta ${fmtNum(ctx.cashflow.week.net)} so'm. ${topLine} Aniqroq javob uchun "bugun foyda qancha", "eng ko'p sotilgan taom", "pik vaqt qachon" yoki "sklad kam qolganmi" kabi savol bering.`;
-}
-
-authed('/api/ai-analytics', (payload, res, { userId }) => {
-  const { period, branchId } = payload;
-
-  const owners = pruneExpiredOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
-  const owner = ownerCtx.owner;
-  if (!ownerCanUseFeature(owner, 'ai-analytics')) return sendFeatureBlocked(res, 'ai-analytics');
-
-  const fromDate = resolvePeriodStart(period || 'week');
-  const topItems = computeTopItems(owner, fromDate, 8);
-  const peak = computePeakTimes(owner, fromDate);
-  const forecast = computeStockForecast(owner, branchId || null);
-
-  return sendOk(res, {
-    period: period || 'week',
-    topItems,
-    peakHours: peak.byHour,
-    peakDays: peak.byDay,
-    topHours: peak.topHours,
-    topDays: peak.topDays,
-    forecast
-  });
-});
-
-authed('/api/daily-report-preview', (payload, res, { userId }) => {
-  const owners = pruneExpiredOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
-  const owner = ownerCtx.owner;
-  if (!ownerCanUseFeature(owner, 'z-report')) return sendFeatureBlocked(res, 'z-report');
-
-  const yesterdayKey = aiDirDateKey(new Date(Date.now() - 86400000));
-  return sendOk(res, {
-    text: buildDailyReportText(owner, yesterdayKey),
-    enabled: owner.dailyReportEnabled !== false,
-    sentToday: owner.dailyReportLastSent === yesterdayKey,
-    hour: AI_DIRECTOR_HOUR
-  });
-});
-
-authed('/api/daily-report-send-now', (payload, res, { userId }) => {
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
-  const owner = ownerCtx.owner;
-  if (!ownerCanUseFeature(owner, 'z-report')) return sendFeatureBlocked(res, 'z-report');
-
-  sendDailyReportDigest(owner, true).then(() => {
-    saveOwners(owners);
-    sendOk(res);
-  }).catch(() => sendFail(res, 'Yuborishda xatolik yuz berdi.'));
-});
-
-authed('/api/daily-report-toggle', (payload, res, { userId }) => {
-  const { enabled } = payload;
-
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
-  const owner = ownerCtx.owner;
-  if (!ownerCanUseFeature(owner, 'z-report')) return sendFeatureBlocked(res, 'z-report');
-
-  owner.dailyReportEnabled = !!enabled;
-  saveOwners(owners);
-  return sendOk(res, { enabled: owner.dailyReportEnabled });
-});
-
-authed('/api/ai-director-preview', (payload, res, { userId }) => {
-  const owners = pruneExpiredOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
-  const owner = ownerCtx.owner;
-  if (!ownerCanUseFeature(owner, 'ai-director')) return sendFeatureBlocked(res, 'ai-director');
-
-  return sendOk(res, {
-    text: buildAiDirectorText(owner),
-    enabled: owner.aiDirectorEnabled !== false,
-    sentToday: owner.aiDirectorLastSent === aiDirDateKey(new Date()),
-    hour: AI_DIRECTOR_HOUR
-  });
-});
-
-authed('/api/ai-director-send-now', (payload, res, { userId }) => {
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
-  const owner = ownerCtx.owner;
-  if (!ownerCanUseFeature(owner, 'ai-director')) return sendFeatureBlocked(res, 'ai-director');
-
-  sendAiDirectorDigest(owner, true).then(() => {
-    saveOwners(owners);
-    sendOk(res);
-  }).catch(() => sendFail(res, 'Yuborishda xatolik yuz berdi.'));
-});
-
-authed('/api/ai-director-toggle', (payload, res, { userId }) => {
-  const { enabled } = payload;
-
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
-  const owner = ownerCtx.owner;
-  if (!ownerCanUseFeature(owner, 'ai-director')) return sendFeatureBlocked(res, 'ai-director');
-
-  owner.aiDirectorEnabled = !!enabled;
-  saveOwners(owners);
-  return sendOk(res, { enabled: owner.aiDirectorEnabled });
-});
-
-authed('/api/ai-director-weekly-preview', (payload, res, { userId }) => {
-  const owners = pruneExpiredOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
-  const owner = ownerCtx.owner;
-  if (!ownerCanUseFeature(owner, 'ai-director')) return sendFeatureBlocked(res, 'ai-director');
-
-  return sendOk(res, {
-    text: buildAiWeeklyDirectorText(owner),
-    enabled: owner.aiWeeklyEnabled !== false,
-    sentThisWeek: owner.aiWeeklyLastSent === aiDirWeekKey(new Date()),
-    weekday: AI_DIRECTOR_WEEKLY_DAY,
-    hour: AI_DIRECTOR_HOUR
-  });
-});
-
-authed('/api/ai-director-weekly-send-now', (payload, res, { userId }) => {
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
-  const owner = ownerCtx.owner;
-  if (!ownerCanUseFeature(owner, 'ai-director')) return sendFeatureBlocked(res, 'ai-director');
-
-  sendAiWeeklyDirectorDigest(owner, true).then(() => {
-    saveOwners(owners);
-    sendOk(res);
-  }).catch(() => sendFail(res, 'Yuborishda xatolik yuz berdi.'));
-});
-
-authed('/api/ai-director-weekly-toggle', (payload, res, { userId }) => {
-  const { enabled } = payload;
-
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
-  const owner = ownerCtx.owner;
-  if (!ownerCanUseFeature(owner, 'ai-director')) return sendFeatureBlocked(res, 'ai-director');
-
-  owner.aiWeeklyEnabled = !!enabled;
-  saveOwners(owners);
-  return sendOk(res, { enabled: owner.aiWeeklyEnabled });
-});
-
-authed('/api/ai-ask', async (payload, res, { userId }) => {
-  const { question } = payload;
-
-  const owners = pruneExpiredOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
-  const owner = ownerCtx.owner;
-  if (!ownerCanUseFeature(owner, 'ai-analytics')) return sendFeatureBlocked(res, 'ai-analytics');
-
-  const qTrim = String(question || '').trim();
-  if (!qTrim) return sendFail(res, 'Savolingizni kiriting.');
-  if (qTrim.length > 300) return sendFail(res, 'Savol juda uzun (300 belgigacha).');
-
-  const monthAgo = new Date(Date.now() - 30 * 86400000);
-  const ctx = {
-    cashflow: computeCashflow(owner),
-    topItems: computeTopItems(owner, monthAgo, 10),
-    peak: computePeakTimes(owner, monthAgo),
-    forecast: computeStockForecast(owner, null)
-  };
-
-  if (!ANTHROPIC_API_KEY) {
-    return sendOk(res, { answer: ruleBasedAiAnswer(qTrim, ctx), source: 'qoida' });
-  }
-
-  const systemPrompt = 'Sen oshxona (restoran) egasiga o\'zbek tilida yordam beruvchi qisqa AI tahlilchisan. ' +
-    'Faqat berilgan JSON ma\'lumotlar asosida javob ber, o\'ylab topma. 2-4 gaplik, aniq raqamlar bilan qisqa javob yoz.\n' +
-    'Ma\'lumotlar (JSON):\n' + JSON.stringify(ctx);
-
-  try {
-    const answer = await callAnthropicApi(systemPrompt, qTrim);
-    return sendOk(res, { answer, source: 'ai' });
-  } catch (e) {
-    return sendOk(res, { answer: ruleBasedAiAnswer(qTrim, ctx), source: 'qoida' });
-  }
-});
-
-authed('/api/staff-activity-log', (payload, res, { userId }) => {
-  const { staffId, limit } = payload;
-
-  const owners = pruneExpiredOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
-  const owner = ownerCtx.owner;
-
-  const staffById = new Map((owner.staff || []).map(s => [String(s.id), s]));
-  let log = owner.staffActionLog || [];
-  if (staffId) log = log.filter(e => String(e.userId) === String(staffId));
-
-  const lim = Math.min(200, Math.max(1, parseInt(limit, 10) || 50));
-  const entries = log.slice(0, lim).map(e => {
-    const isOwnerEntry = String(e.userId) === String(owner.id);
-    const staff = staffById.get(String(e.userId));
-    return Object.assign({}, e, {
-      displayName: isOwnerEntry ? 'Egasi' : (staff ? staffDisplayName(staff) : `ID: ${e.userId}`),
-      roleLabel: isOwnerEntry ? 'Egasi' : (STAFF_ROLES[e.role] || e.role)
+    listEl.querySelectorAll('[data-trash-purge]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!confirm("DIQQAT: bu do'kon egasi BUTUNLAY, qaytarib bo'lmaydigan tarzda o'chiriladi. Davom etasizmi?")) return;
+        btn.disabled = true;
+        const r = await apiPost('/api/trash-purge-now', { trashId: btn.getAttribute('data-trash-purge') });
+        if (!r.ok) { alert(r.reason || 'Xatolik yuz berdi.'); btn.disabled = false; return; }
+        await loadTrashListAndRender(onBack);
+        await loadTrashLogAndRender();
+      });
     });
-  });
-
-  return sendOk(res, { entries, staff: owner.staff || [] });
-});
-
-authed('/api/notification-error-log', (payload, res, { userId }) => {
-  const owners = pruneExpiredOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
-  const owner = ownerCtx.owner;
-  if (!ownerCanUseFeature(owner, 'notification-log')) return sendFeatureBlocked(res, 'notification-log');
-
-  return sendOk(res, { entries: owner.notificationErrors || [] });
-});
-
-authed('/api/notification-error-log-clear', (payload, res, { userId }) => {
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
-  const owner = ownerCtx.owner;
-  if (!ownerCanUseFeature(owner, 'notification-log')) return sendFeatureBlocked(res, 'notification-log');
-
-  owner.notificationErrors = [];
-  saveOwners(owners);
-  return sendOk(res);
-});
-
-authed('/api/notification-prefs-get', (payload, res, { userId }) => {
-  const owners = pruneExpiredOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
-  const owner = ownerCtx.owner;
-
-  const prefs = {};
-  for (const key of Object.keys(NOTIFICATION_CATEGORIES)) {
-    prefs[key] = !isNotificationCategoryMuted(owner, key);
   }
-  return sendOk(res, {
-    prefs,
-    categories: Object.entries(NOTIFICATION_CATEGORIES).map(([key, label]) => ({ key, label }))
-  });
-});
 
-authed('/api/notification-prefs-save', (payload, res, { userId }) => {
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
-  const owner = ownerCtx.owner;
-
-  const incoming = payload.prefs && typeof payload.prefs === 'object' ? payload.prefs : {};
-  if (!owner.notificationPrefs) owner.notificationPrefs = {};
-  for (const key of Object.keys(NOTIFICATION_CATEGORIES)) {
-    if (key in incoming) owner.notificationPrefs[key] = !!incoming[key];
-  }
-  saveOwners(owners);
-
-  const prefs = {};
-  for (const key of Object.keys(NOTIFICATION_CATEGORIES)) {
-    prefs[key] = !isNotificationCategoryMuted(owner, key);
-  }
-  return sendOk(res, { prefs });
-});
-
-authed('/api/owner-payment-card-get', (payload, res, { userId }) => {
-  const owners = pruneExpiredOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
-  const owner = ownerCtx.owner;
-
-  return sendOk(res, { card: owner.customerPaymentCard || { cardNumber: '', cardHolder: '' } });
-});
-
-authed('/api/owner-payment-card-set', (payload, res, { userId }) => {
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
-  const owner = ownerCtx.owner;
-
-  const cardNumber = String(payload.cardNumber || '').trim().slice(0, 40);
-  const cardHolder = String(payload.cardHolder || '').trim().slice(0, 80);
-  owner.customerPaymentCard = { cardNumber, cardHolder };
-  saveOwners(owners);
-
-  return sendOk(res, { card: owner.customerPaymentCard });
-});
-
-authed('/api/staff-performance-report', (payload, res, { userId }) => {
-  const { period } = payload;
-
-  const owners = pruneExpiredOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
-  const owner = ownerCtx.owner;
-  if (!ownerCanUseFeature(owner, 'staff-performance')) return sendFeatureBlocked(res, 'staff-performance');
-
-  const fromDate = resolvePeriodStart(period || 'month');
-  const log = (owner.staffActionLog || []).filter(e => new Date(e.createdAt) >= fromDate);
-
-  const report = (owner.staff || []).map(staff => {
-    const mine = log.filter(e => String(e.userId) === String(staff.id));
-    const actionCount = mine.length;
-    const errorCount = mine.reduce((sum, e) => sum + (e.errorCount || 0), 0);
-    const lastActiveAt = mine.length ? mine.reduce((max, e) => e.createdAt > max ? e.createdAt : max, mine[0].createdAt) : null;
-    return {
-      id: staff.id,
-      username: staff.username || null,
-      fullName: staffDisplayName(staff),
-      role: staff.role,
-      roles: normalizeStaffRoles(staff),
-      roleLabel: rolesLabel(normalizeStaffRoles(staff)),
-      actionCount, errorCount, lastActiveAt,
-      score: actionCount - errorCount * 2
+  async function loadTrashLogAndRender() {
+    const listEl = document.getElementById('trashLogList');
+    if (!listEl) return;
+    const res = await apiPost('/api/trash-log');
+    if (!res.ok) { listEl.innerHTML = `<div class="bosh">Yuklab bo'lmadi.</div>`; return; }
+    if (!res.log.length) { listEl.innerHTML = `<div class="bosh">Hali loglar yo'q.</div>`; return; }
+    const actionLabels = {
+      trashed: '🗑 Savatchaga ko\'chirildi',
+      restore_requested: '🔄 Tiklash so\'ralgan',
+      restored: '✅ Tiklandi',
+      restore_rejected: '❌ Tiklash rad etildi',
+      purged: '⛔ Butunlay o\'chirildi'
     };
-  });
-
-  report.sort((a, b) => b.score - a.score);
-  if (report.length && report[0].actionCount > 0) report[0].isTop = true;
-
-  return sendOk(res, { report, period: period || 'month' });
-});
-
-authed('/api/my-profile', (payload, res, { userId }) => {
-  if (isAdminId(userId)) return sendFail(res, 'Admin uchun profil mavjud emas');
-
-  const owners = pruneExpiredOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q yoki muddati tugagan');
-  const owner = ownerCtx.owner;
-
-  let tariffInfo = null;
-  if (owner.tariffId) {
-    const tariff = loadTariffs().find(t => t.id === owner.tariffId);
-    if (tariff) tariffInfo = { id: tariff.id, name: tariff.name };
+    listEl.innerHTML = res.log.map(l => `
+      <div class="owner-item">
+        <div>
+          <div class="owner-id">${escapeHtml(actionLabels[l.action] || l.action)}</div>
+          <div class="owner-username">${escapeHtml(l.ownerLabel || l.ownerId || '—')} · ${new Date(l.at).toLocaleString('uz-UZ')}</div>
+        </div>
+      </div>
+    `).join('');
   }
 
-  const profileOut = owner.profile ? Object.assign({}, owner.profile, { isSuperAdmin: userId === String(ADMIN_ID) }) : null;
-  return sendOk(res, { profile: profileOut, tariff: tariffInfo });
-});
-
-authed('/api/super-admin-reset-reports', (payload, res, { userId }) => {
-  if (userId !== String(ADMIN_ID)) {
-    return sendFail(res, 'Bu amal faqat super adminga ruxsat etilgan.');
-  }
-
-  const owners = loadOwners();
-  const owner = findOwner(owners, userId);
-  if (!owner) return sendFail(res, 'Owner topilmadi.');
-
-  const safetyFile = savePreRestoreSafetySnapshot(userId);
-
-  owner.orders = [];
-  owner.expenses = [];
-  owner.zReports = [];
-  saveOwners(owners);
-
-  return sendOk(res, { safetyFile });
-});
-
-authed('/api/save-profile', (payload, res, { userId }) => {
-  const { name, address, phone, workHours, logoUrl, brandColor } = payload;
-
-  if (isAdminId(userId)) return sendFail(res, 'Admin uchun profil mavjud emas');
-
-  const owners = pruneExpiredOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q yoki muddati tugagan');
-  const owner = ownerCtx.owner;
-
-  const nameTrim = String(name || '').trim();
-  const addressTrim = String(address || '').trim();
-  const phoneTrim = String(phone || '').trim();
-  const workHoursTrim = String(workHours || '').trim();
-  const logoTrim = String(logoUrl || '').trim();
-  const brandColorTrim = String(brandColor || '').trim();
-
-  if (!nameTrim) return sendFail(res, 'Oshxona nomini kiriting.');
-  if (!addressTrim) return sendFail(res, 'Manzilni kiriting.');
-  if (!phoneTrim || !isPlausiblePhone(phoneTrim)) {
-    return sendFail(res, 'Telefon raqamini O\'zbekiston formatida kiriting (masalan: +998901234567).');
-  }
-  // Ish vaqti noto'g'ri formatda kiritilsa, oldin jim tarzda standart
-  // (10:00-03:00) vaqtga tushib qolar edi va owner buni sezmas edi.
-  // Endi bunday holatda aniq xatolik qaytariladi.
-  if (workHoursTrim && !parseWorkHoursRange(workHoursTrim)) {
-    return sendFail(res, 'Ish vaqti formati noto\'g\'ri. Masalan: 09:00 - 23:00 (yoki "9:00 dan 23:00 gacha").');
-  }
-  if (logoTrim && !isValidImageValue(logoTrim)) {
-    return sendFail(res, 'Logotip rasmi noto\'g\'ri yoki hajmi juda katta. Boshqa rasm tanlang.');
-  }
-  if (brandColorTrim && !/^#[0-9A-Fa-f]{6}$/.test(brandColorTrim)) {
-    return sendFail(res, 'Brend rangi noto\'g\'ri formatda (masalan #1E4FD8).');
-  }
-
-  if (!ownerCanUseFeature(owner, 'restaurant-brand')) {
-    const existingLogo = (owner.profile && owner.profile.logoUrl) || '';
-    const existingBrandColor = (owner.profile && owner.profile.brandColor) || '';
-    if (logoTrim !== existingLogo || brandColorTrim !== existingBrandColor) {
-      return sendFeatureBlocked(res, 'restaurant-brand');
-    }
-  }
-
-  const owners2 = loadOwners();
-  const target = findOwner(owners2, userId);
-  const wasCompleted = !!(target.profile && target.profile.completedAt);
-  target.profile = {
-    name: nameTrim,
-    address: addressTrim,
-    phone: phoneTrim,
-    workHours: workHoursTrim || null,
-    logoUrl: logoTrim || null,
-    brandColor: brandColorTrim || null,
-    completedAt: wasCompleted ? target.profile.completedAt : new Date().toISOString(),
-    updatedAt: new Date().toISOString()
+  const BACKUP_SECTION_LABELS = {
+    owners: "Do'kon egalari", admins: 'Adminlar', invites: 'Taklif havolalari',
+    requests: "So'rovlar", profiles: 'Profillar', tariffs: 'Tariflar',
+    payments: "To'lovlar", archived_orders: 'Arxivlangan buyurtmalar',
+    subscription_plans: 'Obuna rejalari', settings: 'Sozlamalar',
+    broadcasts: "E'lonlar tarixi", trash: 'Savatcha', trash_log: 'Savatcha loglari',
+    awaiting: 'Kutilayotgan amallar'
   };
-  saveOwners(owners2);
 
-  return sendOk(res, { profile: target.profile });
-});
-
-authed('/api/feature-list', (payload, res, { userId }) => {
-  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin ko\'ra oladi');
-
-  return sendOk(res, { groups: getFeatureCatalogGrouped() });
-});
-
-authed('/api/admin-payment-requisites-get', (payload, res, { userId }) => {
-  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin ko\'ra oladi');
-
-  return sendOk(res, { requisites: loadPaymentRequisites() });
-});
-
-authed('/api/admin-payment-requisites-set', (payload, res, { userId }) => {
-  const { cardNumber, cardHolder, clickNumber, paymeNumber } = payload;
-  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin o\'zgartira oladi');
-
-  const updated = savePaymentRequisites({
-    cardNumber: String(cardNumber || '').trim() || DEFAULT_PAYMENT_REQUISITES.cardNumber,
-    cardHolder: String(cardHolder || '').trim() || DEFAULT_PAYMENT_REQUISITES.cardHolder,
-    clickNumber: String(clickNumber || '').trim() || DEFAULT_PAYMENT_REQUISITES.clickNumber,
-    paymeNumber: String(paymeNumber || '').trim() || DEFAULT_PAYMENT_REQUISITES.paymeNumber
-  });
-
-  return sendOk(res, { requisites: updated });
-});
-
-authed('/api/tariff-list', (payload, res, { userId }) => {
-  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin ko\'ra oladi');
-
-  const owners = loadOwners();
-  const tariffs = loadTariffs().slice().sort((a, b) => (a.order || 0) - (b.order || 0))
-    .map(t => ({ ...t, ownerCount: owners.filter(o => o.tariffId === t.id).length }));
-  return sendOk(res, { tariffs });
-});
-
-authed('/api/tariff-add', (payload, res, { userId }) => {
-  const { name, price, maxBranches } = payload;
-  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin qo\'sha oladi');
-
-  const nameTrim = String(name || '').trim();
-  if (!nameTrim) return sendFail(res, 'Tarif nomini kiriting.');
-
-  let priceVal = 0;
-  if (price !== undefined && price !== null && String(price).trim() !== '') {
-    priceVal = Number(price);
-    if (!Number.isFinite(priceVal) || priceVal < 0) return sendFail(res, 'Narx 0 yoki musbat son bo\'lishi kerak.');
+  function backupCountsHtml(counts) {
+    if (!counts) return '';
+    return `
+      <div class="owner-list" style="margin-top:8px;">
+        ${Object.keys(counts).map(k => `
+          <div class="owner-item" style="padding:8px 10px;">
+            <div class="owner-id" style="font-size:14px;">${escapeHtml(BACKUP_SECTION_LABELS[k] || k)}</div>
+            <div class="owner-username">${counts[k]} ta</div>
+          </div>
+        `).join('')}
+      </div>
+    `;
   }
 
-  // Filiallar soni (ixtiyoriy) — bo'sh/0 qoldirilsa cheklanmagan.
-  let maxBranchesVal = null;
-  if (maxBranches !== undefined && maxBranches !== null && String(maxBranches).trim() !== '') {
-    const v = parseInt(maxBranches, 10);
-    if (!Number.isInteger(v) || v <= 0) {
-      return sendFail(res, 'Filiallar soni musbat butun son bo\'lishi kerak (yoki cheklanmagan uchun bo\'sh qoldiring).');
-    }
-    maxBranchesVal = v;
-  }
+  async function renderBackupScreen(onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">${icon('download', 'icon-sm')} Zaxira (Backup)</div>
+        <button class="btn ikkinchi" id="backupBackBtn" style="margin-bottom:12px;">← Orqaga</button>
 
-  const tariffs = loadTariffs();
-  if (tariffs.some(t => t.name.toLowerCase() === nameTrim.toLowerCase())) {
-    return sendFail(res, 'Shu nomdagi tarif allaqachon mavjud.');
-  }
-  const tariff = {
-    id: crypto.randomBytes(4).toString('hex'),
-    name: nameTrim,
-    order: tariffs.length,
-    price: priceVal,
-    maxBranches: maxBranchesVal,
-    reminderDays: 1,
-    features: {},
-    createdAt: new Date().toISOString()
-  };
-  tariffs.push(tariff);
-  saveTariffs(tariffs);
+        <div class="kartochka">
+          <h2>${icon('download', 'icon-xs')} Zaxira nusxa yuklab olish</h2>
+          <div class="bosh" style="margin-bottom:10px;">Butun baza (barcha oshxona egalari, to'lovlar, sozlamalar va h.k.) bitta JSON faylga jamlanib, telefoningizga yuklab olinadi. Bu fayl kelajakda bazani tiklash uchun ishlatiladi.</div>
+          <button class="btn" id="backupExportBtn">${icon('download', 'icon-xs')} Yuklab olish</button>
+          <div class="xabar" id="backupExportMsg"></div>
+        </div>
 
-  return sendOk(res, { tariff });
-});
+        <div class="kartochka">
+          <h2>${icon('upload', 'icon-xs')} Bazani zaxiradan tiklash</h2>
+          <div class="bosh" style="margin-bottom:10px; color: var(--danger, #e53e3e);">⚠️ DIQQAT: bu amal joriy bazadagi ma'lumotlarni tanlangan zaxiradagi ma'lumotlar bilan ALMASHTIRADI. Tiklashdan oldin joriy holat avtomatik saqlab qo'yiladi, lekin baribir ehtiyot bo'ling.</div>
+          <input type="file" id="backupFileInput" accept="application/json,.json" style="margin-bottom:10px;">
+          <div id="backupPreviewArea"></div>
+          <div class="xabar" id="backupImportMsg"></div>
+        </div>
+      </div>
+    `);
+    document.getElementById('backupBackBtn').addEventListener('click', () => onBack());
 
-authed('/api/tariff-rename', (payload, res, { userId }) => {
-  const { id, name, price, reminderDays, maxBranches } = payload;
-  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin o\'zgartira oladi');
-
-  const nameTrim = String(name || '').trim();
-  if (!nameTrim) return sendFail(res, 'Tarif nomini kiriting.');
-
-  const tariffs = loadTariffs();
-  const tariff = tariffs.find(t => t.id === id);
-  if (!tariff) return sendFail(res, 'Tarif topilmadi.');
-  if (tariffs.some(t => t.id !== id && t.name.toLowerCase() === nameTrim.toLowerCase())) {
-    return sendFail(res, 'Shu nomdagi tarif allaqachon mavjud.');
-  }
-  if (price !== undefined && price !== null && String(price).trim() !== '') {
-    const priceVal = Number(price);
-    if (!Number.isFinite(priceVal) || priceVal < 0) return sendFail(res, 'Narx 0 yoki musbat son bo\'lishi kerak.');
-    tariff.price = priceVal;
-  }
-
-  if (reminderDays !== undefined && reminderDays !== null && String(reminderDays).trim() !== '') {
-    const reminderVal = parseInt(reminderDays, 10);
-    if (!Number.isInteger(reminderVal) || reminderVal <= 0) {
-      return sendFail(res, 'Eslatma kunlari musbat butun son bo\'lishi kerak.');
-    }
-    tariff.reminderDays = reminderVal;
-  }
-  // Filiallar soni — bo'sh string yuborilsa cheklovni OLIB TASHLAYDI
-  // (cheklanmagan qiladi); maydon umuman yuborilmasa (undefined),
-  // eski qiymat tegilmay qoladi.
-  if (maxBranches !== undefined) {
-    if (maxBranches === null || String(maxBranches).trim() === '') {
-      tariff.maxBranches = null;
-    } else {
-      const v = parseInt(maxBranches, 10);
-      if (!Number.isInteger(v) || v <= 0) {
-        return sendFail(res, 'Filiallar soni musbat butun son bo\'lishi kerak (yoki cheklanmagan uchun bo\'sh qoldiring).');
+    document.getElementById('backupExportBtn').addEventListener('click', async () => {
+      const btn = document.getElementById('backupExportBtn');
+      const msgEl = document.getElementById('backupExportMsg');
+      btn.disabled = true;
+      setMsg(msgEl, '');
+      const res = await apiPost('/api/backup-export');
+      btn.disabled = false;
+      if (!res.ok) {
+        setMsg(msgEl, res.reason || 'Zaxira tayyorlanmadi. Qayta urinib ko\'ring.', 'err');
+        return;
       }
-      tariff.maxBranches = v;
-    }
-  }
-  tariff.name = nameTrim;
-  saveTariffs(tariffs);
-
-  return sendOk(res, { tariff });
-});
-
-authed('/api/tariff-remove', (payload, res, { userId }) => {
-  const { id, force } = payload;
-  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin o\'chira oladi');
-
-  const tariffs = loadTariffs();
-  const idx = tariffs.findIndex(t => t.id === id);
-  if (idx === -1) return sendFail(res, 'Tarif topilmadi.');
-
-  const owners = loadOwners();
-  const assignedOwners = owners.filter(o => o.tariffId === id);
-  if (assignedOwners.length && !force) {
-    return sendJSON(res, 200, {
-      ok: false,
-      reason: `Bu tarifga ${assignedOwners.length} ta do'kon egasi biriktirilgan. Avval ularni boshqa tarifga o'tkazing, yoki tasdiqlab, ularni tarifsiz qoldirib o'chiring.`,
-      blockedCount: assignedOwners.length
-    });
-  }
-  if (assignedOwners.length && force) {
-    assignedOwners.forEach(o => { o.tariffId = null; });
-    saveOwners(owners);
-  }
-
-  tariffs.splice(idx, 1);
-
-  tariffs.sort((a, b) => (a.order || 0) - (b.order || 0)).forEach((t, i) => { t.order = i; });
-  saveTariffs(tariffs);
-
-  return sendOk(res);
-});
-
-authed('/api/tariff-set-features', (payload, res, { userId }) => {
-  const { id, features } = payload;
-  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin belgilay oladi');
-
-  const tariffs = loadTariffs();
-  const tariff = tariffs.find(t => t.id === id);
-  if (!tariff) return sendFail(res, 'Tarif topilmadi.');
-
-  const validIds = new Set(FEATURE_CATALOG.map(f => f.id));
-  const cleaned = {};
-  if (features && typeof features === 'object') {
-    for (const fid of Object.keys(features)) {
-      if (validIds.has(fid)) cleaned[fid] = !!features[fid];
-    }
-  }
-  tariff.features = cleaned;
-  saveTariffs(tariffs);
-
-  return sendOk(res, { tariff });
-});
-
-authed('/api/subscription-plan-list', (payload, res, { userId }) => {
-  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin ko\'ra oladi');
-
-  const tariffs = loadTariffs();
-  const plans = Object.values(loadSubscriptionPlans())
-    .sort((a, b) => (a.order || 0) - (b.order || 0))
-    .map(p => {
-      const tariff = p.tariffId ? tariffs.find(t => t.id === p.tariffId) : null;
-      return { ...p, tariffLabel: tariff ? tariff.name : null };
-    });
-  return sendOk(res, { plans, tariffs: tariffs.map(t => ({ id: t.id, name: t.name })) });
-});
-
-authed('/api/subscription-plan-add', (payload, res, { userId }) => {
-  const { label, days, price, discountNote, tariffId } = payload;
-  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin qo\'sha oladi');
-
-  const labelTrim = String(label || '').trim();
-  if (!labelTrim) return sendFail(res, 'Reja nomini kiriting.');
-
-  const daysVal = parseInt(days, 10);
-  if (!Number.isInteger(daysVal) || daysVal <= 0) {
-    return sendFail(res, 'Muddat (kun) musbat butun son bo\'lishi kerak.');
-  }
-
-  const priceVal = Number(price);
-  if (!Number.isFinite(priceVal) || priceVal < 0) {
-    return sendFail(res, 'Narx 0 yoki musbat son bo\'lishi kerak.');
-  }
-
-  let tariffIdVal = null;
-  if (tariffId !== undefined && tariffId !== null && String(tariffId).trim() !== '') {
-    const tariffs = loadTariffs();
-    if (!tariffs.some(t => t.id === tariffId)) {
-      return sendFail(res, 'Tanlangan tarif topilmadi.');
-    }
-    tariffIdVal = tariffId;
-  }
-
-  const plans = loadSubscriptionPlans();
-  const id = crypto.randomBytes(4).toString('hex');
-  const order = Object.keys(plans).length;
-  plans[id] = {
-    id,
-    label: labelTrim,
-    days: daysVal,
-    price: priceVal,
-    discountNote: discountNote ? String(discountNote).trim() || null : null,
-    tariffId: tariffIdVal,
-    order
-  };
-  saveSubscriptionPlans(plans);
-
-  return sendOk(res, { plan: plans[id] });
-});
-
-authed('/api/subscription-plan-update', (payload, res, { userId }) => {
-  const { id, label, days, price, discountNote, tariffId } = payload;
-  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin o\'zgartira oladi');
-
-  const plans = loadSubscriptionPlans();
-  const plan = plans[id];
-  if (!plan) return sendFail(res, 'Reja topilmadi.');
-
-  const labelTrim = String(label || '').trim();
-  if (!labelTrim) return sendFail(res, 'Reja nomini kiriting.');
-
-  const daysVal = parseInt(days, 10);
-  if (!Number.isInteger(daysVal) || daysVal <= 0) {
-    return sendFail(res, 'Muddat (kun) musbat butun son bo\'lishi kerak.');
-  }
-
-  const priceVal = Number(price);
-  if (!Number.isFinite(priceVal) || priceVal < 0) {
-    return sendFail(res, 'Narx 0 yoki musbat son bo\'lishi kerak.');
-  }
-
-  let tariffIdVal = null;
-  if (tariffId !== undefined && tariffId !== null && String(tariffId).trim() !== '') {
-    const tariffs = loadTariffs();
-    if (!tariffs.some(t => t.id === tariffId)) {
-      return sendFail(res, 'Tanlangan tarif topilmadi.');
-    }
-    tariffIdVal = tariffId;
-  }
-
-  plan.label = labelTrim;
-  plan.days = daysVal;
-  plan.price = priceVal;
-  plan.discountNote = discountNote ? String(discountNote).trim() || null : null;
-  plan.tariffId = tariffIdVal;
-  saveSubscriptionPlans(plans);
-
-  return sendOk(res, { plan });
-});
-
-authed('/api/subscription-plan-remove', (payload, res, { userId }) => {
-  const { id } = payload;
-  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin o\'chira oladi');
-
-  const plans = loadSubscriptionPlans();
-  if (!plans[id]) return sendFail(res, 'Reja topilmadi.');
-
-  delete plans[id];
-  Object.values(plans).sort((a, b) => (a.order || 0) - (b.order || 0)).forEach((p, i) => { p.order = i; });
-  saveSubscriptionPlans(plans);
-
-  return sendOk(res);
-});
-
-authed('/api/system-status', (payload, res, { userId }) => {
-  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin ko\'ra oladi');
-
-  const owners = loadOwners();
-  const activeOwners = owners.filter(isOwnerAccessValid);
-  const todayStart = new Date();
-  todayStart.setHours(0, 0, 0, 0);
-
-  let totalStaff = 0, totalOrders = 0, todayOrders = 0, totalNotifErrors = 0;
-  owners.forEach(o => {
-    totalStaff += (o.staff || []).length;
-    const orders = o.orders || [];
-    totalOrders += orders.length;
-    todayOrders += orders.filter(ord => ord.createdAt && new Date(ord.createdAt) >= todayStart).length;
-    totalNotifErrors += (o.notificationErrors || []).length;
-  });
-
-  function fileInfo(file) {
-    try {
-      const st = fs.statSync(file);
-      return { exists: true, sizeKb: Math.round(st.size / 1024 * 10) / 10 };
-    } catch (e) {
-      return { exists: false, sizeKb: 0 };
-    }
-  }
-
-  const mem = process.memoryUsage();
-
-  return sendOk(res, {
-    status: {
-      uptimeSeconds: Math.floor(process.uptime()),
-      serverStartedAt: SERVER_STARTED_AT,
-      nodeVersion: process.version,
-      memoryRssMb: Math.round(mem.rss / 1024 / 1024 * 10) / 10,
-      owners: { total: owners.length, active: activeOwners.length, expired: owners.length - activeOwners.length },
-      totalStaff,
-      totalOrders,
-      todayOrders,
-      notificationErrors: totalNotifErrors,
-      webhook: webhookStats,
-      botConfigured: !!BOT_TOKEN && BOT_TOKEN !== 'BOT_TOKEN_BU_YERGA',
-      publicUrlConfigured: !!PUBLIC_URL,
-      dataFiles: {
-        owners: fileInfo(OWNERS_FILE),
-        invites: fileInfo(INVITES_FILE),
-        requests: fileInfo(REQUESTS_FILE),
-        profiles: fileInfo(PROFILES_FILE)
-      }
-    }
-  });
-});
-
-authed('/api/owners', (payload, res, { userId }) => {
-  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin ko\'ra oladi');
-
-  const owners = pruneExpiredOwners().map(o => {
-    const clean = Object.assign({}, o);
-    delete clean.passwordHash;
-    delete clean.sessionToken;
-    delete clean.sessionExpiresAt;
-    clean.hasLogin = !!(o.login && o.passwordHash);
-
-    const rating = ownerAverageRating(o);
-    clean.avgRating = rating.avg;
-    clean.ratingCount = rating.count;
-    return clean;
-  });
-
-  owners.sort((a, b) => {
-    if (a.avgRating === null && b.avgRating === null) return 0;
-    if (a.avgRating === null) return 1;
-    if (b.avgRating === null) return -1;
-    return b.avgRating - a.avgRating;
-  });
-
-  const payments = loadPayments();
-  const monthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1).getTime();
-  const revenue = {
-    totalLifetime: payments.reduce((s, p) => s + (Number(p.amount) || 0), 0),
-    thisMonth: payments.filter(p => new Date(p.at).getTime() >= monthStart).reduce((s, p) => s + (Number(p.amount) || 0), 0),
-    paymentCount: payments.length
-  };
-  return sendOk(res, { owners, revenue });
-});
-
-authed('/api/owner-set-tariff', (payload, res, { userId }) => {
-  const { id, tariffId } = payload;
-  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin belgilay oladi');
-  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
-
-  const owners = loadOwners();
-  const owner = findOwner(owners, id);
-  if (!owner) return sendFail(res, 'Bunday do\'kon egasi topilmadi');
-
-  if (tariffId) {
-    const tariffs = loadTariffs();
-    if (!tariffs.some(t => t.id === tariffId)) {
-      return sendFail(res, 'Bunday tarif topilmadi.');
-    }
-    owner.tariffId = tariffId;
-  } else {
-    owner.tariffId = null;
-  }
-  saveOwners(owners);
-
-  return sendOk(res, { tariffId: owner.tariffId });
-});
-
-authed('/api/owner-set-expiry', async (payload, res, { userId }) => {
-  const { id, action, days, date } = payload;
-  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin o\'zgartira oladi');
-  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
-
-  const owners = loadOwners();
-  const owner = findOwner(owners, id);
-  if (!owner) return sendFail(res, 'Bunday do\'kon egasi topilmadi');
-
-  if (action === 'extend') {
-    const n = parseInt(days, 10);
-    if (!Number.isInteger(n) || n <= 0) {
-      return sendFail(res, 'Kun soni musbat butun son bo\'lishi kerak.');
-    }
-    const currentMs = owner.subscriptionUntil ? new Date(owner.subscriptionUntil).getTime() : NaN;
-    const base = Number.isFinite(currentMs) && currentMs > Date.now() ? currentMs : Date.now();
-    const untilIso = new Date(base + n * 86400000).toISOString();
-    owner.subscriptionUntil = untilIso;
-    owner.expiresAt = untilIso;
-    owner.subscriptionStatus = SUBSCRIPTION_STATUS.ACTIVE;
-    owner.graceUntil = null;
-    owner.reminderSentAt = null;
-    owner.blockedNotifiedAt = null;
-    saveOwners(owners);
-    return sendOk(res, { owner });
-  }
-
-  if (action === 'setDate') {
-    const d = new Date(date);
-    if (!date || isNaN(d.getTime())) {
-      return sendFail(res, 'Sana noto\'g\'ri.');
-    }
-
-    d.setHours(23, 59, 59, 999);
-    if (d.getTime() <= Date.now()) {
-      owner.subscriptionUntil = d.toISOString();
-      owner.expiresAt = d.toISOString();
-      owner.subscriptionStatus = SUBSCRIPTION_STATUS.BLOCKED;
-      owner.graceUntil = null;
-      owner.blockedNotifiedAt = new Date().toISOString();
-      saveOwners(owners);
-      await sendMessage(ADMIN_ID,
-        `⏰ <b>Obuna muddati qisqartirildi</b>\n${ownerLabel(owner)} (ID: <code>${owner.id}</code>) uchun Mini App'ga kirish admin tomonidan bloklandi.\nMa'lumotlari saqlanib qolyapti — qayta uzaytirsangiz, kirish tiklanadi.`);
-      await sendMessage(owner.id,
-        `⏰ Sizning obuna muddatingiz administrator tomonidan qisqartirildi, Mini App'ga kirish bloklandi.\nMa'lumotlaringiz saqlanib qolyapti. Davom ettirish uchun administrator bilan bog'laning.`);
-      return sendOk(res, { owner, blocked: true });
-    }
-    owner.subscriptionUntil = d.toISOString();
-    owner.expiresAt = d.toISOString();
-    owner.subscriptionStatus = SUBSCRIPTION_STATUS.ACTIVE;
-    owner.graceUntil = null;
-    owner.reminderSentAt = null;
-    owner.blockedNotifiedAt = null;
-    saveOwners(owners);
-    return sendOk(res, { owner });
-  }
-
-  if (action === 'unlimited') {
-    owner.subscriptionUntil = null;
-    owner.expiresAt = null;
-    owner.subscriptionStatus = SUBSCRIPTION_STATUS.ACTIVE;
-    owner.graceUntil = null;
-    owner.reminderSentAt = null;
-    owner.blockedNotifiedAt = null;
-    saveOwners(owners);
-    return sendOk(res, { owner });
-  }
-
-  if (action === 'cancelNow') {
-    const nowIso = new Date().toISOString();
-    owner.subscriptionUntil = nowIso;
-    owner.expiresAt = nowIso;
-    owner.subscriptionStatus = SUBSCRIPTION_STATUS.BLOCKED;
-    owner.graceUntil = null;
-    owner.blockedNotifiedAt = nowIso;
-    saveOwners(owners);
-    await sendMessage(ADMIN_ID,
-      `⏰ <b>Obuna bekor qilindi</b>\n${ownerLabel(owner)} (ID: <code>${owner.id}</code>) uchun Mini App'ga kirish admin tomonidan bloklandi.\nMa'lumotlari saqlanib qolyapti — qayta uzaytirsangiz, kirish tiklanadi.`);
-    await sendMessage(owner.id,
-      `⏰ Sizning obunangiz administrator tomonidan bekor qilindi, Mini App'ga kirish bloklandi.\nMa'lumotlaringiz saqlanib qolyapti.`);
-    return sendOk(res, { owner, blocked: true });
-  }
-
-  return sendFail(res, 'Noto\'g\'ri amal.');
-});
-
-authed('/api/set-owner-credentials', (payload, res, { userId }) => {
-  const { id, login, password } = payload;
-  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin belgilay oladi');
-  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
-
-  const owners = loadOwners();
-  const owner = findOwner(owners, id);
-  if (!owner) return sendFail(res, 'Bunday do\'kon egasi topilmadi');
-
-  const loginNorm = normalizeLogin(login);
-  if (!/^[a-z0-9_.]{3,32}$/.test(loginNorm)) {
-    return sendFail(res, 'Login 3-32 belgi, faqat lotin harflari/raqam/._ bo\'lishi mumkin.');
-  }
-  const passwordStr = String(password || '');
-  if (passwordStr.length < 6) {
-    return sendFail(res, 'Parol kamida 6 belgidan iborat bo\'lishi kerak.');
-  }
-  const clash = owners.find(o => normalizeLogin(o.login) === loginNorm && String(o.id) !== String(owner.id));
-  if (clash) {
-    return sendFail(res, 'Bu login band, boshqasini tanlang.');
-  }
-
-  owner.login = loginNorm;
-  owner.passwordHash = hashPassword(passwordStr);
-
-  owner.sessionToken = null;
-  owner.sessionExpiresAt = null;
-  saveOwners(owners);
-
-  return sendOk(res, { login: owner.login });
-});
-
-authed('/api/remove-owner-credentials', (payload, res, { userId }) => {
-  const { id } = payload;
-  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin o\'chira oladi');
-  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
-
-  const owners = loadOwners();
-  const owner = findOwner(owners, id);
-  if (!owner) return sendFail(res, 'Bunday do\'kon egasi topilmadi');
-
-  owner.login = null;
-  owner.passwordHash = null;
-  owner.sessionToken = null;
-  owner.sessionExpiresAt = null;
-  saveOwners(owners);
-
-  return sendOk(res);
-});
-
-authed('/api/owner-confirm-password', (payload, res, { userId }) => {
-  const { password } = payload;
-
-  const owners = pruneExpiredOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q yoki muddati tugagan');
-  const owner = ownerCtx.owner;
-
-  if (!owner.login || !owner.passwordHash) {
-
-    return sendOk(res, { skipped: true });
-  }
-  if (!verifyPassword(password, owner.passwordHash)) {
-    return sendFail(res, 'Parol noto\'g\'ri.');
-  }
-  return sendOk(res);
-});
-
-authed('/api/owner-change-password', (payload, res, { userId }) => {
-  const { currentPassword, newPassword } = payload;
-
-  const owners = pruneExpiredOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q yoki muddati tugagan');
-  const owner = ownerCtx.owner;
-
-  if (!owner.login || !owner.passwordHash) {
-    return sendFail(res, 'Sizga hali login/parol biriktirilmagan. Administrator bilan bog\'laning.');
-  }
-  if (!verifyPassword(currentPassword, owner.passwordHash)) {
-    return sendFail(res, 'Joriy parol noto\'g\'ri.');
-  }
-
-  const newPasswordStr = String(newPassword || '');
-  if (newPasswordStr.length < 6) {
-    return sendFail(res, 'Yangi parol kamida 6 belgidan iborat bo\'lishi kerak.');
-  }
-
-  const owners2 = loadOwners();
-  const target = findOwner(owners2, owner.id);
-  if (!target) return sendFail(res, 'Bunday do\'kon egasi topilmadi');
-
-  target.passwordHash = hashPassword(newPasswordStr);
-
-  target.sessionToken = null;
-  target.sessionExpiresAt = null;
-  saveOwners(owners2);
-
-  return sendOk(res);
-});
-
-authed('/api/owner-remove-password', (payload, res, { userId }) => {
-  const { currentPassword } = payload;
-
-  const owners = pruneExpiredOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q yoki muddati tugagan');
-  const owner = ownerCtx.owner;
-
-  if (!owner.login || !owner.passwordHash) {
-
-    return sendOk(res, { alreadyRemoved: true });
-  }
-  if (!verifyPassword(currentPassword, owner.passwordHash)) {
-    return sendFail(res, 'Joriy parol noto\'g\'ri.');
-  }
-
-  const owners2 = loadOwners();
-  const target = findOwner(owners2, owner.id);
-  if (!target) return sendFail(res, 'Bunday do\'kon egasi topilmadi');
-
-  target.login = null;
-  target.passwordHash = null;
-  target.sessionToken = null;
-  target.sessionExpiresAt = null;
-  saveOwners(owners2);
-
-  return sendOk(res);
-});
-
-route('/api/owner-login', (payload, res) => {
-  const { login, password } = payload;
-  const loginNorm = normalizeLogin(login);
-  if (!loginNorm || !password) {
-    return sendFail(res, 'Login va parolni kiriting.');
-  }
-
-  const owners = pruneExpiredOwners();
-  const owner = owners.find(o => normalizeLogin(o.login) === loginNorm);
-  if (!owner || !owner.passwordHash || !verifyPassword(password, owner.passwordHash)) {
-    return sendFail(res, 'Login yoki parol noto\'g\'ri.');
-  }
-  if (!isOwnerAccessValid(owner)) {
-    return sendJSON(res, 200, subscriptionBlockedJSON(owners, owner.id, 'Obuna muddati tugagan. Administrator bilan bog\'laning.'));
-  }
-
-  const owners2 = loadOwners();
-  const target = findOwner(owners2, owner.id);
-  const token = crypto.randomBytes(24).toString('hex');
-  target.sessionToken = token;
-  target.sessionExpiresAt = new Date(Date.now() + SESSION_TOKEN_TTL_MS).toISOString();
-  saveOwners(owners2);
-
-  return sendOk(res, {
-    sessionToken: `sess_${token}`,
-    restaurantName: (target.profile && target.profile.name) || null
-  });
-});
-
-route('/api/owner-logout', (payload, res) => {
-  const { initData } = payload;
-  if (typeof initData === 'string' && initData.startsWith('sess_')) {
-    const token = initData.slice('sess_'.length);
-    const owners = loadOwners();
-    const owner = owners.find(o => o.sessionToken === token);
-    if (owner) {
-      owner.sessionToken = null;
-      owner.sessionExpiresAt = null;
-      saveOwners(owners);
-    }
-  }
-  return sendOk(res);
-});
-
-authed('/api/add-owner', async (payload, res, { userId }) => {
-  const { input, days, price, paid } = payload;
-
-  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin qo\'sha oladi');
-
-  const resolved = await resolveUserInput(input);
-  if (resolved.error) return sendFail(res, resolved.error);
-
-  let expiresAt = null;
-  if (days !== undefined && days !== null && days !== '') {
-    const n = parseInt(days, 10);
-    if (!Number.isInteger(n) || n <= 0) {
-      return sendFail(res, 'Kun soni musbat butun son bo\'lishi kerak, yoki bo\'sh qoldiring (doimiy).');
-    }
-    expiresAt = new Date(Date.now() + n * 86400000).toISOString();
-  }
-
-  let priceVal = 0;
-  if (price !== undefined && price !== null && price !== '') {
-    const p = Number(price);
-    if (!Number.isFinite(p) || p < 0) {
-      return sendFail(res, 'Narx musbat son bo\'lishi kerak.');
-    }
-    priceVal = p;
-  }
-
-  const owners = loadOwners();
-  if (isAdminId(resolved.id)) {
-    return sendFail(res, 'Bu foydalanuvchi allaqachon administrator');
-  }
-  if (findOwner(owners, resolved.id)) {
-    return sendFail(res, 'Bu foydalanuvchi ro\'yxatda allaqachon bor');
-  }
-
-  const newOwner = {
-    id: resolved.id,
-    username: resolved.username || null,
-    addedAt: new Date().toISOString(),
-    expiresAt,
-    price: priceVal,
-    paid: !!paid,
-    paidAt: paid ? new Date().toISOString() : null,
-
-    subscriptionStatus: SUBSCRIPTION_STATUS.ACTIVE,
-    subscriptionUntil: expiresAt,
-    graceUntil: null,
-    trialGivenAt: null
-  };
-  owners.push(newOwner);
-  saveOwners(owners);
-  if (newOwner.paid) recordPayment(newOwner, priceVal);
-
-  return sendOk(res, { owner: newOwner });
-});
-
-authed('/api/update-owner-billing', (payload, res, { userId }) => {
-  const { id, price, paid } = payload;
-
-  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin o\'zgartira oladi');
-  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
-
-  const owners = loadOwners();
-  const owner = findOwner(owners, id);
-  if (!owner) return sendFail(res, 'Bunday do\'kon egasi topilmadi');
-
-  if (price !== undefined && price !== null && price !== '') {
-    const p = Number(price);
-    if (!Number.isFinite(p) || p < 0) {
-      return sendFail(res, 'Narx musbat son bo\'lishi kerak.');
-    }
-    owner.price = p;
-  }
-
-  let justPaid = false;
-  if (paid !== undefined && paid !== null) {
-    const wasPaid = !!owner.paid;
-    owner.paid = !!paid;
-    if (owner.paid && !wasPaid) { owner.paidAt = new Date().toISOString(); justPaid = true; }
-    if (!owner.paid) owner.paidAt = null;
-  }
-
-  saveOwners(owners);
-
-  if (justPaid) {
-    recordPayment(owner, owner.price);
-  }
-  return sendOk(res, { owner });
-});
-
-authed('/api/remove-owner', (payload, res, { userId }) => {
-  const { id } = payload;
-
-  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin o\'chira oladi');
-  if (!id) return sendFail(res, 'ID ko\'rsatilmagan');
-
-  let owners = loadOwners();
-  const before = owners.length;
-  const target = findOwner(owners, id);
-
-  if (target) moveOwnerToTrash(target, userId);
-  owners = owners.filter(o => String(o.id) !== String(id));
-  saveOwners(owners);
-
-  return sendOk(res, { removed: before !== owners.length });
-});
-
-authed('/api/trash-list', (payload, res, { userId }) => {
-  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin ko\'ra oladi');
-
-  const now = Date.now();
-  const list = loadTrash().map(t => ({
-    id: t.id,
-    ownerId: t.ownerSnapshot.id,
-    ownerLabel: ownerLabel(t.ownerSnapshot),
-    restaurantName: (t.ownerSnapshot.profile && t.ownerSnapshot.profile.name) || null,
-    trashedAt: t.trashedAt,
-    autoPurgeAt: t.autoPurgeAt,
-    daysLeft: Math.max(0, Math.ceil((new Date(t.autoPurgeAt).getTime() - now) / 86400000)),
-    restoreStatus: t.restoreStatus
-  })).sort((a, b) => new Date(a.autoPurgeAt) - new Date(b.autoPurgeAt));
-
-  return sendOk(res, { trash: list });
-});
-
-authed('/api/trash-restore', (payload, res, { userId }) => {
-  const { trashId } = payload;
-  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin tiklay oladi');
-  if (!trashId) return sendFail(res, 'ID ko\'rsatilmagan');
-
-  const trash = loadTrash();
-  const entry = findTrashEntry(trash, trashId);
-  if (!entry) return sendFail(res, 'Bu yozuv Savatchada topilmadi.');
-
-  const result = restoreOwnerFromTrash(entry);
-  if (!result.ok) return sendFail(res, result.reason);
-
-  saveTrash(trash.filter(t => t.id !== trashId));
-  logTrashEvent('restored', entry.ownerSnapshot, { restoredBy: userId, via: 'admin_panel' });
-  sendMessage(entry.ownerSnapshot.id,
-    `✅ <b>Oshxonangiz tiklandi!</b>\nBarcha ma'lumotlaringiz (menyu, xodimlar, sozlamalar) saqlanib qolgan. Mini App tugmasi orqali oching.`)
-    .catch(() => {});
-
-  return sendOk(res);
-});
-
-authed('/api/trash-purge-now', (payload, res, { userId }) => {
-  const { trashId } = payload;
-  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin o\'chira oladi');
-  if (!trashId) return sendFail(res, 'ID ko\'rsatilmagan');
-
-  const trash = loadTrash();
-  const entry = findTrashEntry(trash, trashId);
-  if (!entry) return sendFail(res, 'Bu yozuv Savatchada topilmadi.');
-
-  archiveOwnerOrders(entry.ownerSnapshot);
-  logTrashEvent('purged', entry.ownerSnapshot, { reason: 'admin_qolda', purgedBy: userId });
-  saveTrash(trash.filter(t => t.id !== trashId));
-
-  return sendOk(res);
-});
-
-authed('/api/trash-log', (payload, res, { userId }) => {
-  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin ko\'ra oladi');
-
-  const log = loadTrashLog().slice().sort((a, b) => new Date(b.at) - new Date(a.at)).slice(0, 200);
-  return sendOk(res, { log });
-});
-
-authed('/api/backup-export', (payload, res, { user, userId }) => {
-  const owners0 = pruneExpiredOwners();
-  const owner0 = findOwner(owners0, userId);
-  if (!isOwnerAccessValid(owner0)) return sendFail(res, 'Zaxira faqat tasdiqlangan do\'kon egasiga ruxsat etilgan.');
-
-  let snapshot;
-  try {
-    snapshot = buildBackupSnapshot(userId);
-  } catch (e) {
-    console.error('backup-export xatolik:', e.message);
-    return sendFail(res, 'Zaxira tayyorlashda xatolik yuz berdi.');
-  }
-
-  const json = JSON.stringify(snapshot, null, 2);
-  const filename = `zaxira_${new Date().toISOString().slice(0, 10)}.json`;
-
-  const adminName = (user && (user.first_name || user.username)) || userId;
-  const totalRecords = Object.values(snapshot.counts).reduce((a, b) => a + b, 0);
-  allAdminIds().forEach(aid => {
-    sendMessage(aid, `🔐 <b>DB zaxirasi yuklab olindi</b>\n👤 ${adminName} (ID: ${userId})\n🕒 ${new Date().toLocaleString('uz-UZ')}\n📦 Jami ${totalRecords} ta yozuv`)
-      .catch(() => {});
-  });
-
-  return sendOk(res, {
-    filename,
-    mime: 'application/json;charset=utf-8',
-    content: json,
-    counts: snapshot.counts
-  });
-});
-
-authed('/api/backup-import-preview', (payload, res, { userId }) => {
-  const owners1 = pruneExpiredOwners();
-  const owner1 = findOwner(owners1, userId);
-  if (!isOwnerAccessValid(owner1)) return sendFail(res, 'Bazani tiklash faqat tasdiqlangan do\'kon egasiga ruxsat etilgan.');
-
-  const rawContent = payload.content;
-  if (!rawContent || typeof rawContent !== 'string') {
-    return sendFail(res, 'Fayl tanlanmagan yoki bo\'sh.');
-  }
-
-  let snapshot;
-  try {
-    snapshot = JSON.parse(rawContent);
-  } catch (e) {
-    return sendFail(res, 'Bu fayl to\'g\'ri JSON zaxira fayli emas.');
-  }
-
-  if (!snapshot || typeof snapshot !== 'object' || !snapshot.files || typeof snapshot.files !== 'object') {
-    return sendFail(res, 'Fayl formati noto\'g\'ri — bu Mini App zaxira fayli emasga o\'xshaydi.');
-  }
-  const knownKeys = new Set(BACKUP_FILE_DEFS.map(d => d.key));
-  const fileKeys = Object.keys(snapshot.files).filter(k => knownKeys.has(k));
-  if (fileKeys.length === 0) {
-    return sendFail(res, 'Faylda tanish bo\'limlar topilmadi.');
-  }
-
-  const contentHash = crypto.createHash('sha256').update(rawContent).digest('hex');
-  const token = crypto.randomBytes(16).toString('hex');
-  pendingBackupRestores.set(token, { adminId: userId, contentHash, createdAt: Date.now(), snapshot });
-
-  return sendOk(res, {
-    confirmToken: token,
-    version: snapshot.version || null,
-    exportedAt: snapshot.exportedAt || null,
-    counts: snapshot.counts || null,
-    sections: fileKeys
-  });
-});
-
-authed('/api/backup-import-confirm', (payload, res, { user, userId }) => {
-  const owners2 = pruneExpiredOwners();
-  const owner2 = findOwner(owners2, userId);
-  if (!isOwnerAccessValid(owner2)) return sendFail(res, 'Bazani tiklash faqat tasdiqlangan do\'kon egasiga ruxsat etilgan.');
-
-  const { confirmToken, confirmText, content } = payload;
-  if ((confirmText || '').trim().toUpperCase() !== 'TASDIQLAYMAN') {
-    return sendFail(res, 'Tasdiqlash uchun "TASDIQLAYMAN" so\'zini aniq kiriting.');
-  }
-  const pending = confirmToken && pendingBackupRestores.get(confirmToken);
-  if (!pending) {
-    return sendFail(res, 'Tasdiqlash muddati tugagan yoki noto\'g\'ri. Faylni qaytadan yuklang.');
-  }
-  if (String(pending.adminId) !== userId) {
-    return sendFail(res, 'Bu tasdiqlash boshqa admin uchun yaratilgan.');
-  }
-  if (Date.now() - pending.createdAt > BACKUP_RESTORE_TOKEN_TTL_MS) {
-    pendingBackupRestores.delete(confirmToken);
-    return sendFail(res, 'Tasdiqlash muddati (10 daqiqa) tugagan. Faylni qaytadan yuklang.');
-  }
-  const contentHash = crypto.createHash('sha256').update(String(content || '')).digest('hex');
-  if (contentHash !== pending.contentHash) {
-    return sendFail(res, 'Fayl mazmuni preview qilingandan beri o\'zgargan. Qaytadan yuklang.');
-  }
-
-  pendingBackupRestores.delete(confirmToken);
-
-  let safetyFile = null;
-  let applied = [];
-  try {
-    safetyFile = savePreRestoreSafetySnapshot(userId);
-    applied = applyBackupSnapshot(pending.snapshot);
-  } catch (e) {
-    console.error('backup-import-confirm xatolik:', e.message);
-    return sendFail(res, 'Bazani tiklashda xatolik yuz berdi. Hech narsa o\'zgartirilmadi yoki qisman o\'zgargan bo\'lishi mumkin — pre_restore_backups papkasini tekshiring.');
-  }
-
-  const adminName = (user && (user.first_name || user.username)) || userId;
-  allAdminIds().forEach(aid => {
-    sendMessage(aid, `⚠️ <b>DB TIKLANDI (restore)</b>\n👤 ${adminName} (ID: ${userId})\n🕒 ${new Date().toLocaleString('uz-UZ')}\n📦 Almashtirilgan bo'limlar: ${applied.join(', ') || 'yo\'q'}\n💾 Tiklashdan oldingi holat saqlandi: ${safetyFile || 'saqlanmadi (xatolik)'}`)
-      .catch(() => {});
-  });
-
-  return sendOk(res, { applied, safetyFile });
-});
-
-authed('/api/create-invite', (payload, res, { userId }) => {
-  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin havola yarata oladi');
-
-  if (!BOT_USERNAME || BOT_USERNAME === 'BOT_USERNAME_BU_YERGA') {
-    return sendFail(res, 'Serverda BOT_USERNAME sozlanmagan.');
-  }
-
-  const token = createInvite();
-  const link = `https://t.me/${BOT_USERNAME}?start=inv_${token}`;
-  return sendOk(res, { link });
-});
-
-authed('/api/subscription-status', (payload, res, { userId }) => {
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return sendFail(res, 'Faqat do\'kon egasi uchun.');
-  const owner = ownerCtx.owner;
-
-  const access = getOwnerSubscriptionAccess(owner);
-  const requisites = loadPaymentRequisites();
-  const plans = loadSubscriptionPlans();
-  const tariffs = loadTariffs();
-  const plansList = Object.values(plans)
-    .sort((a, b) => (a.order || 0) - (b.order || 0))
-    .map(p => {
-      const tariff = p.tariffId ? tariffs.find(t => t.id === p.tariffId) : null;
-      return { ...p, tariffLabel: tariff ? tariff.name : null };
+      downloadFile(res.filename, res.mime, res.content, false);
+      setMsg(msgEl, `✅ Zaxira yuklab olindi (${Object.values(res.counts || {}).reduce((a, b) => a + b, 0)} ta yozuv).`, 'ok');
     });
 
-  return sendOk(res, {
-    status: access.status,
-    allowed: access.allowed,
-    daysLeft: access.daysLeft,
-    inGrace: access.inGrace,
-    subscriptionUntil: owner.subscriptionUntil || null,
-    requisites: { cardNumber: requisites.cardNumber, cardHolder: requisites.cardHolder },
-    plans: plansList,
-    pendingRequest: owner.subscriptionPaymentRequest || null
-  });
-});
+    let selectedBackupContent = null;
+    let selectedConfirmToken = null;
+    document.getElementById('backupFileInput').addEventListener('change', async (e) => {
+      const file = e.target.files && e.target.files[0];
+      const previewArea = document.getElementById('backupPreviewArea');
+      const msgEl = document.getElementById('backupImportMsg');
+      setMsg(msgEl, '');
+      previewArea.innerHTML = '';
+      selectedBackupContent = null;
+      selectedConfirmToken = null;
+      if (!file) return;
 
-authed('/api/subscription-history', (payload, res, { userId }) => {
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return sendFail(res, 'Faqat do\'kon egasi uchun.');
-  const owner = ownerCtx.owner;
-
-  const history = loadPayments()
-    .filter(p => String(p.ownerId) === String(owner.id) && p.source === 'subscription')
-    .sort((a, b) => new Date(b.at) - new Date(a.at))
-    .map(p => ({ planLabel: p.planLabel, amount: p.amount, days: p.days, at: p.at }));
-
-  return sendOk(res, { history });
-});
-
-authed('/api/subscription-select-plan', (payload, res, { userId }) => {
-  const owners = loadOwners();
-  const ownerCtx = resolveOwnerContext(owners, userId);
-  if (!isOwnerRole(ownerCtx)) return sendFail(res, 'Faqat do\'kon egasi uchun.');
-  const owner = ownerCtx.owner;
-
-  const plan = loadSubscriptionPlans()[payload.planId];
-  if (!plan) return sendFail(res, 'Tarif topilmadi.');
-
-  const reqData = createSubscriptionPaymentRequest(owner, payload.planId);
-  saveOwners(owners);
-
-  sendMessage(owner.id,
-    `✅ Siz <b>${escapeHtmlServer(plan.label)}</b> tarifini tanladingiz (${fmtNum(plan.price)} so'm).\n\n` +
-    `Endi to'lov chekining (skrinshotning) RASMINI shu botga yuboring — administrator tekshirib ` +
-    `tasdiqlagach, obunangiz avtomatik yangilanadi.`);
-
-  return sendOk(res, { request: reqData, botUsername: BOT_USERNAME || null });
-});
-
-authed('/api/admin-pending-subscription-payments', (payload, res, { userId }) => {
-  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin ko\'ra oladi');
-
-  const owners = loadOwners();
-  const pending = owners
-    .filter(o => o.subscriptionPaymentRequest && o.subscriptionPaymentRequest.status === 'kutilmoqda_tasdiq')
-    .map(o => ({
-      ownerId: o.id,
-      ownerLabel: ownerLabel(o),
-      restaurantName: (o.profile && o.profile.name) || null,
-      request: o.subscriptionPaymentRequest
-    }));
-
-  return sendOk(res, { pending });
-});
-
-authed('/api/admin-subscription-decide', (payload, res, { userId }) => {
-  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin qaror qabul qila oladi');
-
-  const owners = loadOwners();
-  const owner = findOwner(owners, payload.ownerId);
-  if (!owner) return sendFail(res, 'Oshxona topilmadi.');
-
-  const action = payload.action === 'approve' ? 'approve' : (payload.action === 'reject' ? 'reject' : null);
-  if (!action) return sendFail(res, 'Noto\'g\'ri amal.');
-
-  const result = decideSubscriptionPayment(owner, action, userId, payload.reason);
-  if (!result.ok) return sendJSON(res, 200, result);
-  saveOwners(owners);
-
-  return sendOk(res, { newUntil: result.newUntil || null });
-});
-
-function collectBroadcastRecipients(targetType) {
-  const owners = loadOwners();
-  const ids = new Set();
-  if (targetType === 'owner' || targetType === 'all') {
-    owners.forEach(o => ids.add(String(o.id)));
-  }
-  if (targetType === 'customer' || targetType === 'all') {
-    owners.forEach(o => (o.customers || []).forEach(c => ids.add(String(c.id))));
-  }
-  if (targetType === 'staff' || targetType === 'all') {
-    owners.forEach(o => (o.staff || []).forEach(s => ids.add(String(s.id))));
-  }
-  return Array.from(ids);
-}
-
-function isValidBroadcastImageUrl(value) {
-  return isValidImageValue(value);
-}
-function isBase64ImageValue(value) {
-  return !!value && /^data:image\/(png|jpe?g|webp);base64,/i.test(value);
-}
-
-function sendBroadcastToChat(chatId, text, photo, buttonText, buttonUrl) {
-  const replyMarkup = (buttonText && buttonUrl) ? { inline_keyboard: [[{ text: buttonText, url: buttonUrl }]] } : null;
-  const params = { chat_id: chatId, parse_mode: 'HTML' };
-  if (replyMarkup) params.reply_markup = JSON.stringify(replyMarkup);
-  const method = photo ? 'sendPhoto' : 'sendMessage';
-  if (photo) { params.photo = photo; params.caption = text; }
-  else { params.text = text; }
-  return telegramApi(method, params).then(result => {
-    if (!result || !result.ok) {
-      const reason = (result && result.description) || 'noma\'lum xatolik';
-      console.error(`[broadcast xato] chat_id=${chatId}: ${reason}`);
-      return false;
-    }
-    return true;
-  }).catch(err => {
-    console.error(`[broadcast tarmoq xatosi] chat_id=${chatId}: ${(err && err.message) || err}`);
-    return false;
-  });
-}
-
-async function sendBroadcastPhotoUploadAndGetFileId(chatId, dataUrl, text, buttonText, buttonUrl) {
-  const match = /^data:(image\/[a-z]+);base64,(.+)$/i.exec(dataUrl);
-  if (!match) return { ok: false, fileId: null };
-  const mimeType = match[1].toLowerCase() === 'image/jpg' ? 'image/jpeg' : match[1].toLowerCase();
-  const buffer = Buffer.from(match[2], 'base64');
-  const replyMarkup = (buttonText && buttonUrl) ? { inline_keyboard: [[{ text: buttonText, url: buttonUrl }]] } : null;
-  const fields = { caption: text, parse_mode: 'HTML' };
-  if (replyMarkup) fields.reply_markup = JSON.stringify(replyMarkup);
-  try {
-    const result = await telegramApiUploadPhoto(chatId, buffer, mimeType, fields);
-    if (!result || !result.ok) {
-      const reason = (result && result.description) || 'noma\'lum xatolik';
-      console.error(`[broadcast rasm yuklash xatosi] chat_id=${chatId}: ${reason}`);
-      return { ok: false, fileId: null };
-    }
-    const sizes = result.result && result.result.photo;
-    const fileId = (Array.isArray(sizes) && sizes.length) ? sizes[sizes.length - 1].file_id : null;
-    return { ok: true, fileId };
-  } catch (err) {
-    console.error(`[broadcast rasm yuklash tarmoq xatosi] chat_id=${chatId}: ${(err && err.message) || err}`);
-    return { ok: false, fileId: null };
-  }
-}
-
-async function sendBroadcastSequential(recipientIds, text, image, buttonText, buttonUrl) {
-  let delivered = 0, failed = 0;
-  let pendingUpload = isBase64ImageValue(image);
-  let photo = pendingUpload ? null : (image || null);
-
-  for (const chatId of recipientIds) {
-    let ok;
-    if (pendingUpload) {
-      const uploadResult = await sendBroadcastPhotoUploadAndGetFileId(chatId, image, text, buttonText, buttonUrl);
-      ok = uploadResult.ok;
-      if (ok) {
-        pendingUpload = false;
-        photo = uploadResult.fileId;
+      previewArea.innerHTML = `<div class="bosh">Fayl tekshirilmoqda...</div>`;
+      const content = await file.text();
+      const res = await apiPost('/api/backup-import-preview', { content });
+      if (!res.ok) {
+        previewArea.innerHTML = '';
+        setMsg(msgEl, res.reason || 'Fayl tekshirib bo\'lmadi.', 'err');
+        return;
       }
-    } else {
-      ok = await sendBroadcastToChat(chatId, text, photo, buttonText, buttonUrl);
-    }
-    if (ok) delivered++; else failed++;
-    await new Promise(resolve => setTimeout(resolve, 40));
-  }
-  return { delivered, failed };
-}
 
-authed('/api/broadcast-send', async (payload, res, { userId }) => {
-  const { targetType, text, imageUrl, buttonText, buttonUrl } = payload;
-  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin yubora oladi');
+      selectedBackupContent = content;
+      selectedConfirmToken = res.confirmToken;
+      const exportedAtLabel = res.exportedAt ? new Date(res.exportedAt).toLocaleString('uz-UZ') : 'noma\'lum';
 
-  if (!['customer', 'owner', 'staff', 'all'].includes(targetType)) {
-    return sendFail(res, 'Qabul qiluvchi turini tanlang.');
-  }
-  const textTrim = String(text || '').trim();
-  if (!textTrim) return sendFail(res, 'Xabar matnini kiriting.');
-  const imageTrim = String(imageUrl || '').trim();
-  if (!isValidBroadcastImageUrl(imageTrim)) {
-    return sendFail(res, 'Rasm uchun https:// havola kiriting yoki galereyadan tanlang.');
-  }
-  const buttonTextTrim = String(buttonText || '').trim();
-  const buttonUrlTrim = String(buttonUrl || '').trim();
-  if ((buttonTextTrim && !buttonUrlTrim) || (!buttonTextTrim && buttonUrlTrim)) {
-    return sendFail(res, 'Tugma uchun ham matn, ham havola kerak (yoki ikkalasini ham bo\'sh qoldiring).');
-  }
-  if (buttonUrlTrim && !/^https?:\/\//i.test(buttonUrlTrim)) {
-    return sendFail(res, 'Tugma havolasi http:// yoki https:// bilan boshlanishi kerak.');
-  }
+      previewArea.innerHTML = `
+        <div class="kartochka" style="background: var(--bg-secondary, #f5f5f5); margin-top:4px;">
+          <div class="owner-username">📅 Zaxira sanasi: ${escapeHtml(exportedAtLabel)}</div>
+          ${backupCountsHtml(res.counts)}
+        </div>
+        <label class="field-label" style="margin-top:10px;">Tasdiqlash uchun "TASDIQLAYMAN" so'zini kiriting</label>
+        <input type="text" id="backupConfirmTextInput" placeholder="TASDIQLAYMAN">
+        <button class="btn xavfli" id="backupRestoreBtn" style="margin-top:10px;">${icon('upload', 'icon-xs')} Bazani tiklash</button>
+      `;
 
-  const recipientIds = collectBroadcastRecipients(targetType);
-  if (!recipientIds.length) {
-    return sendFail(res, 'Bu toifada hozircha hech kim yo\'q.');
-  }
+      document.getElementById('backupRestoreBtn').addEventListener('click', async () => {
+        const confirmText = document.getElementById('backupConfirmTextInput').value.trim();
+        if (confirmText.toUpperCase() !== 'TASDIQLAYMAN') {
+          setMsg(msgEl, 'Iltimos, "TASDIQLAYMAN" so\'zini aniq kiriting.', 'err');
+          return;
+        }
+        if (!confirm('SO\'NGGI OGOHLANTIRISH: joriy baza tanlangan zaxira bilan almashtiriladi. Davom etasizmi?')) return;
 
-  const { delivered, failed } = await sendBroadcastSequential(
-    recipientIds, textTrim, imageTrim || null, buttonTextTrim || null, buttonUrlTrim || null
-  );
-
-  const isBase64Img = isBase64ImageValue(imageTrim);
-  const broadcasts = loadBroadcasts();
-  const record = {
-    id: crypto.randomBytes(4).toString('hex'),
-    targetType,
-    text: textTrim,
-    imageUrl: isBase64Img ? null : (imageTrim || null),
-    hadImage: !!imageTrim,
-    buttonText: buttonTextTrim || null,
-    buttonUrl: buttonUrlTrim || null,
-    totalTargets: recipientIds.length,
-    deliveredCount: delivered,
-    failedCount: failed,
-    sentBy: userId,
-    sentAt: new Date().toISOString()
-  };
-  broadcasts.unshift(record);
-  if (broadcasts.length > 200) broadcasts.length = 200;
-  saveBroadcasts(broadcasts);
-
-  return sendOk(res, { result: record });
-});
-
-authed('/api/broadcast-history', (payload, res, { userId }) => {
-  if (!isAdminId(userId)) return sendFail(res, 'Faqat admin ko\'ra oladi');
-
-  return sendOk(res, { broadcasts: loadBroadcasts() });
-});
-
-function handleRequest(req, res) {
-  if (req.method === 'POST' && API_ROUTES.has(req.url)) {
-    const handler = API_ROUTES.get(req.url);
-    readBody(req, (err, payload) => {
-      if (err) return sendJSON(res, 400, { ok: false, reason: bodyErrorReason(err) });
-      if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return sendJSON(res, 400, { ok: false, reason: "noto'g'ri so'rov" });
-      Promise.resolve()
-        .then(() => handler(payload, res))
-        .catch(e => {
-          console.error(`API xatosi [${req.url}]:`, e);
-          if (!res.headersSent) sendJSON(res, 500, { ok: false, reason: 'Serverda kutilmagan xatolik. Qaytadan urinib ko\'ring.' });
+        const btn = document.getElementById('backupRestoreBtn');
+        btn.disabled = true;
+        setMsg(msgEl, 'Tiklanmoqda...');
+        const r = await apiPost('/api/backup-import-confirm', {
+          confirmToken: selectedConfirmToken,
+          confirmText,
+          content: selectedBackupContent
         });
+        btn.disabled = false;
+        if (!r.ok) {
+          setMsg(msgEl, r.reason || 'Tiklashda xatolik yuz berdi.', 'err');
+          return;
+        }
+        previewArea.innerHTML = '';
+        document.getElementById('backupFileInput').value = '';
+        setMsg(msgEl, `✅ Baza tiklandi (${(r.applied || []).length} ta bo'lim almashtirildi). Sahifani qayta oching.`, 'ok');
+      });
     });
-    return;
   }
 
-  if (req.method === 'POST' && req.url === '/webhook') {
-    if (WEBHOOK_SECRET) {
-      const got = req.headers['x-telegram-bot-api-secret-token'];
-      if (got !== WEBHOOK_SECRET) {
-        res.writeHead(401); res.end(); return;
+  async function renderTariffsScreen(onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Obuna tariflari</div>
+        <button class="btn ikkinchi" id="tariffsBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="kartochka">
+          <h2>${icon('plus', 'icon-xs')} Yangi tarif qo'shish</h2>
+          <label class="field-label">Tarif nomi</label>
+          <input type="text" id="tariffNameInput" placeholder="Masalan: Standart">
+          <label class="field-label">Narx (so'm/oy)</label>
+          <input type="text" id="tariffPriceInput" placeholder="Masalan: 150000" inputmode="numeric">
+          <label class="field-label">Filiallar soni (ixtiyoriy)</label>
+          <input type="text" id="tariffMaxBranchesInput" placeholder="Bo'sh = cheklanmagan" inputmode="numeric">
+          <button class="btn" id="tariffAddBtn" style="margin-top:10px;">Qo'shish</button>
+          <div class="xabar" id="tariffAddMsg"></div>
+        </div>
+        <div class="kartochka">
+          <h2>${icon('star', 'icon-xs')} Mavjud tariflar</h2>
+          <div id="tariffList"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+        <div class="kartochka">
+          <h2>${icon('clipboard', 'icon-xs')} Tizim funksiyalari</h2>
+          <div class="owner-username" style="margin-bottom:8px;">Har bir tarifga qaysi funksiyalar kirishini belgilash keyingi bosqichda shu ro'yxat asosida qo'shiladi.</div>
+          <div id="featureCatalogList"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+      </div>
+    `);
+    document.getElementById('tariffsBackBtn').addEventListener('click', () => onBack());
+    document.getElementById('tariffAddBtn').addEventListener('click', async () => {
+      const input = document.getElementById('tariffNameInput');
+      const priceInput = document.getElementById('tariffPriceInput');
+      const maxBranchesInput = document.getElementById('tariffMaxBranchesInput');
+      const msgEl = document.getElementById('tariffAddMsg');
+      const name = input.value.trim();
+      const priceStr = priceInput.value.trim();
+      const maxBranchesStr = maxBranchesInput.value.trim();
+      if (!name) {
+        setMsg(msgEl, 'Iltimos, tarif nomini kiriting.', 'err');
+        return;
+      }
+      if (priceStr && (!/^\d+$/.test(priceStr))) {
+        setMsg(msgEl, 'Narx musbat butun son bo\'lishi kerak, yoki bo\'sh qoldiring.', 'err');
+        return;
+      }
+      if (maxBranchesStr && (!/^\d+$/.test(maxBranchesStr) || parseInt(maxBranchesStr, 10) <= 0)) {
+        setMsg(msgEl, 'Filiallar soni musbat butun son bo\'lishi kerak, yoki bo\'sh qoldiring (cheklanmagan).', 'err');
+        return;
+      }
+      msgEl.textContent = '';
+      const res = await apiPost('/api/tariff-add', { name, price: priceStr || 0, maxBranches: maxBranchesStr || null });
+      if (!res.ok) {
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+        return;
+      }
+      input.value = '';
+      priceInput.value = '';
+      maxBranchesInput.value = '';
+      loadTariffList();
+    });
+    await loadTariffList();
+    await loadFeatureCatalog();
+  }
+
+  let featureCatalogCache = null;
+  async function loadFeatureCatalog() {
+    const el = document.getElementById('featureCatalogList');
+    if (!el) return;
+    const res = await apiPost('/api/feature-list');
+    if (!res.ok) {
+      el.innerHTML = `<div class="bosh">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
+      return;
+    }
+    featureCatalogCache = res.groups;
+    el.innerHTML = res.groups.map(g => `
+      <div style="margin-bottom:10px;">
+        <div class="field-label" style="margin-bottom:4px;">${escapeHtml(g.name)}</div>
+        <div>${g.features.map(f => `<span class="badge neutral" style="margin:2px 4px 2px 0;">${escapeHtml(f.name)}</span>`).join('')}</div>
+      </div>
+    `).join('');
+  }
+
+  async function loadTariffList() {
+    const el = document.getElementById('tariffList');
+    if (!el) return;
+    const res = await apiPost('/api/tariff-list');
+    if (!res.ok) {
+      el.innerHTML = `<div class="bosh">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
+      return;
+    }
+    if (!res.tariffs.length) {
+      el.innerHTML = `<div class="bosh">Hozircha tarif qo'shilmagan.</div>`;
+      return;
+    }
+    el.innerHTML = res.tariffs.map(tariffItemHtml).join('');
+    el.querySelectorAll('[data-tariff-edit]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.getAttribute('data-tariff-edit');
+        const current = res.tariffs.find(t => t.id === id);
+        if (current) showTariffEditModal(current);
+      });
+    });
+    el.querySelectorAll('[data-tariff-features]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.getAttribute('data-tariff-features');
+        const current = res.tariffs.find(t => t.id === id);
+        if (current) await showTariffFeaturesModal(current);
+      });
+    });
+    el.querySelectorAll('[data-tariff-remove]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.getAttribute('data-tariff-remove');
+        const current = res.tariffs.find(t => t.id === id);
+        if (!confirm(`"${current ? current.name : ''}" tarifini o'chirasizmi?`)) return;
+        const r = await apiPost('/api/tariff-remove', { id });
+        if (!r.ok) {
+
+          if (r.blockedCount) {
+            const forceConfirm = confirm(`${r.reason}\n\nBaribir o'chirilsinmi? (${r.blockedCount} ta do'kon egasi tarifsiz qoladi)`);
+            if (!forceConfirm) return;
+            const r2 = await apiPost('/api/tariff-remove', { id, force: true });
+            if (!r2.ok) { alert(r2.reason || 'Xatolik yuz berdi.'); return; }
+            loadTariffList();
+            return;
+          }
+          alert(r.reason || 'Xatolik yuz berdi.');
+          return;
+        }
+        loadTariffList();
+      });
+    });
+  }
+
+  function showTariffEditModal(tariff) {
+    const overlay = openOverlay(`
+      <div class="modal" style="max-width:340px;">
+        <h3>Tarifni tahrirlash</h3>
+        <label class="field-label">Tarif nomi</label>
+        <input type="text" id="tariffEditNameInput" value="${escapeHtml(tariff.name)}">
+        <label class="field-label">Narx (so'm/oy)</label>
+        <input type="text" id="tariffEditPriceInput" value="${tariff.price || 0}" inputmode="numeric">
+        <label class="field-label">Muddat tugashi eslatmasi (necha kun oldin)</label>
+        <input type="text" id="tariffEditReminderInput" value="${tariff.reminderDays || 1}" inputmode="numeric">
+        <label class="field-label">Filiallar soni (ixtiyoriy)</label>
+        <input type="text" id="tariffEditMaxBranchesInput" value="${tariff.maxBranches || ''}" placeholder="Bo'sh = cheklanmagan" inputmode="numeric">
+        <div class="xabar" id="tariffEditMsg"></div>
+        <button type="button" class="btn ikkinchi" id="tariffEditPermsBtn" style="margin-top:4px;">${icon('check-circle', 'icon-xs')}<span>Ruxsatlar (funksiyalar)</span></button>
+        <div class="btn-row">
+          <button class="btn ikkinchi" id="tariffEditCancelBtn">Bekor qilish</button>
+          <button class="btn" id="tariffEditSaveBtn">Saqlash</button>
+        </div>
+      </div>
+    `);
+    document.getElementById('tariffEditCancelBtn').onclick = () => overlay.remove();
+    document.getElementById('tariffEditPermsBtn').onclick = async () => {
+      overlay.remove();
+      await showTariffFeaturesModal(tariff);
+    };
+    document.getElementById('tariffEditSaveBtn').onclick = async () => {
+      const nameVal = document.getElementById('tariffEditNameInput').value.trim();
+      const priceVal = document.getElementById('tariffEditPriceInput').value.trim();
+      const reminderVal = document.getElementById('tariffEditReminderInput').value.trim();
+      const maxBranchesVal = document.getElementById('tariffEditMaxBranchesInput').value.trim();
+      const msgEl = document.getElementById('tariffEditMsg');
+      if (!nameVal) {
+        setMsg(msgEl, 'Iltimos, tarif nomini kiriting.', 'err');
+        return;
+      }
+      if (priceVal && !/^\d+$/.test(priceVal)) {
+        setMsg(msgEl, 'Narx musbat butun son bo\'lishi kerak.', 'err');
+        return;
+      }
+      if (reminderVal && (!/^\d+$/.test(reminderVal) || parseInt(reminderVal, 10) <= 0)) {
+        setMsg(msgEl, 'Eslatma kunlari musbat butun son bo\'lishi kerak.', 'err');
+        return;
+      }
+      if (maxBranchesVal && (!/^\d+$/.test(maxBranchesVal) || parseInt(maxBranchesVal, 10) <= 0)) {
+        setMsg(msgEl, 'Filiallar soni musbat butun son bo\'lishi kerak, yoki bo\'sh qoldiring (cheklanmagan).', 'err');
+        return;
+      }
+      const res = await apiPost('/api/tariff-rename', {
+        id: tariff.id, name: nameVal, price: priceVal || 0, reminderDays: reminderVal || 1,
+        maxBranches: maxBranchesVal || null
+      });
+      if (!res.ok) {
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+        return;
+      }
+      overlay.remove();
+      loadTariffList();
+    };
+  }
+
+  async function showTariffFeaturesModal(tariff) {
+    let groups = featureCatalogCache;
+    if (!groups) {
+      const res = await apiPost('/api/feature-list');
+      if (!res.ok) { alert(res.reason || 'Xatolik yuz berdi.'); return; }
+      groups = res.groups;
+      featureCatalogCache = groups;
+    }
+    const current = tariff.features || {};
+    const overlay = openOverlay(`
+      <div class="modal" style="max-width:420px; max-height:80vh; overflow-y:auto;">
+        <h3>"${escapeHtml(tariff.name)}" — funksiyalar</h3>
+        <div class="owner-username" style="margin-bottom:10px;">Ushbu tarifga qaysi funksiyalar kirishini belgilang.</div>
+        ${groups.map(g => `
+          <div style="margin-bottom:12px;">
+            <div class="field-label" style="margin-bottom:4px;">${escapeHtml(g.name)}</div>
+            ${g.features.map(f => `
+              <label style="display:flex; align-items:center; gap:8px; padding:6px 0; cursor:pointer;">
+                <input type="checkbox" data-feature-id="${escapeHtml(f.id)}" ${current[f.id] ? 'checked' : ''} style="width:18px; height:18px; flex-shrink:0;">
+                <span>${escapeHtml(f.name)}</span>
+              </label>
+            `).join('')}
+          </div>
+        `).join('')}
+        <div class="xabar" id="tariffFeaturesMsg"></div>
+        <div class="btn-row">
+          <button class="btn ikkinchi" id="tariffFeaturesCancelBtn">Bekor qilish</button>
+          <button class="btn" id="tariffFeaturesSaveBtn">Saqlash</button>
+        </div>
+      </div>
+    `);
+    document.getElementById('tariffFeaturesCancelBtn').onclick = () => overlay.remove();
+    document.getElementById('tariffFeaturesSaveBtn').onclick = async () => {
+      const msgEl = document.getElementById('tariffFeaturesMsg');
+      const features = {};
+      overlay.querySelectorAll('[data-feature-id]').forEach(cb => {
+        features[cb.getAttribute('data-feature-id')] = cb.checked;
+      });
+      const res = await apiPost('/api/tariff-set-features', { id: tariff.id, features });
+      if (!res.ok) {
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+        return;
+      }
+      overlay.remove();
+      loadTariffList();
+    };
+  }
+
+  function subscriptionPlanItemHtml(p) {
+    return `
+      <div class="owner-item" data-plan-id="${escapeHtml(p.id)}">
+        <div>
+          <div class="owner-id">${escapeHtml(p.label)}</div>
+          <div class="owner-username">${cfFormatSum(p.price)} so'm · ${p.days} kun${p.discountNote ? ' · ' + escapeHtml(p.discountNote) : ''}</div>
+          <div class="owner-username">${icon('star', 'icon-xs icon-muted')} ${p.tariffLabel ? escapeHtml(p.tariffLabel) : 'Tarif o\'zgarmaydi'}</div>
+        </div>
+        <div class="btn-row" style="margin-top:0;">
+          <button class="btn ikkinchi" data-plan-edit="${escapeHtml(p.id)}" style="width:auto; min-height:36px; padding:6px 12px;">${icon('edit', 'icon-xs')}</button>
+          <button class="btn xavfli" data-plan-remove="${escapeHtml(p.id)}" style="width:auto; min-height:36px; padding:6px 12px;">${icon('x', 'icon-xs')}</button>
+        </div>
+      </div>
+    `;
+  }
+
+  async function renderSubscriptionPlansScreen(onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Obuna rejalari</div>
+        <button class="btn ikkinchi" id="subPlansBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="bosh" style="margin-bottom:10px;">Do'kon egalari "💳 Obuna" bo'limida shu rejalardan birini tanlab, ko'rsatilgan narxni to'laydi. Har bir rejaga ixtiyoriy ravishda tarif ham biriktirishingiz mumkin — to'lov tasdiqlansa, egasining tarifi ham shu tarifga o'zgaradi.</div>
+        <div class="kartochka">
+          <h2>${icon('plus', 'icon-xs')} Yangi reja qo'shish</h2>
+          <label class="field-label">Reja nomi</label>
+          <input type="text" id="subPlanLabelInput" placeholder="Masalan: 1 oy">
+          <label class="field-label">Muddat (kun)</label>
+          <input type="text" id="subPlanDaysInput" placeholder="Masalan: 30" inputmode="numeric">
+          <label class="field-label">Narx (so'm)</label>
+          <input type="text" id="subPlanPriceInput" placeholder="Masalan: 100000" inputmode="numeric">
+          <label class="field-label">Chegirma izohi (ixtiyoriy)</label>
+          <input type="text" id="subPlanNoteInput" placeholder="Masalan: chegirmali">
+          <label class="field-label">Tarif (ixtiyoriy)</label>
+          <select id="subPlanTariffInput"><option value="">Tarif o'zgarmaydi</option></select>
+          <button class="btn" id="subPlanAddBtn" style="margin-top:10px;">Qo'shish</button>
+          <div class="xabar" id="subPlanAddMsg"></div>
+        </div>
+        <div class="kartochka">
+          <h2>${icon('card', 'icon-xs')} Mavjud rejalar</h2>
+          <div id="subPlanList"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+      </div>
+    `);
+    document.getElementById('subPlansBackBtn').addEventListener('click', () => onBack());
+    document.getElementById('subPlanAddBtn').addEventListener('click', async () => {
+      const labelInput = document.getElementById('subPlanLabelInput');
+      const daysInput = document.getElementById('subPlanDaysInput');
+      const priceInput = document.getElementById('subPlanPriceInput');
+      const noteInput = document.getElementById('subPlanNoteInput');
+      const tariffInput = document.getElementById('subPlanTariffInput');
+      const msgEl = document.getElementById('subPlanAddMsg');
+      const label = labelInput.value.trim();
+      const days = daysInput.value.trim();
+      const price = priceInput.value.trim();
+      if (!label) { msgEl.textContent = 'Iltimos, reja nomini kiriting.'; msgEl.className = 'xabar err'; return; }
+      if (!/^\d+$/.test(days) || parseInt(days, 10) <= 0) { msgEl.textContent = 'Muddat musbat butun son (kun) bo\'lishi kerak.'; msgEl.className = 'xabar err'; return; }
+      if (!/^\d+$/.test(price)) { msgEl.textContent = 'Narx musbat butun son bo\'lishi kerak.'; msgEl.className = 'xabar err'; return; }
+      msgEl.textContent = '';
+      const res = await apiPost('/api/subscription-plan-add', {
+        label, days, price, discountNote: noteInput.value.trim(), tariffId: tariffInput.value || null
+      });
+      if (!res.ok) { msgEl.textContent = res.reason || 'Xatolik yuz berdi.'; msgEl.className = 'xabar err'; return; }
+      labelInput.value = ''; daysInput.value = ''; priceInput.value = ''; noteInput.value = ''; tariffInput.value = '';
+      loadSubscriptionPlanList();
+    });
+    await loadSubscriptionPlanList();
+  }
+
+  async function loadSubscriptionPlanList() {
+    const el = document.getElementById('subPlanList');
+    const tariffSelect = document.getElementById('subPlanTariffInput');
+    if (!el) return;
+    const res = await apiPost('/api/subscription-plan-list');
+    if (!res.ok) { el.innerHTML = `<div class="bosh">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`; return; }
+
+    if (tariffSelect) {
+      tariffSelect.innerHTML = `<option value="">Tarif o'zgarmaydi</option>` +
+        res.tariffs.map(t => `<option value="${escapeHtml(t.id)}">${escapeHtml(t.name)}</option>`).join('');
+    }
+
+    if (!res.plans.length) { el.innerHTML = `<div class="bosh">Hozircha reja qo'shilmagan.</div>`; return; }
+    el.innerHTML = res.plans.map(subscriptionPlanItemHtml).join('');
+    el.querySelectorAll('[data-plan-edit]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.getAttribute('data-plan-edit');
+        const current = res.plans.find(p => p.id === id);
+        if (current) showSubscriptionPlanEditModal(current, res.tariffs);
+      });
+    });
+    el.querySelectorAll('[data-plan-remove]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.getAttribute('data-plan-remove');
+        const current = res.plans.find(p => p.id === id);
+        if (!confirm(`"${current ? current.label : ''}" rejasini o'chirasizmi?`)) return;
+        const r = await apiPost('/api/subscription-plan-remove', { id });
+        if (!r.ok) { alert(r.reason || 'Xatolik yuz berdi.'); return; }
+        loadSubscriptionPlanList();
+      });
+    });
+  }
+
+  function showSubscriptionPlanEditModal(plan, tariffs) {
+    const overlay = openOverlay(`
+      <div class="modal" style="max-width:340px;">
+        <h3>Rejani tahrirlash</h3>
+        <label class="field-label">Reja nomi</label>
+        <input type="text" id="subPlanEditLabelInput" value="${escapeHtml(plan.label)}">
+        <label class="field-label">Muddat (kun)</label>
+        <input type="text" id="subPlanEditDaysInput" value="${plan.days}" inputmode="numeric">
+        <label class="field-label">Narx (so'm)</label>
+        <input type="text" id="subPlanEditPriceInput" value="${plan.price}" inputmode="numeric">
+        <label class="field-label">Chegirma izohi (ixtiyoriy)</label>
+        <input type="text" id="subPlanEditNoteInput" value="${plan.discountNote ? escapeHtml(plan.discountNote) : ''}">
+        <label class="field-label">Tarif (ixtiyoriy)</label>
+        <select id="subPlanEditTariffInput">
+          <option value="">Tarif o'zgarmaydi</option>
+          ${tariffs.map(t => `<option value="${escapeHtml(t.id)}" ${t.id === plan.tariffId ? 'selected' : ''}>${escapeHtml(t.name)}</option>`).join('')}
+        </select>
+        <div class="xabar" id="subPlanEditMsg"></div>
+        <div class="btn-row">
+          <button class="btn ikkinchi" id="subPlanEditCancelBtn">Bekor qilish</button>
+          <button class="btn" id="subPlanEditSaveBtn">Saqlash</button>
+        </div>
+      </div>
+    `);
+    document.getElementById('subPlanEditCancelBtn').onclick = () => overlay.remove();
+    document.getElementById('subPlanEditSaveBtn').onclick = async () => {
+      const msgEl = document.getElementById('subPlanEditMsg');
+      const label = document.getElementById('subPlanEditLabelInput').value.trim();
+      const days = document.getElementById('subPlanEditDaysInput').value.trim();
+      const price = document.getElementById('subPlanEditPriceInput').value.trim();
+      const note = document.getElementById('subPlanEditNoteInput').value.trim();
+      const tariffId = document.getElementById('subPlanEditTariffInput').value || null;
+      if (!label) { msgEl.textContent = 'Iltimos, reja nomini kiriting.'; msgEl.className = 'xabar err'; return; }
+      if (!/^\d+$/.test(days) || parseInt(days, 10) <= 0) { msgEl.textContent = 'Muddat musbat butun son (kun) bo\'lishi kerak.'; msgEl.className = 'xabar err'; return; }
+      if (!/^\d+$/.test(price)) { msgEl.textContent = 'Narx musbat butun son bo\'lishi kerak.'; msgEl.className = 'xabar err'; return; }
+      const res = await apiPost('/api/subscription-plan-update', {
+        id: plan.id, label, days, price, discountNote: note, tariffId
+      });
+      if (!res.ok) { msgEl.textContent = res.reason || 'Xatolik yuz berdi.'; msgEl.className = 'xabar err'; return; }
+      overlay.remove();
+      loadSubscriptionPlanList();
+    };
+  }
+
+  function accSectionHtml(section) {
+    return `
+      <div class="acc-item" data-acc-key="${section.key}">
+        <button type="button" class="acc-header" data-acc-toggle="${section.key}">
+          <span class="acc-header-icon">${icon(section.icon)}</span>
+          <span class="acc-header-text">
+            <span class="acc-header-title">${escapeHtml(section.title)}</span>
+            ${section.hint ? `<span class="acc-header-hint">${escapeHtml(section.hint)}</span>` : ''}
+          </span>
+          <span class="acc-chevron">${icon('chevron-down')}</span>
+        </button>
+        <div class="acc-body">${section.body}</div>
+      </div>
+    `;
+  }
+
+  function wireAccSections() {
+    document.querySelectorAll('[data-acc-toggle]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const item = btn.closest('.acc-item');
+        if (item) item.classList.toggle('open');
+      });
+    });
+  }
+
+  function renderProfileForm(existing) {
+    if (!existing) { renderProfileOnboarding(); return; }
+    const p = existing;
+    let pendingBrandColor = isValidHexColor(p.brandColor) ? p.brandColor : DEFAULT_BRAND_COLOR;
+    let pendingLogo = p.logoUrl || '';
+    let pendingBannerImg = '';
+    let pendingFridayBannerImg = '';
+    setAppHeader(existing.logoUrl, existing.name, 'Egasi');
+    const accSections = [
+      {
+        key: 'workHours', icon: 'clock', title: 'Ish vaqti',
+        hint: p.workHours ? `Hozirgi: ${p.workHours}` : 'Ochilish va yopilish vaqti',
+        body: `
+          <div class="kartochka">
+            <div class="bosh">Oshxonangiz qaysi soatlarda ishlashini kiriting. Mijozlar shu vaqtdan tashqarida buyurtma bera olmaydi.</div>
+            <label class="field-label">Ish vaqti</label>
+            <input type="text" id="pWorkHours" placeholder="09:00 - 23:00" value="${escapeHtml(p.workHours || '')}">
+            <button class="btn" id="saveWorkHoursBtn" style="margin-top:8px;">Saqlash</button>
+            <div class="xabar" id="workHoursMsg"></div>
+          </div>
+        `
+      },
+      {
+        key: 'categories', icon: 'restaurant', title: "Menyu bo'limlari",
+        hint: 'Kategoriyalar tartibi',
+        body: `
+          <div class="kartochka">
+            <div class="bosh">Menyuga taom qo'shish va mavjud taomlarni boshqarish endi <b>"Ombor"</b> bo'limiga ko'chirildi (chunki taomni sklad mahsulotiga bog'lash shu yerda qulayroq).</div>
+          </div>
+          <div class="kartochka">
+            <h2>Bo'limlar (kategoriyalar)</h2>
+            <div class="bosh">Taomlarni bo'limlarga ajratish uchun ro'yxat. Shu yerdagi tartib mijozlar va kassir menyusida ko'rinadigan tartibni belgilaydi.</div>
+            <input type="text" id="categoryNameInput" placeholder="Bo'lim nomi (masalan: Issiq taomlar)" style="margin-top:10px;">
+            <button class="btn" id="addCategoryBtn" style="margin-top:8px;">Bo'lim qo'shish</button>
+            <div class="xabar" id="categoryMsg"></div>
+            <div class="owner-list" id="categoryList" style="margin-top:12px;"><div class="bosh">Yuklanmoqda...</div></div>
+          </div>
+        `
+      },
+      {
+        key: 'promos', icon: 'star', title: 'Aksiyalar va chegirmalar',
+        hint: "Yangi aksiya qo'shish, ro'yxat",
+        body: `
+          <div class="kartochka">
+            <h2>Aksiya/chegirma qo'shish</h2>
+            <input type="text" id="promoTitleInput" placeholder="Aksiya nomi (masalan: Hafta oxiri aksiyasi)">
+            <textarea id="promoDescInput" placeholder="Tavsif (ixtiyoriy)"></textarea>
+            <input type="text" id="promoPercentInput" placeholder="Chegirma foizi (masalan: 10)" inputmode="numeric">
+            <input type="text" id="promoMinInput" placeholder="Minimal buyurtma summasi (ixtiyoriy)" inputmode="numeric">
+            <button class="btn" id="addPromoBtn">Aksiya qo'shish</button>
+            <div class="xabar" id="promoMsg"></div>
+          </div>
+          <div class="kartochka">
+            <h2>Aksiyalar ro'yxati</h2>
+            <div class="owner-list" id="promoList"><div class="bosh">Yuklanmoqda...</div></div>
+          </div>
+        `
+      },
+      {
+        key: 'banners', icon: 'image', title: 'Reklama bannerlari',
+        hint: "Mijozlar ekraniga rasmli e'lon",
+        body: `
+          <div class="kartochka">
+            <h2>Yangi banner qo'shish</h2>
+            <div class="bosh">Banner mijozlar ilovasining menyu ekrani tepasida ko'rinadi. Ixtiyoriy ravishda havola qo'shsangiz, banner bosilganda o'sha sahifa ochiladi.</div>
+            ${logoPickerHtml('bannerImg', '')}
+            <input type="text" id="bannerTitleInput" placeholder="Sarlavha (ixtiyoriy)" style="margin-top:10px;">
+            <input type="text" id="bannerLinkInput" placeholder="Havola (ixtiyoriy, https://...)">
+            <label class="field-label">Boshlanish sanasi (ixtiyoriy)</label>
+            <input type="date" id="bannerStartInput">
+            <label class="field-label">Tugash sanasi (ixtiyoriy)</label>
+            <input type="date" id="bannerEndInput">
+            <label class="field-label">Faqat haftaning shu kunida ko'rinsin (ixtiyoriy)</label>
+            <select id="bannerWeeklyDayInput">
+              <option value="">Har kuni</option>
+              <option value="1">Har dushanba</option>
+              <option value="2">Har seshanba</option>
+              <option value="3">Har chorshanba</option>
+              <option value="4">Har payshanba</option>
+              <option value="5">Har juma</option>
+              <option value="6">Har shanba</option>
+              <option value="0">Har yakshanba</option>
+            </select>
+            <button class="btn" id="addBannerBtn" style="margin-top:8px;">Banner qo'shish</button>
+            <div class="xabar" id="bannerMsg"></div>
+          </div>
+          <div class="kartochka">
+            <h2>Bannerlar ro'yxati</h2>
+            <div class="owner-list" id="bannerList"><div class="bosh">Yuklanmoqda...</div></div>
+          </div>
+        `
+      },
+      {
+        key: 'fridayBanner', icon: 'calendar', title: 'Juma banneri',
+        hint: "Faqat har juma kuni chiqadigan alohida banner",
+        body: `
+          <div class="kartochka">
+            <h2>Juma banneri</h2>
+            <div class="bosh">Bu banner yuqoridagi "Reklama bannerlari" bo'limiga umuman aralashmaydi — mustaqil ishlaydi. Bu yerga qo'ygan rasm mijozlar ekraniga <b>faqat har juma kuni</b> avtomatik chiqadi, boshqa kunlari o'zi yashirinadi.</div>
+            ${logoPickerHtml('fridayBannerImg', '')}
+            <input type="text" id="fridayBannerTitleInput" placeholder="Sarlavha (ixtiyoriy)" style="margin-top:10px;">
+            <input type="text" id="fridayBannerLinkInput" placeholder="Havola (ixtiyoriy, https://...)">
+            <button class="btn" id="saveFridayBannerBtn" style="margin-top:8px;">Juma bannerini saqlash</button>
+            <div class="xabar" id="fridayBannerMsg"></div>
+          </div>
+          <div class="kartochka">
+            <h2>Joriy holat</h2>
+            <div class="owner-list" id="fridayBannerStatus"><div class="bosh">Yuklanmoqda...</div></div>
+          </div>
+        `
+      },
+      {
+        key: 'bonus', icon: 'trophy', title: 'Bonus tizimi',
+        hint: "Mijozlarni rag'batlantirish",
+        body: `
+          <div class="kartochka">
+            <div class="bosh">Qaytgan mijozlarga har bir buyurtmadan avtomatik bonus ball to'planadi (1 ball = 1 so'm, keyingi buyurtmada ishlatiladi).</div>
+            <label class="check-label" style="margin-top:10px; font-size:var(--fs-body);">
+              <input type="checkbox" id="bonusEnabledInput">
+              Bonus tizimini yoqish
+            </label>
+            <input type="text" id="bonusPercentInput" placeholder="Bonus foizi (masalan: 5)" inputmode="numeric" style="margin-top:8px;">
+            <button class="btn" id="saveBonusBtn">Saqlash</button>
+            <div class="xabar" id="bonusMsg"></div>
+          </div>
+        `
+      },
+      {
+        key: 'delivery', icon: 'scooter', title: 'Dostavka guruhi',
+        hint: 'Kuryerlar guruhini biriktirish',
+        body: `
+          <div class="kartochka">
+            <h2>Dostavka admin guruhi</h2>
+            <div class="bosh">Mijoz istalgan turda (Stolga, Olib ketish yoki Dostavka) buyurtma bersa, "Qabul qilish" va "Tayyor" tugmali xabar shu guruhga boradi. Tugma bosilganda mijozga avtomatik xabar ketadi.</div>
+            <div id="deliveryGroupStatus" class="bosh" style="margin-top:10px;">Tekshirilmoqda...</div>
+            <div class="customer-link-hint">
+              Ulash uchun: 1) Botni dostavka xodimlaringiz bo'lgan guruhga qo'shing (admin huquqi bilan). 2) O'zingiz (oshxona egasi) o'sha guruhda <b>/biriktir</b> buyrug'ini yuboring.<br>
+              Bekor qilish uchun guruhda <b>/bekor_biriktir</b> yozing yoki pastdagi tugmani bosing.
+            </div>
+            <button class="btn ikkinchi xavfli hidden" id="removeDeliveryGroupBtn" style="margin-top:10px;">Guruhni bog'lanishdan chiqarish</button>
+            <div class="xabar" id="deliveryGroupMsg"></div>
+          </div>
+        `
+      },
+      {
+        key: 'kitchen', icon: 'chef-hat', title: 'Oshpazlar guruhi',
+        hint: 'Oshxona buyurtma xabarlari',
+        body: `
+          <div class="kartochka">
+            <h2>Oshpazlar guruhi</h2>
+            <div class="bosh">Har bir yangi buyurtma haqida "Qabul qilish" va "Tayyor" tugmali xabar shu guruhga ham boradi — oshpazlar shaxsiy chatni ochmagan yoki bloklagan bo'lsa ham, buyurtma guruhda ko'rinadi. Dostavka admin guruhidan mustaqil — ikkalasini bir vaqtda biriktirish mumkin.</div>
+            <div id="kitchenGroupStatus" class="bosh" style="margin-top:10px;">Tekshirilmoqda...</div>
+            <div class="customer-link-hint">
+              Ulash uchun: 1) Botni oshpazlaringiz bo'lgan guruhga qo'shing (admin huquqi bilan). 2) O'zingiz (oshxona egasi) o'sha guruhda <b>/oshpaz_biriktir</b> buyrug'ini yuboring.<br>
+              Bekor qilish uchun guruhda <b>/oshpaz_bekor_biriktir</b> yozing yoki pastdagi tugmani bosing.
+            </div>
+            <button class="btn ikkinchi xavfli hidden" id="removeKitchenGroupBtn" style="margin-top:10px;">Guruhni bog'lanishdan chiqarish</button>
+            <div class="xabar" id="kitchenGroupMsg"></div>
+          </div>
+        `
+      },
+      (usingOwnerSession || ownerHasTelegramLogin) ? {
+        key: 'account', icon: 'lock', title: 'Hisob va xavfsizlik',
+        hint: 'Parol, chiqish',
+        body: `
+          <div class="kartochka">
+            <div class="bosh">${usingOwnerSession ? 'Siz login/parol orqali kirgansiz.' : 'Bu qurilmada parol eslab qolingan.'}</div>
+            <button class="btn ikkinchi xavfli" id="ownerLogoutBtn" style="margin-top:10px;">Chiqish</button>
+
+            <h2 style="margin-top:18px;">Xavfsizlik</h2>
+            <button class="btn ikkinchi" id="togglePwChangeBtn">Parolni almashtirish</button>
+            <div id="pwChangeForm" class="hidden" style="margin-top:10px;">
+              <label class="field-label">Joriy parol</label>
+              <input type="password" id="pwCurrentInput" autocomplete="current-password" placeholder="Joriy parol">
+              <label class="field-label">Yangi parol</label>
+              <input type="password" id="pwNewInput" autocomplete="new-password" placeholder="Kamida 6 belgi">
+              <label class="field-label">Yangi parolni takrorlang</label>
+              <input type="password" id="pwNewRepeatInput" autocomplete="new-password" placeholder="Yangi parolni qayta kiriting">
+              <div class="btn-row">
+                <button class="btn ikkinchi" id="pwChangeCancelBtn">Bekor qilish</button>
+                <button class="btn" id="pwChangeSaveBtn">Saqlash</button>
+              </div>
+              <div class="xabar" id="pwChangeMsg"></div>
+            </div>
+
+            ${tg ? `
+            <button class="btn ikkinchi xavfli" id="togglePwRemoveBtn" style="margin-top:14px;">Parolni o'chirish</button>
+            <div id="pwRemoveForm" class="hidden" style="margin-top:10px;">
+              <div class="bosh">Parol o'chirilsa, bundan buyon faqat Telegram orqali kirish imkoni qoladi. Tasdiqlash uchun joriy parolingizni kiriting.</div>
+              <label class="field-label">Joriy parol</label>
+              <input type="password" id="pwRemoveCurrentInput" autocomplete="current-password" placeholder="Joriy parol">
+              <div class="btn-row">
+                <button class="btn ikkinchi" id="pwRemoveCancelBtn">Bekor qilish</button>
+                <button class="btn xavfli" id="pwRemoveConfirmBtn">Parolni o'chirish</button>
+              </div>
+              <div class="xabar" id="pwRemoveMsg"></div>
+            </div>
+            ` : ''}
+          </div>
+        `
+      } : null
+    ].filter(Boolean);
+
+    ekran(`
+      <div class="panel">
+        <div class="salom">Profilni tahrirlash</div>
+        <div class="bosh">Ma'lumotlaringizni yangilang.</div>
+
+        <div class="profile-hero">
+          <div class="profile-hero-avatar">${p.logoUrl ? `<img src="${escapeHtml(p.logoUrl)}" alt="">` : icon('restaurant')}</div>
+          <div>
+            <div class="profile-hero-title">${escapeHtml(p.name || "Oshxona nomi ko'rsatilmagan")}</div>
+            <div class="profile-hero-subtitle">${escapeHtml(p.address || 'Manzil kiritilmagan')}</div>
+          </div>
+        </div>
+
+        <div class="kartochka">
+          <h2>${icon('star', 'icon-xs')} Joriy tarif</h2>
+          <div id="profileTariffInfo" class="owner-username">Yuklanmoqda...</div>
+        </div>
+        <div class="kartochka">
+          <label class="field-label">Oshxona nomi *</label>
+          <input type="text" id="pName" placeholder="Masalan: Osh Markazi" value="${escapeHtml(p.name || '')}">
+          <label class="field-label">Manzil *</label>
+          <input type="text" id="pAddress" placeholder="Shahar, ko'cha, uy" value="${escapeHtml(p.address || '')}">
+          <label class="field-label">Telefon *</label>
+          <input type="text" id="pPhone" placeholder="+998901234567" value="${escapeHtml(p.phone || '')}">
+          ${logoPickerHtml('pLogo', pendingLogo)}
+          <label class="field-label">Brend rangi (mijozlar menyusi va ilova shu rangda ko'rinadi)</label>
+          ${brandSwatchesHtml(pendingBrandColor, p.name)}
+          <div class="btn-row" style="margin-top:14px;">
+            <button class="btn ikkinchi" id="cancelProfileBtn">← Bekor qilish</button>
+            <button class="btn" id="saveProfileBtn">Saqlash</button>
+          </div>
+          <div class="xabar" id="profileMsg"></div>
+        </div>
+
+        <div class="section-label">${icon('settings', 'icon-xs')} Qo'shimcha sozlamalar</div>
+        <div class="acc-list">
+          ${accSections.map(s => accSectionHtml(s)).join('')}
+        </div>
+      </div>
+    `);
+
+    wireAccSections();
+
+    if (usingOwnerSession) {
+      const logoutBtn = document.getElementById('ownerLogoutBtn');
+      if (logoutBtn) logoutBtn.addEventListener('click', ownerLogout);
+    } else if (ownerHasTelegramLogin) {
+      const logoutBtn = document.getElementById('ownerLogoutBtn');
+      if (logoutBtn) logoutBtn.addEventListener('click', ownerTelegramGateLogout);
+    }
+
+    if (usingOwnerSession || ownerHasTelegramLogin) {
+      attachOwnerPasswordSecurityHandlers();
+    }
+
+    attachBrandSwatchHandlers((hex) => {
+      pendingBrandColor = hex;
+      applyBrandColor(hex);
+    });
+    attachLogoPickerHandlers('pLogo', (val) => { pendingLogo = val; });
+    attachLogoPickerHandlers('bannerImg', (val) => { pendingBannerImg = val; });
+    attachLogoPickerHandlers('fridayBannerImg', (val) => { pendingFridayBannerImg = val; });
+
+    document.getElementById('cancelProfileBtn').addEventListener('click', () => {
+      applyBrandColor(p.brandColor);
+      renderOwnerHomeScreen(p);
+    });
+
+    document.getElementById('saveProfileBtn').addEventListener('click', async () => {
+      const msgEl = document.getElementById('profileMsg');
+      const body = {
+        name: document.getElementById('pName').value.trim(),
+        address: document.getElementById('pAddress').value.trim(),
+        phone: document.getElementById('pPhone').value.trim(),
+        workHours: p.workHours || '',
+        logoUrl: pendingLogo,
+        brandColor: pendingBrandColor
+      };
+      setMsg(msgEl, 'Saqlanmoqda...');
+      const res = await apiPost('/api/save-profile', body);
+      if (!res.ok) {
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+        applyBrandColor(p.brandColor);
+        return;
+      }
+      renderOwnerHomeScreen(res.profile);
+    });
+
+    document.getElementById('saveWorkHoursBtn').addEventListener('click', async () => {
+      const msgEl = document.getElementById('workHoursMsg');
+      const workHours = document.getElementById('pWorkHours').value.trim();
+      setMsg(msgEl, 'Saqlanmoqda...');
+      const res = await apiPost('/api/save-profile', {
+        name: p.name || '',
+        address: p.address || '',
+        phone: p.phone || '',
+        workHours,
+        logoUrl: p.logoUrl || '',
+        brandColor: p.brandColor || ''
+      });
+      if (!res.ok) {
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+        return;
+      }
+      setMsg(msgEl, 'Saqlandi.', 'ok');
+      p.workHours = res.profile.workHours || '';
+    });
+
+    document.getElementById('addCategoryBtn').addEventListener('click', async () => {
+      const name = document.getElementById('categoryNameInput').value.trim();
+      const msgEl = document.getElementById('categoryMsg');
+      if (!name) {
+        setMsg(msgEl, 'Bo\'lim nomini kiriting.', 'err');
+        return;
+      }
+      setMsg(msgEl, 'Qo\'shilmoqda...');
+      const res = await apiPost('/api/category-add', { name });
+      if (res.ok) {
+        setMsg(msgEl, 'Qo\'shildi.', 'ok');
+        document.getElementById('categoryNameInput').value = '';
+        loadCategoriesAndRender();
+      } else {
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+      }
+    });
+
+    document.getElementById('addPromoBtn').addEventListener('click', async () => {
+      const title = document.getElementById('promoTitleInput').value.trim();
+      const description = document.getElementById('promoDescInput').value.trim();
+      const discountPercent = document.getElementById('promoPercentInput').value.trim();
+      const minTotal = document.getElementById('promoMinInput').value.trim();
+      const msgEl = document.getElementById('promoMsg');
+      if (!title || !discountPercent || !/^\d+$/.test(discountPercent)) {
+        setMsg(msgEl, 'Aksiya nomi va chegirma foizini kiriting.', 'err');
+        return;
+      }
+      setMsg(msgEl, 'Qo\'shilmoqda...');
+      const res = await apiPost('/api/promo-add', { title, description, discountPercent, minTotal });
+      if (res.ok) {
+        setMsg(msgEl, 'Aksiya qo\'shildi.', 'ok');
+        document.getElementById('promoTitleInput').value = '';
+        document.getElementById('promoDescInput').value = '';
+        document.getElementById('promoPercentInput').value = '';
+        document.getElementById('promoMinInput').value = '';
+        loadPromoAndRender();
+      } else {
+        handleFeatureBlocked(res);
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+      }
+    });
+
+    document.getElementById('promoList').addEventListener('click', async (e) => {
+      const toggleId = e.target.getAttribute('data-toggle-promo-id');
+      const removeId = e.target.getAttribute('data-remove-promo-id');
+      if (toggleId) {
+        e.target.disabled = true;
+        await apiPost('/api/promo-toggle', { id: toggleId });
+        loadPromoAndRender();
+      } else if (removeId) {
+        e.target.disabled = true;
+        await apiPost('/api/promo-remove', { id: removeId });
+        loadPromoAndRender();
+      }
+    });
+
+    document.getElementById('addBannerBtn').addEventListener('click', async () => {
+      const title = document.getElementById('bannerTitleInput').value.trim();
+      const link = document.getElementById('bannerLinkInput').value.trim();
+      const startAt = document.getElementById('bannerStartInput').value;
+      const endAt = document.getElementById('bannerEndInput').value;
+      const weeklyDayRaw = document.getElementById('bannerWeeklyDayInput').value;
+      const weeklyDay = weeklyDayRaw === '' ? null : parseInt(weeklyDayRaw, 10);
+      const msgEl = document.getElementById('bannerMsg');
+      if (!pendingBannerImg) {
+        setMsg(msgEl, 'Banner uchun rasm tanlang.', 'err');
+        return;
+      }
+      setMsg(msgEl, 'Qo\'shilmoqda...');
+      const res = await apiPost('/api/banner-add', { imageUrl: pendingBannerImg, title, link, startAt, endAt, weeklyDay });
+      if (res.ok) {
+        setMsg(msgEl, 'Banner qo\'shildi.', 'ok');
+        pendingBannerImg = '';
+        document.getElementById('bannerTitleInput').value = '';
+        document.getElementById('bannerLinkInput').value = '';
+        document.getElementById('bannerStartInput').value = '';
+        document.getElementById('bannerEndInput').value = '';
+        document.getElementById('bannerWeeklyDayInput').value = '';
+        const preview = document.getElementById('bannerImgPreview');
+        if (preview) preview.outerHTML = `<div id="bannerImgPreview" class="logo-picker-preview logo-picker-preview-empty">${icon('image', 'icon-md')}</div>`;
+        const removeBtn = document.getElementById('bannerImgRemoveBtn');
+        if (removeBtn) removeBtn.remove();
+        loadBannerAndRender();
+      } else {
+        handleFeatureBlocked(res);
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+      }
+    });
+
+    document.getElementById('bannerList').addEventListener('click', async (e) => {
+      const toggleId = e.target.getAttribute('data-toggle-banner-id');
+      const removeId = e.target.getAttribute('data-remove-banner-id');
+      if (toggleId) {
+        e.target.disabled = true;
+        await apiPost('/api/banner-toggle', { id: toggleId });
+        loadBannerAndRender();
+      } else if (removeId) {
+        e.target.disabled = true;
+        await apiPost('/api/banner-remove', { id: removeId });
+        loadBannerAndRender();
+      }
+    });
+
+    document.getElementById('saveFridayBannerBtn').addEventListener('click', async () => {
+      const title = document.getElementById('fridayBannerTitleInput').value.trim();
+      const link = document.getElementById('fridayBannerLinkInput').value.trim();
+      const msgEl = document.getElementById('fridayBannerMsg');
+      if (!pendingFridayBannerImg) {
+        setMsg(msgEl, 'Juma banneri uchun rasm tanlang.', 'err');
+        return;
+      }
+      setMsg(msgEl, 'Saqlanmoqda...');
+      const res = await apiPost('/api/friday-banner-save', { imageUrl: pendingFridayBannerImg, title, link });
+      if (res.ok) {
+        setMsg(msgEl, 'Juma banneri saqlandi.', 'ok');
+        pendingFridayBannerImg = '';
+        document.getElementById('fridayBannerTitleInput').value = '';
+        document.getElementById('fridayBannerLinkInput').value = '';
+        const preview = document.getElementById('fridayBannerImgPreview');
+        if (preview) preview.outerHTML = `<div id="fridayBannerImgPreview" class="logo-picker-preview logo-picker-preview-empty">${icon('image', 'icon-md')}</div>`;
+        const removeBtn = document.getElementById('fridayBannerImgRemoveBtn');
+        if (removeBtn) removeBtn.remove();
+        loadFridayBannerAndRender();
+      } else {
+        handleFeatureBlocked(res);
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+      }
+    });
+
+    document.getElementById('fridayBannerStatus').addEventListener('click', async (e) => {
+      const toggle = e.target.hasAttribute('data-toggle-friday-banner');
+      const remove = e.target.hasAttribute('data-remove-friday-banner');
+      if (toggle) {
+        e.target.disabled = true;
+        await apiPost('/api/friday-banner-toggle');
+        loadFridayBannerAndRender();
+      } else if (remove) {
+        e.target.disabled = true;
+        await apiPost('/api/friday-banner-remove');
+        loadFridayBannerAndRender();
+      }
+    });
+
+    document.getElementById('saveBonusBtn').addEventListener('click', async () => {
+      const enabled = document.getElementById('bonusEnabledInput').checked;
+      const earnPercent = document.getElementById('bonusPercentInput').value.trim();
+      const msgEl = document.getElementById('bonusMsg');
+      if (enabled && (!earnPercent || !/^\d+$/.test(earnPercent))) {
+        setMsg(msgEl, 'Bonus foizini kiriting.', 'err');
+        return;
+      }
+      setMsg(msgEl, 'Saqlanmoqda...');
+      const res = await apiPost('/api/bonus-settings-save', { enabled, earnPercent: earnPercent || 0 });
+      if (res.ok) {
+        setMsg(msgEl, 'Saqlandi.', 'ok');
+      } else {
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+      }
+    });
+
+    document.getElementById('removeDeliveryGroupBtn').addEventListener('click', async () => {
+      const msgEl = document.getElementById('deliveryGroupMsg');
+      setMsg(msgEl, 'Bekor qilinmoqda...');
+      const res = await apiPost('/api/delivery-group-remove');
+      if (res.ok) {
+        setMsg(msgEl, 'Guruh bog\'lanishdan chiqarildi.', 'ok');
+        loadDeliveryGroupStatus();
+      } else {
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+      }
+    });
+
+    document.getElementById('removeKitchenGroupBtn').addEventListener('click', async () => {
+      const msgEl = document.getElementById('kitchenGroupMsg');
+      setMsg(msgEl, 'Bekor qilinmoqda...');
+      const res = await apiPost('/api/kitchen-group-remove');
+      if (res.ok) {
+        setMsg(msgEl, 'Guruh bog\'lanishdan chiqarildi.', 'ok');
+        loadKitchenGroupStatus();
+      } else {
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+      }
+    });
+
+    loadCategoriesAndRender();
+    loadPromoAndRender();
+    loadBannerAndRender();
+    loadFridayBannerAndRender();
+    loadBonusSettingsAndRender();
+    loadDeliveryGroupStatus();
+    loadKitchenGroupStatus();
+    loadOwnerTariffInfo();
+  }
+
+  async function loadOwnerTariffInfo() {
+    const el = document.getElementById('profileTariffInfo');
+    if (!el) return;
+    const res = await apiPost('/api/my-profile');
+    if (!res.ok) {
+      el.textContent = 'Yuklab bo\'lmadi.';
+      return;
+    }
+    el.textContent = res.tariff ? res.tariff.name : 'Tarif belgilanmagan';
+  }
+
+  const ONBOARDING_STEPS = [
+    { title: "Asosiy ma'lumot" },
+    { title: "Qo'shimcha ma'lumot" },
+    { title: 'Tekshirib chiqish' }
+  ];
+  let onboardingState = null;
+
+  function onboardingStepBodyHtml(s) {
+    const d = s.data;
+    if (s.step === 1) {
+      return `
+        <label class="field-label">Oshxona nomi *</label>
+        <input type="text" id="obName" placeholder="Masalan: Osh Markazi" value="${escapeHtml(d.name)}">
+        <label class="field-label">Manzil *</label>
+        <input type="text" id="obAddress" placeholder="Shahar, ko'cha, uy" value="${escapeHtml(d.address)}">
+        <label class="field-label">Telefon *</label>
+        <input type="text" id="obPhone" placeholder="+998901234567" value="${escapeHtml(d.phone)}">
+      `;
+    }
+    if (s.step === 2) {
+      return `
+        <label class="field-label">Ish vaqti</label>
+        <input type="text" id="obWorkHours" placeholder="09:00 - 23:00" value="${escapeHtml(d.workHours)}">
+        ${logoPickerHtml('obLogo', d.logoUrl)}
+      `;
+    }
+    const reviewRow = (label, value, stepNum) => `
+      <div class="onboarding-review-row">
+        <div>
+          <div class="review-label">${escapeHtml(label)}</div>
+          <div class="review-value">${value ? escapeHtml(value) : '— kiritilmagan'}</div>
+        </div>
+        <span class="review-edit-link" data-onboard-edit-step="${stepNum}">O'zgartirish</span>
+      </div>
+    `;
+    return `
+      ${reviewRow('Oshxona nomi', d.name, 1)}
+      ${reviewRow('Manzil', d.address, 1)}
+      ${reviewRow('Telefon', d.phone, 1)}
+      ${reviewRow('Ish vaqti', d.workHours, 2)}
+      <div class="onboarding-review-row">
+        <div>
+          <div class="review-label">Logotip</div>
+          ${d.logoUrl
+            ? `<img class="logo-picker-preview logo-picker-preview-sm" src="${escapeHtml(d.logoUrl)}" onerror="this.style.display='none'">`
+            : `<div class="review-value">— tanlanmagan</div>`}
+        </div>
+        <span class="review-edit-link" data-onboard-edit-step="2">O'zgartirish</span>
+      </div>
+    `;
+  }
+
+  function collectOnboardingStepInputs(s) {
+    if (s.step === 1) {
+      s.data.name = document.getElementById('obName').value.trim();
+      s.data.address = document.getElementById('obAddress').value.trim();
+      s.data.phone = document.getElementById('obPhone').value.trim();
+    } else if (s.step === 2) {
+      s.data.workHours = document.getElementById('obWorkHours').value.trim();
+    }
+  }
+
+  function renderProfileOnboarding() {
+    if (!onboardingState) {
+      onboardingState = { step: 1, data: { name: '', address: '', phone: '', workHours: '', logoUrl: '' } };
+    }
+    clearAppHeader();
+    const s = onboardingState;
+    const total = ONBOARDING_STEPS.length;
+    ekran(`
+      <div class="panel">
+        <div class="salom">Profilni to'ldiring</div>
+        <div class="bosh">${s.step}-qadam / ${total} — ${escapeHtml(ONBOARDING_STEPS[s.step - 1].title)}</div>
+        <div class="onboarding-steps">
+          ${ONBOARDING_STEPS.map((_, i) => `<div class="step-seg ${i + 1 < s.step ? 'done' : ''} ${i + 1 === s.step ? 'active' : ''}"></div>`).join('')}
+        </div>
+        <div class="kartochka">
+          ${onboardingStepBodyHtml(s)}
+          <div class="xabar" id="onboardMsg"></div>
+          <div class="btn-row" style="margin-top:10px;">
+            ${s.step > 1 ? `<button class="btn ikkinchi" id="onboardBackBtn">← Orqaga</button>` : ''}
+            <button class="btn" id="onboardNextBtn">${s.step < total ? 'Keyingi →' : 'Saqlash'}</button>
+          </div>
+        </div>
+      </div>
+    `);
+
+    if (s.step > 1) {
+      document.getElementById('onboardBackBtn').addEventListener('click', () => {
+        collectOnboardingStepInputs(s);
+        s.step -= 1;
+        renderProfileOnboarding();
+      });
+    }
+
+    if (s.step === 2) {
+      attachLogoPickerHandlers('obLogo', (val) => { s.data.logoUrl = val; });
+    }
+
+    document.querySelectorAll('[data-onboard-edit-step]').forEach(el => {
+      el.addEventListener('click', () => {
+        s.step = parseInt(el.getAttribute('data-onboard-edit-step'), 10);
+        renderProfileOnboarding();
+      });
+    });
+
+    document.getElementById('onboardNextBtn').addEventListener('click', async () => {
+      const msgEl = document.getElementById('onboardMsg');
+      if (s.step === 1) {
+        const name = document.getElementById('obName').value.trim();
+        const address = document.getElementById('obAddress').value.trim();
+        const phone = document.getElementById('obPhone').value.trim();
+        if (!name || !address || !phone) {
+          setMsg(msgEl, "Yulduzcha (*) bilan belgilangan maydonlarni to'ldiring.", 'err');
+          return;
+        }
+        s.data.name = name; s.data.address = address; s.data.phone = phone;
+        s.step = 2;
+        renderProfileOnboarding();
+        return;
+      }
+      if (s.step === 2) {
+        s.data.workHours = document.getElementById('obWorkHours').value.trim();
+        s.step = 3;
+        renderProfileOnboarding();
+        return;
+      }
+
+      const btn = document.getElementById('onboardNextBtn');
+      btn.disabled = true;
+      setMsg(msgEl, 'Saqlanmoqda...');
+      const res = await apiPost('/api/save-profile', { ...s.data });
+      if (!res.ok) {
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+        btn.disabled = false;
+        return;
+      }
+      onboardingState = null;
+      renderOwnerHomeScreen(res.profile);
+    });
+  }
+
+  const ROLE_LABELS = { kassir: 'Kassir' };
+  function rolesLabelClient(roles) {
+    return (roles || []).map(r => ROLE_LABELS[r] || r).join(', ') || '—';
+  }
+
+  const ROLE_ICONS = { kassir: 'wallet' };
+
+  function staffRoles(s) {
+    if (Array.isArray(s.roles) && s.roles.length) return s.roles;
+    return s.role ? [s.role] : [];
+  }
+
+  function staffChosenRoleKey() {
+    const tgUserId = tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.id;
+    return tgUserId ? `kitchenOsStaffRole:${tgUserId}` : null;
+  }
+
+  function staffListHtml(staff) {
+    if (!staff || !staff.length) return `<div class="bosh">Hozircha xodimlar yo'q.</div>`;
+    return staff.map(s => {
+      const branch = branchState.branches.find(b => b.id === s.branchId);
+      const roles = staffRoles(s);
+      const roleBadges = roles.map(r => `<span class="role-badge">${escapeHtml(ROLE_LABELS[r] || r)}</span>`).join(' ');
+      const roleCheckboxes = Object.entries(ROLE_LABELS).map(([key, label]) => `
+        <label class="check-label" style="font-size:var(--fs-xs);">
+          <input type="checkbox" data-staff-role-checkbox="${escapeHtml(s.id)}" value="${key}" ${roles.includes(key) ? 'checked' : ''}>
+          ${escapeHtml(label)}
+        </label>
+      `).join('');
+      return `
+      <div class="owner-item">
+        <div>
+          <div class="owner-id">${escapeHtml(s.id)}</div>
+          ${s.username ? `<div class="owner-username">@${escapeHtml(s.username)}</div>` : ''}
+          <div class="owner-expiry">${roleBadges} · ${branch ? escapeHtml(branch.name) : 'Markaziy'}</div>
+          <select data-staff-branch-id="${escapeHtml(s.id)}" style="margin-top:8px;">${branchOptionsHtml(s.branchId)}</select>
+          <div class="staff-role-grid">${roleCheckboxes}</div>
+        </div>
+        <button data-remove-staff-id="${escapeHtml(s.id)}">O'chirish</button>
+      </div>
+    `;
+    }).join('');
+  }
+
+  function branchListHtml(branches) {
+    if (!branches || !branches.length) return `<div class="bosh">Hozircha filiallar yo'q.</div>`;
+    return branches.map(b => {
+      const dgBound = !!b.deliveryGroupId;
+      const kgBound = !!b.kitchenGroupId;
+      return `
+      <div class="owner-item" style="flex-direction:column; align-items:stretch; gap:8px;">
+        <div style="display:flex; justify-content:space-between; align-items:flex-start;">
+          <div>
+            <div class="owner-id">${escapeHtml(b.name)}</div>
+            <div class="owner-username">${escapeHtml(b.address)}</div>
+            ${b.phone ? `<div class="owner-expiry">${escapeHtml(b.phone)}</div>` : ''}
+          </div>
+          <button data-remove-branch-id="${escapeHtml(b.id)}">O'chirish</button>
+        </div>
+        <div style="font-size:var(--fs-xs); background:rgba(120,120,120,.12); border-radius:8px; padding:8px;">
+          <div style="margin-bottom:4px;">${icon('send', 'icon-xs')} Guruh ulash — bu filial kodini nusxalab, kerakli guruhga yuboring:</div>
+          <div style="display:flex; align-items:center; gap:6px; margin-bottom:4px;">
+            <code style="flex:1; word-break:break-all;">/biriktir ${escapeHtml(b.id)}</code>
+            <button type="button" class="btn ikkinchi" data-copy-cmd="/biriktir ${escapeHtml(b.id)}" style="padding:4px 8px;">${icon('link', 'icon-xs')}</button>
+            <span style="color:${dgBound ? 'var(--tg-theme-link-color,#2ea6ff)' : 'inherit'};">${dgBound ? '✅' : '—'}</span>
+          </div>
+          <div style="display:flex; align-items:center; gap:6px;">
+            <code style="flex:1; word-break:break-all;">/oshpaz_biriktir ${escapeHtml(b.id)}</code>
+            <button type="button" class="btn ikkinchi" data-copy-cmd="/oshpaz_biriktir ${escapeHtml(b.id)}" style="padding:4px 8px;">${icon('link', 'icon-xs')}</button>
+            <span style="color:${kgBound ? 'var(--tg-theme-link-color,#2ea6ff)' : 'inherit'};">${kgBound ? '✅' : '—'}</span>
+          </div>
+        </div>
+      </div>
+    `;
+    }).join('');
+  }
+
+  let branchState = { branches: [], centralBranchName: null };
+
+  // Egasi bosh sahifada qaysi filialni ko'rib turganini boshqaradi.
+  // 'barchasi' -> barcha filiallar birlashtirilgan (eski xatti-harakat, branchId yubormaydi).
+  // 'markaziy' -> faqat markaziy (filialsiz), server tomonga branchId: null yuboriladi.
+  // '<branchId>' -> faqat shu filial.
+  let activeBranchId = (function () {
+    try { return localStorage.getItem('koActiveBranchId') || 'barchasi'; } catch (e) { return 'barchasi'; }
+  })();
+
+  function setActiveBranchId(val) {
+    activeBranchId = val || 'barchasi';
+    try { localStorage.setItem('koActiveBranchId', activeBranchId); } catch (e) {}
+  }
+
+  function activeBranchIdForApi() {
+    if (activeBranchId === 'barchasi') return undefined;
+    if (activeBranchId === 'markaziy') return null;
+    return activeBranchId;
+  }
+
+  function koBranchSwitcherOptionsHtml() {
+    const parts = [];
+    parts.push(`<option value="barchasi">Barcha filiallar</option>`);
+    parts.push(`<option value="markaziy">${escapeHtml(branchState.centralBranchName || 'Markaziy')}</option>`);
+    for (const b of (branchState.branches || [])) {
+      parts.push(`<option value="${escapeHtml(b.id)}">${escapeHtml(b.name)}</option>`);
+    }
+    return parts.join('');
+  }
+
+  function centralLocationLabel() {
+    return branchState.centralBranchName || 'Markaziy';
+  }
+
+  // opts.includeCentral = false -> markaziy variantini chiqarmaydi (masalan,
+  // omborga o'tkazish shakli, chunki markazidan markaziyga o'tkazib bo'lmaydi).
+  // opts.centralSuffix -> markaziy nomiga qo'shimcha so'z (masalan " sklad").
+  function branchOptionsHtml(selectedId, opts) {
+    const o = opts || {};
+    const includeCentral = o.includeCentral !== false;
+    const centralText = centralLocationLabel() + (o.centralSuffix || '');
+    const parts = [];
+    if (includeCentral) {
+      parts.push(`<option value="">— ${escapeHtml(centralText)} (filialsiz) —</option>`);
+    }
+    for (const b of branchState.branches) {
+      parts.push(`<option value="${escapeHtml(b.id)}" ${selectedId === b.id ? 'selected' : ''}>${escapeHtml(b.name)}</option>`);
+    }
+    return parts.join('');
+  }
+
+  async function loadBranchAndRender() {
+    const listEl = document.getElementById('branchList');
+    const res = await apiPost('/api/branch-list');
+    if (res.networkError) { if (listEl) renderNetworkErrorInline(listEl, res.reason, loadBranchAndRender); return; }
+    branchState.branches = res.ok ? res.branches : [];
+    branchState.centralBranchName = res.ok ? (res.centralBranchName || null) : null;
+    if (listEl) listEl.innerHTML = branchListHtml(branchState.branches);
+    const limitEl = document.getElementById('branchLimitLabel');
+    if (limitEl) {
+      limitEl.textContent = res.ok && res.maxBranches
+        ? `${branchState.branches.length} / ${res.maxBranches} filial ishlatilmoqda`
+        : '';
+    }
+    const centralNameInput = document.getElementById('centralBranchNameInput');
+    if (centralNameInput && document.activeElement !== centralNameInput) centralNameInput.value = branchState.centralBranchName || '';
+    const staffBranchSelect = document.getElementById('staffBranchInput');
+    if (staffBranchSelect) staffBranchSelect.innerHTML = branchOptionsHtml(null);
+    const branchSwitcher = document.getElementById('koBranchSwitcher');
+    if (branchSwitcher) {
+      branchSwitcher.innerHTML = koBranchSwitcherOptionsHtml();
+      branchSwitcher.value = activeBranchId;
+    }
+  }
+
+  const KO_MONTH_NAMES = ['Yanvar', 'Fevral', 'Mart', 'Aprel', 'May', 'Iyun',
+    'Iyul', 'Avgust', 'Sentyabr', 'Oktyabr', 'Noyabr', 'Dekabr'];
+
+  function koTodayLabel() {
+    const d = new Date();
+    return `${d.getDate()} ${KO_MONTH_NAMES[d.getMonth()]}`;
+  }
+
+  function koHomeHeaderHtml(unreadCount, restaurantName) {
+    const count = unreadCount || 0;
+    return `
+      <div class="ko-home-header">
+        <div class="ko-home-header-left">
+          <button type="button" class="ko-home-header-menu-btn" id="koHeaderMenuBtn" aria-label="Menyu">
+            ${icon('menu', 'icon-lg')}
+          </button>
+          <div class="ko-home-header-logo">${icon('chef-hat', 'icon-md')}</div>
+          <div class="ko-home-header-titles">
+            <div class="ko-home-header-title">${escapeHtml(restaurantName || '')}</div>
+            <select id="koBranchSwitcher" class="ko-branch-switcher">${koBranchSwitcherOptionsHtml()}</select>
+          </div>
+        </div>
+        <div class="ko-home-header-right">
+          <div class="ko-home-header-date">${icon('calendar', 'icon-xs')}<span>${koTodayLabel()}</span></div>
+          <button type="button" class="ko-home-header-bell-btn" id="koHeaderBellBtn" aria-label="Bildirishnomalar">
+            ${icon('bell', 'icon-sm')}
+            ${count > 0 ? `<span class="ko-home-header-bell-badge">${count}</span>` : ''}
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  function wireKoHomeHeader(profile) {
+    const menuBtn = document.getElementById('koHeaderMenuBtn');
+    const bellBtn = document.getElementById('koHeaderBellBtn');
+    const branchSwitcher = document.getElementById('koBranchSwitcher');
+    if (menuBtn) menuBtn.addEventListener('click', () => openKoSidebar(profile));
+    if (bellBtn) bellBtn.addEventListener('click', () => renderNotificationsScreen(profile, () => renderOwnerHomeScreen(profile)));
+    if (branchSwitcher) {
+      branchSwitcher.value = activeBranchId;
+      branchSwitcher.addEventListener('change', () => {
+        setActiveBranchId(branchSwitcher.value);
+        renderOwnerHomeScreen(profile);
+      });
+    }
+  }
+
+  function koBottomNavHtml(activeKey) {
+    return `
+      <div class="ko-bottom-nav" id="koBottomNav">
+        <button type="button" class="ko-bottom-nav-item ${activeKey === 'bosh' ? 'active' : ''}" data-ko-nav="bosh">
+          ${icon('home')}
+          <span>Bosh sahifa</span>
+        </button>
+        <button type="button" class="ko-bottom-nav-item ${activeKey === 'savdo' ? 'active' : ''}" data-ko-nav="savdo">
+          ${icon('bar-chart')}
+          <span>Savdo</span>
+        </button>
+        <button type="button" class="ko-bottom-nav-item ko-bottom-nav-fab-item" data-ko-nav="yangiBuyurtma">
+          <span class="ko-bottom-nav-fab">${icon('plus')}</span>
+          <span>Yangi buyurtma</span>
+        </button>
+        <button type="button" class="ko-bottom-nav-item ${activeKey === 'ombor' ? 'active' : ''}" data-ko-nav="ombor">
+          ${icon('box')}
+          <span>Ombor</span>
+        </button>
+        <button type="button" class="ko-bottom-nav-item ${activeKey === 'profil' ? 'active' : ''}" data-ko-nav="profil">
+          ${icon('user')}
+          <span>Profil</span>
+        </button>
+      </div>
+    `;
+  }
+
+  function wireKoBottomNav(profile) {
+    const nav = document.getElementById('koBottomNav');
+    if (!nav) return;
+    const goBack = () => renderOwnerHomeScreen(profile);
+    nav.querySelectorAll('[data-ko-nav]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const key = btn.getAttribute('data-ko-nav');
+        if (key === 'bosh') return;
+        if (key === 'savdo') { renderCashflowScreen(profile, goBack); return; }
+        if (key === 'yangiBuyurtma') {
+          cashierState.tab = 'yaratish';
+          renderCashierScreen(profile.name, goBack);
+          return;
+        }
+        if (key === 'ombor') { renderStockScreen(profile.name, 'egasi', goBack); return; }
+        if (key === 'profil') { renderOwnerProfileScreen(profile, goBack); return; }
+        console.log(`Pulsar: pastki nav "${key}" (hali ulanmagan)`);
+      });
+    });
+  }
+
+  function updateKoNotifBadges(count) {
+    const bellBtn = document.getElementById('koHeaderBellBtn');
+    if (bellBtn) {
+      const existing = bellBtn.querySelector('.ko-home-header-bell-badge');
+      if (count > 0) {
+        if (existing) existing.textContent = String(count);
+        else bellBtn.insertAdjacentHTML('beforeend', `<span class="ko-home-header-bell-badge">${count}</span>`);
+      } else if (existing) {
+        existing.remove();
       }
     }
-    readBody(req, async (err, update) => {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end('{"ok":true}');
-      if (err) return;
-      webhookStats.received++;
-      webhookStats.lastAt = new Date().toISOString();
-      try { await handleTelegramUpdate(update); } catch (e) { webhookStats.errors++; console.error('Webhook xatosi:', e); }
-    });
-    return;
+
   }
 
-  const urlPathOnly = req.url.split('?')[0];
-  let filePath = (urlPathOnly === '/' || urlPathOnly === '') ? '/index.html' : urlPathOnly;
-  filePath = path.join(__dirname, 'public', path.normalize(filePath).replace(/^(\.\.[\/\\])+/, ''));
+  function koFormatCompact(n) {
+    const num = Number(n || 0);
+    const abs = Math.abs(num);
+    if (abs >= 1000000) return (num / 1000000).toFixed(2).replace(/\.?0+$/, '') + 'M';
+    if (abs >= 1000) return (num / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
+    return String(Math.round(num));
+  }
 
-  fs.readFile(filePath, (err, data) => {
-    if (err) {
-      res.writeHead(404, { 'Content-Type': 'text/plain' });
-      return res.end('404');
+  function koFormatDelta(todayVal, yesterdayVal) {
+    const y = Number(yesterdayVal || 0);
+    const t = Number(todayVal || 0);
+    if (y === 0) {
+      if (t === 0) return null;
+      return { tone: 'up', text: '+100%' };
     }
-    const ext = path.extname(filePath);
-    const type = ext === '.html' ? 'text/html'
-      : ext === '.js' ? 'application/javascript'
-      : ext === '.css' ? 'text/css'
-      : ext === '.json' ? 'application/json'
-      : ext === '.svg' ? 'image/svg+xml'
-      : ext === '.png' ? 'image/png'
-      : 'text/plain';
-
-    // index.html har doim "yangi" bo'lishi kerak (Mini App ochilganda eng
-    // so'nggi versiyani ko'rsatsin), shuning uchun uni umuman cache
-    // qilmaymiz. app.js/style.css esa "?v=N" bilan versiyalanadi (public/
-    // index.html'da), shu sababli xavfsiz — ularni uzoq muddat cache qilish
-    // mumkin: versiya raqami o'zgarganda URL ham o'zgaradi, WebView avtomatik
-    // yangisini oladi. Bu har ochilishda serverdan qayta yuklab olishni
-    // kamaytiradi va serverga tushayotgan yukni pasaytiradi.
-    const cacheControl = ext === '.html'
-      ? 'no-cache, no-store, must-revalidate'
-      : (ext === '.js' || ext === '.css')
-        ? 'public, max-age=31536000, immutable'
-        : 'public, max-age=3600';
-
-    res.writeHead(200, { 'Content-Type': type + '; charset=utf-8', 'Cache-Control': cacheControl });
-    res.end(data);
-  });
-}
-
-const DEFAULT_TARIFF_FEATURE_IDS = FEATURE_CATALOG.map(f => f.id);
-
-function buildTariffFeatures(onIds) {
-  const onSet = new Set(onIds);
-  const features = {};
-  DEFAULT_TARIFF_FEATURE_IDS.forEach(id => { features[id] = onSet.has(id); });
-  return features;
-}
-
-// Agar hali birorta tarif yaratilmagan bo'lsa (masalan birinchi marta
-// ishga tushirilganda, yoki DATA_DIR boshqa joyga — masalan Railway
-// volume'ga — ko'rsatilgani sababli avvalgi tariffs.json fayli
-// ko'rinmayotgan bo'lsa), standart 4 ta tarifni avtomatik yaratib
-// qo'yadi. Admin keyinchalik Tariflar bo'limidan istagancha o'zgartira
-// oladi — bu faqat BIR MARTALIK boshlang'ich holat.
-function seedDefaultTariffsIfEmpty() {
-  console.log(`[tarif-seed] DATA_DIR=${DATA_DIR}, tariffs fayli=${TARIFFS_FILE}`);
-  const existing = loadTariffs();
-  console.log(`[tarif-seed] Mavjud tariflar soni: ${existing.length}`);
-  if (existing.length) {
-    console.log('[tarif-seed] Allaqachon tarif mavjud, o\'tkazib yuborildi.');
-    return;
+    const pct = ((t - y) / Math.abs(y)) * 100;
+    const tone = pct >= 0 ? 'up' : 'down';
+    const rounded = Math.abs(pct) >= 10 ? Math.round(pct) : Math.round(pct * 10) / 10;
+    return { tone, text: (pct >= 0 ? '+' : '') + rounded + '%' };
   }
 
-  const CORE = ['cashier-panel', 'staff-invite', 'shift-toggle',
-    'menu-manage', 'category-manage', 'orders-manage', 'delivery-group', 'kitchen-group',
-    'stock-manage', 'expense-manage', 'cashflow', 'customer-menu',
-    'customer-account', 'support-chat', 'restaurant-brand', 'system-status', 'notification-log',
-    'dashboard'];
-  const STANDARD_ADDS = ['staff-roles', 'branch-manage', 'combo-manage', 'promo-manage', 'banner-manage', 'bonus-settings', 'z-report', 'ai-analytics'];
-  const BUSINESS_ADDS = ['staff-performance', 'ai-waiter', 'audit'];
-  const PREMIUM_ADDS = ['ai-director'];
+  function koKpiCardHtml(iconName, label, value, delta, cardId) {
+    return `
+      <div class="ko-kpi-card${cardId ? ' ko-kpi-clickable' : ''}"${cardId ? ` id="${cardId}"` : ''}>
+        <div class="ko-kpi-label">${escapeHtml(label)}</div>
+        <div class="ko-kpi-icon">${icon(iconName)}</div>
+        <div class="ko-kpi-value">${escapeHtml(value)}</div>
+        ${delta ? `
+          <div class="ko-kpi-delta ${delta.tone}">
+            ${delta.tone === 'up' ? icon('trending-up', 'icon-xs') : ''}
+            <span>${escapeHtml(delta.text)}</span>
+          </div>
+        ` : ''}
+      </div>
+    `;
+  }
 
-  const now = new Date().toISOString();
-  const defs = [
-    { name: 'Starter', price: 299000, maxBranches: null, branchManage: false, on: [...CORE] },
-    { name: 'Standard', price: 549000, maxBranches: 3, branchManage: true, on: [...CORE, ...STANDARD_ADDS] },
-    { name: 'Business', price: 680000, maxBranches: 10, branchManage: true, on: [...CORE, ...STANDARD_ADDS, ...BUSINESS_ADDS] },
-    { name: 'Premium', price: 1300000, maxBranches: null, branchManage: true, on: [...CORE, ...STANDARD_ADDS, ...BUSINESS_ADDS, ...PREMIUM_ADDS] }
+  function koKpiSkeletonCardHtml(label) {
+    return `
+      <div class="ko-kpi-card skeleton-tile">
+        <div class="ko-kpi-label">${escapeHtml(label)}</div>
+        <div class="ko-kpi-icon">${icon('wallet')}</div>
+        <div class="ko-kpi-value skeleton"></div>
+        <div class="ko-kpi-delta skeleton"></div>
+      </div>
+    `;
+  }
+
+  function koKpiGridSkeletonHtml() {
+    const labels = ['Bugungi savdo', 'Sof foyda', 'Buyurtmalar', 'Kuryer hisoboti'];
+    return `<div class="ko-kpi-grid" id="koKpiGrid">${labels.map(koKpiSkeletonCardHtml).join('')}</div>`;
+  }
+
+  function koFormatCountDelta(todayVal, yesterdayVal) {
+    const t = Number(todayVal || 0);
+    const y = Number(yesterdayVal || 0);
+    const diff = t - y;
+    if (diff === 0) return null;
+    const tone = diff > 0 ? 'up' : 'down';
+    return { tone, text: (diff > 0 ? '+' : '') + diff + ' ta' };
+  }
+
+  function koKpiGridHtml(summary) {
+    const cards = [
+      koKpiCardHtml('wallet', 'Bugungi savdo',
+        koFormatCompact(summary.todaySales),
+        koFormatDelta(summary.todaySales, summary.yesterdaySales)),
+      koKpiCardHtml('trending-up', 'Sof foyda',
+        koFormatCompact(summary.todayNetProfit),
+        koFormatDelta(summary.todayNetProfit, summary.yesterdayNetProfit)),
+      koKpiCardHtml('clipboard', 'Buyurtmalar',
+        koFormatCompact(summary.todayOrderCount),
+        koFormatCountDelta(summary.todayOrderCount, summary.yesterdayOrderCount)),
+      koKpiCardHtml('scooter', 'Kuryer hisoboti',
+        koFormatCompact(summary.todayCourierDeliveries),
+        koFormatCountDelta(summary.todayCourierDeliveries, summary.yesterdayCourierDeliveries),
+        'koCourierCard')
+    ];
+    return `<div class="ko-kpi-grid" id="koKpiGrid">${cards.join('')}</div>`;
+  }
+
+  async function loadKoKpiGrid(profile) {
+    const el = document.getElementById('koKpiGrid');
+    if (!el) return;
+    const res = await apiPost('/api/dashboard-summary', { branchId: activeBranchIdForApi() });
+    const el2 = document.getElementById('koKpiGrid');
+    if (!el2) return;
+    if (res.networkError) {
+
+      el2.outerHTML = `<div class="kartochka" id="koKpiGrid"></div>`;
+      renderNetworkErrorInline(document.getElementById('koKpiGrid'), res.reason, () => loadKoKpiGrid(profile));
+      return;
+    }
+    if (!res.ok) {
+      el2.outerHTML = `<div class="ko-kpi-grid" id="koKpiGrid"><div class="bosh">KPI ma'lumotlari yuklanmadi.</div></div>`;
+      return;
+    }
+    el2.outerHTML = koKpiGridHtml(res.summary);
+  }
+
+  const KO_STATUS_COLUMNS = [
+    { key: 'yangi', icon: 'file-plus', label: 'Yangi' },
+    { key: 'tayyorlanmoqda', icon: 'chef-hat', label: 'Tayyorlanmoqda' },
+    { key: 'tayyor', icon: 'cloche', label: 'Tayyor' },
+    { key: 'kechikayotgan', icon: 'clock', label: 'Kechikayotgan' }
   ];
 
-  const tariffs = defs.map((d, i) => {
-    const features = buildTariffFeatures(d.on);
-    features['branch-manage'] = d.branchManage;
-    return {
-      id: crypto.randomBytes(4).toString('hex'),
-      name: d.name,
-      order: i,
-      price: d.price,
-      maxBranches: d.maxBranches,
-      reminderDays: 1,
-      features,
-      createdAt: now
-    };
-  });
-  saveTariffs(tariffs);
-  console.log(`Standart tariflar avtomatik yaratildi: ${tariffs.map(t => t.name).join(', ')}`);
-}
-
-function ensureAdminIsOwner() {
-  if (!ADMIN_ID || ADMIN_ID === 'ADMIN_TELEGRAM_ID_BU_YERGA') return;
-  const owners = loadOwners();
-  const idStr = String(ADMIN_ID);
-  let owner = findOwner(owners, idStr);
-  if (!owner) {
-    owner = {
-      id: idStr,
-      username: null,
-      addedAt: new Date().toISOString(),
-      expiresAt: null,
-      price: 0,
-      paid: true,
-      paidAt: new Date().toISOString(),
-      subscriptionStatus: SUBSCRIPTION_STATUS.ACTIVE,
-      subscriptionUntil: null, // null = muddatsiz, cheklovsiz kirish
-      graceUntil: null,
-      trialGivenAt: null,
-      tariffId: null // tarif yo'q = barcha funksiyalar ochiq (ownerCanUseFeature)
-    };
-    owners.push(owner);
-    saveOwners(owners);
-    console.log(`ADMIN_ID (${idStr}) owner sifatida avtomatik ro'yxatga olindi (cheklovsiz kirish).`);
-  } else if (owner.subscriptionStatus !== SUBSCRIPTION_STATUS.ACTIVE || owner.subscriptionUntil) {
-    // Avval boshqa holatda bo'lsa ham (masalan pending_trial yoki muddati
-    // tugagan), ADMIN_ID doim cheklovsiz faol owner bo'lib qolishi kerak.
-    owner.subscriptionStatus = SUBSCRIPTION_STATUS.ACTIVE;
-    owner.subscriptionUntil = null;
-    owner.graceUntil = null;
-    owner.blockedNotifiedAt = null;
-    saveOwners(owners);
-  }
-}
-
-server.listen(PORT, async () => {
-  console.log(`Server ${PORT}-portda ishga tushdi`);
-
-  reloadAdminsCache();
-  console.log(`Qo'shimcha adminlar soni: ${EXTRA_ADMIN_IDS.size}`);
-
-  try {
-    const cmdResult = await telegramApi('setMyCommands', { commands: JSON.stringify([
-      { command: 'sklad', description: "Sklad: ostatka, retsept, audit" }
-    ]) });
-    if (!cmdResult || !cmdResult.ok) console.error('setMyCommands xato:', cmdResult && cmdResult.description);
-  } catch (e) {
-    console.error('Bot buyruqlarini o\'rnatishda xatolik:', e.message);
+  function koStatusColumnHtml(col, count) {
+    return `
+      <div class="ko-status-col" data-status-key="${col.key}">
+        <div class="ko-status-col-label">${escapeHtml(col.label)}</div>
+        <div class="ko-status-col-icon">${icon(col.icon)}</div>
+        <div class="ko-status-col-value${count === null ? ' skeleton' : ''}">${count === null ? '' : escapeHtml(String(count))}</div>
+      </div>
+    `;
   }
 
-  try {
-    ensureAdminIsOwner();
-  } catch (e) {
-    console.error('ADMIN_ID ni owner qilishda xatolik:', e.message);
+  function koStatusBannerHtml(counts) {
+    return `
+      <div class="ko-status-banner kartochka" id="koStatusBanner">
+        <div class="ko-status-banner-header">
+          <span>BUGUNGI HOLAT</span>
+          <button type="button" class="ko-status-banner-all" id="koStatusAllBtn">Barchasi <span class="ko-status-banner-all-chevron">›</span></button>
+        </div>
+        <div class="ko-status-banner-body">
+          ${KO_STATUS_COLUMNS.map(col => koStatusColumnHtml(col, counts[col.key])).join('')}
+        </div>
+      </div>
+    `;
   }
 
-  try {
-    seedDefaultTariffsIfEmpty();
-  } catch (e) {
-    console.error('Standart tariflarni yaratishda xatolik:', e.message);
+  function koStatusBannerSkeletonHtml() {
+    return koStatusBannerHtml({ yangi: null, tayyorlanmoqda: null, tayyor: null, kechikayotgan: null })
+      .replace('id="koStatusBanner"', 'id="koStatusBanner" data-loading="1"');
   }
 
-  checkOwnerExpirations().catch(e => console.error('Muddat tekshirishda xatolik:', e.message));
-  setInterval(() => {
-    checkOwnerExpirations().catch(e => console.error('Muddat tekshirishda xatolik:', e.message));
-  }, EXPIRY_CHECK_INTERVAL_MS);
+  function wireKoStatusBanner(profile) {
+    const btn = document.getElementById('koStatusAllBtn');
+    if (btn) btn.addEventListener('click', () => renderKitchenScreen(profile.name, () => renderOwnerHomeScreen(profile)));
+  }
 
-  checkTrashAutoPurge().catch(e => console.error('Savatchani tozalashda xatolik:', e.message));
-  setInterval(() => {
-    checkTrashAutoPurge().catch(e => console.error('Savatchani tozalashda xatolik:', e.message));
-  }, EXPIRY_CHECK_INTERVAL_MS);
-
-  if (PUBLIC_URL) {
-    try {
-      const params = { url: `${PUBLIC_URL.replace(/\/$/, '')}/webhook` };
-      if (WEBHOOK_SECRET) params.secret_token = WEBHOOK_SECRET;
-      const result = await telegramApi('setWebhook', params);
-      console.log('Telegram webhook o\'rnatildi:', result.ok ? 'muvaffaqiyatli' : JSON.stringify(result));
-    } catch (e) {
-      console.error('Webhook o\'rnatishda xatolik:', e.message);
+  async function loadKoStatusBanner(profile) {
+    const el = document.getElementById('koStatusBanner');
+    if (!el) return;
+    const res = await apiPost('/api/order-status-counts', { branchId: activeBranchIdForApi() });
+    const el2 = document.getElementById('koStatusBanner');
+    if (!el2) return;
+    if (res.networkError) { renderNetworkErrorInline(el2, res.reason, () => loadKoStatusBanner(profile)); return; }
+    if (!res.ok) {
+      el2.outerHTML = `<div class="ko-status-banner kartochka" id="koStatusBanner"><div class="bosh">Bugungi holat yuklanmadi.</div></div>`;
+      return;
     }
-  } else {
-    console.log('Eslatma: PUBLIC_URL sozlanmagan — webhook avtomatik o\'rnatilmadi. README\'dagi qo\'lda sozlash bo\'limiga qarang.');
+    el2.outerHTML = koStatusBannerHtml(res.counts);
+    wireKoStatusBanner(profile);
   }
-});
+
+  const KO_MENU_ITEMS = [
+    { key: 'savdo', icon: 'bar-chart', label: 'Savdo' },
+    { key: 'oshxona', icon: 'chef-hat', label: 'Oshxona' },
+    { key: 'ombor', icon: 'box', label: 'Ombor' },
+    { key: 'xodimlar', icon: 'users', label: 'Xodimlar' },
+    { key: 'yetkazibBerish', icon: 'scooter', label: "Yetkazib berish" },
+    { key: 'filiallar', icon: 'store', label: 'Filiallar' },
+    { key: 'hisobotlar', icon: 'clipboard', label: 'Hisobotlar' },
+    { key: 'tolovKartasi', icon: 'card', label: "To'lov kartasi" },
+    { key: 'yordam', icon: 'message-circle', label: "Yordam so'rovlari" },
+    { key: 'aiTavsiyalar', icon: 'ai', label: 'AI Tavsiyalar' },
+    { key: 'adminChat', icon: 'send', label: "Admin bilan bog'lanish" },
+    { key: 'sozlamalar', icon: 'settings', label: 'Sozlamalar' }
+  ];
+
+  function koMenuItemHtml(item) {
+    return `
+      <button type="button" class="ko-menu-item" data-menu-key="${item.key}">
+        <span class="ko-menu-item-icon">${icon(item.icon)}</span>
+        <span class="ko-menu-item-label">${escapeHtml(item.label)}</span>
+      </button>
+    `;
+  }
+
+  function koMenuGridHtml() {
+    return `<div class="ko-menu-grid">${KO_MENU_ITEMS.map(koMenuItemHtml).join('')}</div>`;
+  }
+
+  function koNavHandlers(profile) {
+    const goBack = () => renderOwnerHomeScreen(profile);
+    return {
+      savdo: () => renderCashflowScreen(profile, goBack),
+      yangiBuyurtma: () => {
+        cashierState.tab = 'yaratish';
+        renderCashierScreen(profile.name, goBack);
+      },
+      oshxona: () => renderKitchenScreen(profile.name, goBack),
+      ombor: () => renderStockScreen(profile.name, 'egasi', goBack),
+      xodimlar: () => renderStaffControlScreen(profile, goBack),
+      yetkazibBerish: () => renderDeliveryScreen(profile.name, goBack),
+      filiallar: () => {
+        const target = document.getElementById('koBranchesSectionLabel');
+        if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      },
+      hisobotlar: () => renderZReportScreen(profile, goBack),
+      yordam: () => renderSupportInboxScreen(profile, goBack),
+      aiTavsiyalar: () => renderAiScreen(profile, goBack),
+      bildirishnomalar: () => renderNotificationsScreen(profile, goBack),
+      jumaBanner: () => {
+        renderProfileForm(profile);
+        setTimeout(() => {
+          const item = document.querySelector('.acc-item[data-acc-key="fridayBanner"]');
+          if (item) {
+            item.classList.add('open');
+            item.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
+        }, 0);
+      },
+      profil: () => renderOwnerProfileScreen(profile, goBack),
+      tolovKartasi: () => renderOwnerPaymentCardScreen(goBack),
+      adminChat: () => openOwnerAdminSupportChat(),
+      sozlamalar: () => renderProfileForm(profile)
+    };
+  }
+
+  function wireKoMenuGrid(profile) {
+    const grid = document.querySelector('.ko-menu-grid');
+    if (!grid) return;
+    const handlers = koNavHandlers(profile);
+    grid.querySelectorAll('[data-menu-key]').forEach(btn => {
+      const fn = handlers[btn.getAttribute('data-menu-key')];
+      if (fn) btn.addEventListener('click', fn);
+    });
+  }
+
+  const KO_SIDEBAR_ITEMS = [
+    { key: 'bosh', icon: 'home', label: 'Bosh sahifa' },
+    { key: 'yangiBuyurtma', icon: 'plus', label: 'Yangi buyurtma' },
+    { key: 'savdo', icon: 'bar-chart', label: 'Savdo' },
+    { key: 'oshxona', icon: 'chef-hat', label: 'Oshxona' },
+    { key: 'ombor', icon: 'box', label: 'Ombor' },
+    { key: 'xodimlar', icon: 'users', label: 'Xodimlar' },
+    { key: 'yetkazibBerish', icon: 'scooter', label: "Yetkazib berish" },
+    { key: 'filiallar', icon: 'store', label: 'Filiallar' },
+    { key: 'hisobotlar', icon: 'clipboard', label: 'Hisobotlar' },
+    { key: 'yordam', icon: 'message-circle', label: "Yordam so'rovlari" },
+    { key: 'aiTavsiyalar', icon: 'ai', label: 'AI Tavsiyalar' },
+    { key: 'bildirishnomalar', icon: 'bell', label: 'Bildirishnomalar' },
+    { key: 'jumaBanner', icon: 'calendar', label: 'Juma banneri' },
+    { key: 'profil', icon: 'user', label: 'Profil' },
+    { key: 'tolovKartasi', icon: 'card', label: "To'lov kartasi" },
+    { key: 'adminChat', icon: 'send', label: "Admin bilan bog'lanish" },
+    { key: 'sozlamalar', icon: 'settings', label: 'Sozlamalar' }
+  ];
+
+  function koSidebarItemHtml(item) {
+    return `
+      <button type="button" class="ko-sidebar-item" data-sidebar-key="${item.key}">
+        <span class="ko-sidebar-item-icon">${icon(item.icon)}</span>
+        <span>${escapeHtml(item.label)}</span>
+      </button>
+    `;
+  }
+
+  function koSidebarHtml(profile) {
+    return `
+      <div class="ko-sidebar-overlay" id="koSidebarOverlay">
+        <div class="ko-sidebar" id="koSidebar" role="dialog" aria-label="Menyu">
+          <div class="ko-sidebar-header">
+            <div class="ko-sidebar-header-logo">${icon('chef-hat', 'icon-md')}</div>
+            <div class="ko-sidebar-header-titles">
+              <div class="ko-sidebar-header-title">${escapeHtml(profile.name || '')}</div>
+              <div class="ko-sidebar-header-subtitle">Oshxona Menejeri</div>
+            </div>
+            <button type="button" class="ko-sidebar-close-btn" id="koSidebarCloseBtn" aria-label="Yopish">${icon('x')}</button>
+          </div>
+          <nav class="ko-sidebar-nav">${KO_SIDEBAR_ITEMS.map(koSidebarItemHtml).join('')}</nav>
+        </div>
+      </div>
+    `;
+  }
+
+  function closeKoSidebar() {
+    const overlay = document.getElementById('koSidebarOverlay');
+    if (overlay) overlay.remove();
+  }
+
+  function openKoSidebar(profile) {
+    if (document.getElementById('koSidebarOverlay')) return;
+    document.body.insertAdjacentHTML('beforeend', koSidebarHtml(profile));
+    const overlay = document.getElementById('koSidebarOverlay');
+    const handlers = koNavHandlers(profile);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeKoSidebar(); });
+    document.getElementById('koSidebarCloseBtn').addEventListener('click', closeKoSidebar);
+    overlay.querySelectorAll('[data-sidebar-key]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const key = btn.getAttribute('data-sidebar-key');
+        closeKoSidebar();
+        if (key === 'bosh') { renderOwnerHomeScreen(profile); return; }
+        const fn = handlers[key];
+        if (fn) fn();
+      });
+    });
+  }
+
+  const KO_ALERT_LEVEL_ICON = { error: 'warning', warning: 'warning', info: 'info' };
+
+  function koAlertItemHtml(alert, index) {
+    return `
+      <div class="ko-alert-item" data-alert-index="${index}">
+        <span class="ko-alert-icon ${alert.level}">${icon(KO_ALERT_LEVEL_ICON[alert.level] || 'info')}</span>
+        <span class="ko-alert-text">${escapeHtml(alert.text)}</span>
+        ${alert.count !== null && alert.count !== undefined ? `<span class="ko-alert-count-badge">${escapeHtml(String(alert.count))}</span>` : ''}
+        <span class="ko-alert-chevron">›</span>
+      </div>
+    `;
+  }
+
+  function koAlertsListHtml(alerts) {
+    const body = (alerts && alerts.length)
+      ? alerts.map((a, i) => koAlertItemHtml(a, i)).join('')
+      : `<div class="ko-alert-empty">${icon('check-circle', 'icon-xs')} Hozircha muhim ogohlantirish yo'q.</div>`;
+    return `
+      <div class="ko-alerts-card kartochka" id="koAlertsList">
+        <div class="section-label">Muhim ogohlantirishlar</div>
+        ${body}
+      </div>
+    `;
+  }
+
+  function koAlertsListSkeletonHtml() {
+    return `
+      <div class="ko-alerts-card kartochka" id="koAlertsList" data-loading="1">
+        <div class="section-label">Muhim ogohlantirishlar</div>
+        <div class="ko-alert-item skeleton-row"><div class="skeleton-line w-60"></div></div>
+        <div class="ko-alert-item skeleton-row"><div class="skeleton-line w-40"></div></div>
+      </div>
+    `;
+  }
+
+  function koAlertScreenRoute(profile, screenKey) {
+    const goBack = () => renderOwnerHomeScreen(profile);
+    if (screenKey === 'ombor') return () => renderStockScreen(profile.name, 'egasi', goBack);
+    if (screenKey === 'buyurtmalar_kechikkan') return () => renderKitchenScreen(profile.name, goBack);
+    if (screenKey === 'zreport') return () => renderZReportScreen(profile, goBack);
+    return null;
+  }
+
+  function wireKoAlertsList(profile, alerts) {
+    const list = document.getElementById('koAlertsList');
+    if (!list) return;
+    list.querySelectorAll('[data-alert-index]').forEach(row => {
+      const alert = alerts[Number(row.getAttribute('data-alert-index'))];
+      const route = alert && koAlertScreenRoute(profile, alert.screen);
+      if (route) row.addEventListener('click', route);
+    });
+  }
+
+  async function loadKoAlertsList(profile) {
+    const el = document.getElementById('koAlertsList');
+    if (!el) return;
+    const res = await apiPost('/api/dashboard-alerts', { branchId: activeBranchIdForApi() });
+    const el2 = document.getElementById('koAlertsList');
+    if (!el2) return;
+    if (res.networkError) { renderNetworkErrorInline(el2, res.reason, () => loadKoAlertsList(profile)); return; }
+    if (!res.ok) {
+      el2.outerHTML = `<div class="ko-alerts-card kartochka" id="koAlertsList"><div class="section-label">Muhim ogohlantirishlar</div><div class="bosh">Yuklanmadi.</div></div>`;
+
+      return;
+    }
+    el2.outerHTML = koAlertsListHtml(res.alerts);
+    wireKoAlertsList(profile, res.alerts);
+    updateKoNotifBadges(res.alerts.length);
+  }
+
+  function koNotificationsListHtml(alerts) {
+    return (alerts && alerts.length)
+      ? alerts.map((a, i) => koAlertItemHtml(a, i)).join('')
+      : `<div class="ko-alert-empty">${icon('check-circle', 'icon-xs')} Hozircha bildirishnoma yo'q.</div>`;
+  }
+
+  function renderNotificationsScreen(profile, onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Bildirishnomalar</div>
+        <button class="btn ikkinchi" id="notifBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="kartochka" id="notifList"><div class="bosh">Yuklanmoqda...</div></div>
+      </div>
+    `);
+    document.getElementById('notifBackBtn').addEventListener('click', () => onBack && onBack());
+    loadNotificationsList(profile);
+  }
+
+  async function loadNotificationsList(profile) {
+    const el = document.getElementById('notifList');
+    if (!el) return;
+    const res = await apiPost('/api/dashboard-alerts', { branchId: activeBranchIdForApi() });
+    const el2 = document.getElementById('notifList');
+    if (!el2) return;
+    if (res.networkError) { renderNetworkErrorInline(el2, res.reason, () => loadNotificationsList(profile)); return; }
+    if (!res.ok) {
+      el2.innerHTML = `<div class="bosh">Bildirishnomalar yuklanmadi.</div>`;
+      return;
+    }
+    el2.innerHTML = koNotificationsListHtml(res.alerts);
+    el2.querySelectorAll('[data-alert-index]').forEach(row => {
+      const alert = res.alerts[Number(row.getAttribute('data-alert-index'))];
+      const route = alert && koAlertScreenRoute(profile, alert.screen);
+      if (route) row.addEventListener('click', route);
+    });
+  }
+
+  function renderOwnerProfileScreen(profile, onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Profil</div>
+        <button class="btn ikkinchi" id="profileBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="section-label">${icon('building', 'icon-xs')} Do'kon ma'lumotlari</div>
+        <div class="kartochka">
+          <div class="profile-view">
+            ${profile.logoUrl ? `<img class="logo-preview" src="${escapeHtml(profile.logoUrl)}" onerror="this.style.display='none'">` : ''}
+            <div class="info">
+              <div class="profile-row"><b>Manzil:</b> ${escapeHtml(profile.address)}</div>
+              <div class="profile-row"><b>Telefon:</b> ${escapeHtml(profile.phone)}</div>
+              ${profile.workHours ? `<div class="profile-row"><b>Ish vaqti:</b> ${escapeHtml(profile.workHours)}</div>` : ''}
+            </div>
+          </div>
+          <button class="btn ikkinchi" id="editProfileBtn" style="margin-top:14px;">Profilni tahrirlash</button>
+        </div>
+        <div class="section-label" style="margin-top:18px;">${icon('card', 'icon-xs')} To'lov kartasi (mijozlar uchun)</div>
+        <div class="kartochka">
+          <div class="bosh">Mijoz "Karta" orqali to'lashni tanlaganda shu karta raqamini ko'radi.</div>
+          <button class="btn ikkinchi" id="openPaymentCardBtn" style="margin-top:10px;">Karta ma'lumotlarini tahrirlash</button>
+        </div>
+        <div class="section-label" style="margin-top:18px;">${icon('bell', 'icon-xs')} Push-bildirishnoma sozlamalari</div>
+        <div class="kartochka" id="notifPrefsCard"><div class="bosh">Yuklanmoqda...</div></div>
+      </div>
+    `);
+    document.getElementById('profileBackBtn').addEventListener('click', () => onBack && onBack());
+    document.getElementById('editProfileBtn').addEventListener('click', () => renderProfileForm(profile));
+    document.getElementById('openPaymentCardBtn').addEventListener('click', () => renderOwnerPaymentCardScreen(() => renderOwnerProfileScreen(profile, onBack)));
+    loadNotificationPrefs();
+  }
+
+  async function renderOwnerPaymentCardScreen(onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">To'lov kartasi</div>
+        <button class="btn ikkinchi" id="ownerCardBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="kartochka">
+          <h2>${icon('card', 'icon-xs')} Mijozlar uchun karta raqami</h2>
+          <div class="bosh">Mijoz buyurtma berib "Karta" to'lovini tanlaganda, shu ma'lumotlarni ko'radi va shu kartaga o'tkazadi.</div>
+          <label class="field-label" style="margin-top:10px;">Karta raqami</label>
+          <input type="text" id="ownerCardNumberInput" placeholder="8600 **** **** ****">
+          <label class="field-label">Karta egasining F.I.Sh</label>
+          <input type="text" id="ownerCardHolderInput" placeholder="Masalan: ISMOILOV FAYZULLA">
+          <button class="btn" id="ownerCardSaveBtn" style="margin-top:10px;">Saqlash</button>
+          <div class="xabar" id="ownerCardMsg"></div>
+        </div>
+      </div>
+    `);
+    document.getElementById('ownerCardBackBtn').addEventListener('click', () => onBack && onBack());
+
+    const msgEl = document.getElementById('ownerCardMsg');
+    const res = await apiPost('/api/owner-payment-card-get');
+    if (res.ok) {
+      document.getElementById('ownerCardNumberInput').value = res.card.cardNumber || '';
+      document.getElementById('ownerCardHolderInput').value = res.card.cardHolder || '';
+    } else {
+      setMsg(msgEl, res.reason || 'Yuklab bo\'lmadi.', 'err');
+    }
+
+    document.getElementById('ownerCardSaveBtn').addEventListener('click', async () => {
+      const cardNumber = document.getElementById('ownerCardNumberInput').value.trim();
+      const cardHolder = document.getElementById('ownerCardHolderInput').value.trim();
+      setMsg(msgEl, 'Saqlanmoqda...');
+      const saveRes = await apiPost('/api/owner-payment-card-set', { cardNumber, cardHolder });
+      if (saveRes.ok) {
+        setMsg(msgEl, 'Saqlandi.', 'ok');
+      } else {
+        setMsg(msgEl, saveRes.reason || 'Xatolik yuz berdi.', 'err');
+      }
+    });
+  }
+
+  async function loadNotificationPrefs() {
+    const card = document.getElementById('notifPrefsCard');
+    if (!card) return;
+    const res = await apiPost('/api/notification-prefs-get');
+    const card2 = document.getElementById('notifPrefsCard');
+    if (!card2) return;
+    if (res.networkError) { renderNetworkErrorInline(card2, res.reason, loadNotificationPrefs); return; }
+    if (!res.ok) { card2.innerHTML = `<div class="bosh">Sozlamalar yuklanmadi.</div>`; return; }
+    card2.innerHTML = res.categories.map(c => `
+      <label class="toggle-row" style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;">
+        <span>${escapeHtml(c.label)}</span>
+        <input type="checkbox" data-notif-key="${c.key}" ${res.prefs[c.key] ? 'checked' : ''}>
+      </label>
+    `).join('');
+    card2.querySelectorAll('[data-notif-key]').forEach(cb => {
+      cb.addEventListener('change', async () => {
+        cb.disabled = true;
+        const key = cb.getAttribute('data-notif-key');
+        const saveRes = await apiPost('/api/notification-prefs-save', { prefs: { [key]: cb.checked } });
+        cb.disabled = false;
+        if (!saveRes.ok) { cb.checked = !cb.checked; alert(saveRes.reason || 'Saqlanmadi, qayta urinib ko\'ring.'); }
+      });
+    });
+  }
+
+  function subStatusLabel(status, inGrace) {
+    if (status === 'active') return inGrace ? "⏳ Muhlat davrida" : '✅ Faol';
+    if (status === 'pending_trial') return "🕓 Tasdiqlanishi kutilmoqda";
+    if (status === 'blocked') return '⛔ Bloklangan';
+    return status || '—';
+  }
+
+  async function renderOwnerSubscriptionScreen(profile, onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">💳 Obuna</div>
+        <button class="btn ikkinchi" id="subBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="kartochka" id="subStatusCard"><div class="bosh">Yuklanmoqda...</div></div>
+        <div class="kartochka" id="subRequisitesCard" style="display:none;"></div>
+        <div class="kartochka" id="subPlansCard" style="display:none;"></div>
+        <div class="kartochka" id="subHistoryCard">
+          <h2>Obuna tarixi</h2>
+          <div id="subHistoryList"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+      </div>
+    `);
+    document.getElementById('subBackBtn').addEventListener('click', () => onBack && onBack());
+    await loadOwnerSubscriptionStatus(onBack);
+    await loadOwnerSubscriptionHistory();
+  }
+
+  async function loadOwnerSubscriptionHistory() {
+    const listEl = document.getElementById('subHistoryList');
+    if (!listEl) return;
+    const res = await apiPost('/api/subscription-history');
+    if (!res.ok) { listEl.innerHTML = `<div class="bosh">Yuklab bo'lmadi.</div>`; return; }
+    if (!res.history || !res.history.length) {
+      listEl.innerHTML = `<div class="bosh">Hali to'lov tarixi yo'q.</div>`;
+      return;
+    }
+    listEl.innerHTML = res.history.map(h => `
+      <div class="owner-item">
+        <div>
+          <div class="owner-id">${escapeHtml(h.planLabel || 'Obuna')}</div>
+          <div class="owner-username">${new Date(h.at).toLocaleDateString('uz-UZ')}${h.days ? ` · ${h.days} kun` : ''}</div>
+        </div>
+        <div class="owner-id">${fmtNum(h.amount)} so'm</div>
+      </div>
+    `).join('');
+  }
+
+  function renderPaymentRequisitesCard(requisitesCard, requisites) {
+    if (!requisitesCard) return;
+    requisitesCard.style.display = '';
+    requisitesCard.innerHTML = `
+      <div class="section-label">To'lov rekvizitlari</div>
+      <div class="profile-row"><b>Ism-familya:</b> ${escapeHtml(requisites.cardHolder)}</div>
+      <div class="profile-row" style="margin-bottom:0;"><b>Karta raqami:</b></div>
+      <div class="link-box" style="margin-top:6px;">
+        <span id="subCardNumberText">${escapeHtml(requisites.cardNumber)}</span>
+        <button id="subCopyCardBtn" type="button">${icon('clipboard', 'icon-xs')}<span>Nusxalash</span></button>
+      </div>
+      <div class="xabar" id="subCopyCardMsg"></div>
+    `;
+    const copyBtn = document.getElementById('subCopyCardBtn');
+    if (copyBtn) copyBtn.addEventListener('click', () => {
+      const msgEl = document.getElementById('subCopyCardMsg');
+      const rawNumber = (requisites.cardNumber || '').replace(/\s+/g, '');
+      const showMsg = (text, ok) => { if (msgEl) { msgEl.textContent = text; msgEl.className = 'xabar ' + (ok ? 'ok' : 'err'); } };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(rawNumber).then(() => {
+          showMsg('Karta raqami nusxalandi.', true);
+        }).catch(() => {
+          showMsg('Nusxalab bo\'lmadi, raqamni qo\'lda ko\'chiring.', false);
+        });
+      } else {
+        showMsg('Nusxalab bo\'lmadi, raqamni qo\'lda ko\'chiring.', false);
+      }
+    });
+  }
+
+  async function loadOwnerSubscriptionStatus(onBack) {
+    const statusCard = document.getElementById('subStatusCard');
+    const requisitesCard = document.getElementById('subRequisitesCard');
+    const plansCard = document.getElementById('subPlansCard');
+    if (!statusCard) return;
+    const res = await apiPost('/api/subscription-status');
+    if (!res.ok) {
+      statusCard.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
+      return;
+    }
+
+    const untilText = res.subscriptionUntil ? new Date(res.subscriptionUntil).toLocaleDateString('uz-UZ') : 'Muddatsiz';
+    statusCard.innerHTML = `
+      <div class="section-label">Joriy holat</div>
+      <div class="profile-row"><b>Holat:</b> ${subStatusLabel(res.status, res.inGrace)}</div>
+      <div class="profile-row"><b>Muddat:</b> ${escapeHtml(untilText)}</div>
+      ${(res.daysLeft !== null && res.daysLeft !== undefined) ? `<div class="profile-row"><b>Qolgan kun:</b> ${escapeHtml(String(res.daysLeft))}</div>` : ''}
+    `;
+
+    renderPaymentRequisitesCard(requisitesCard, res.requisites);
+
+    const req = res.pendingRequest;
+
+    if (req && req.status === 'kutilmoqda_skrinshot') {
+      plansCard.style.display = '';
+      plansCard.innerHTML = `
+        <div class="section-label">Tanlangan reja: ${escapeHtml(req.planLabel)} (${fmtNum(req.amount)} so'm)</div>
+        ${req.tariffLabel ? `<div class="bosh">Tarif: ${escapeHtml(req.tariffLabel)}</div>` : ''}
+        <div class="bosh">To'lov chekining (skrinshotning) RASMINI botning shaxsiy chatiga yuboring — administrator tekshirib tasdiqlagach, obunangiz avtomatik yangilanadi.</div>
+        ${res.botUsername ? `<button class="btn ikkinchi" id="subOpenBotBtn" style="margin-top:10px;">Botni ochish</button>` : ''}
+      `;
+      const openBtn = document.getElementById('subOpenBotBtn');
+      if (openBtn) openBtn.addEventListener('click', () => {
+        if (window.Telegram && Telegram.WebApp && Telegram.WebApp.openTelegramLink) {
+          Telegram.WebApp.openTelegramLink(`https://t.me/${res.botUsername}`);
+        }
+      });
+      return;
+    }
+
+    if (req && req.status === 'kutilmoqda_tasdiq') {
+      plansCard.style.display = '';
+      plansCard.innerHTML = `
+        <div class="section-label">🕓 Tasdiqlanishi kutilmoqda</div>
+        <div class="bosh">Reja: ${escapeHtml(req.planLabel)} — ${fmtNum(req.amount)} so'm${req.tariffLabel ? ' · Tarif: ' + escapeHtml(req.tariffLabel) : ''}. Skrinshotingiz administratorga yuborildi, tasdiqlanishini kuting.</div>
+      `;
+      return;
+    }
+
+    plansCard.style.display = '';
+    const rejectedNote = (req && req.status === 'rad_etildi')
+      ? `<div class="xabar err" style="margin-bottom:10px;">Oldingi so'rovingiz (${escapeHtml(req.planLabel)}) rad etilgan. Qaytadan tarif tanlang.</div>`
+      : '';
+    plansCard.innerHTML = `
+      <div class="section-label">Tarif tanlang</div>
+      ${rejectedNote}
+      <div id="subPlansList">
+        ${res.plans.length ? res.plans.map(p => `
+          <div class="owner-item" data-plan-row="${escapeHtml(p.id)}">
+            <div>
+              <div class="owner-id">${escapeHtml(p.label)}</div>
+              <div class="owner-username">${fmtNum(p.price)} so'm${p.discountNote ? ' · ' + escapeHtml(p.discountNote) : ''}</div>
+              ${p.tariffLabel ? `<div class="owner-username">${icon('star', 'icon-xs icon-muted')} Tarif: ${escapeHtml(p.tariffLabel)}</div>` : ''}
+            </div>
+            <button class="btn" data-plan-id="${escapeHtml(p.id)}" style="width:auto; min-height:36px; padding:6px 14px;">Tanlash</button>
+          </div>
+        `).join('') : `<div class="bosh">Hozircha obuna rejalari sozlanmagan. Administrator bilan bog'laning.</div>`}
+      </div>
+    `;
+    const listEl = document.getElementById('subPlansList');
+    if (listEl) listEl.addEventListener('click', async (e) => {
+      const btn = e.target.closest('[data-plan-id]');
+      if (!btn) return;
+      const planId = btn.getAttribute('data-plan-id');
+      btn.disabled = true;
+      const selRes = await apiPost('/api/subscription-select-plan', { planId });
+      if (!selRes.ok) {
+        alert(selRes.reason || 'Xatolik yuz berdi.');
+        btn.disabled = false;
+        return;
+      }
+      await loadOwnerSubscriptionStatus(onBack);
+    });
+  }
+
+  function renderOwnerHomeScreen(profile) {
+
+    clearAppHeader();
+
+    ekran(`
+      <div class="panel has-ko-bottom-nav ko-home-panel">
+        ${koHomeHeaderHtml(0, profile.name)}
+        ${koKpiGridSkeletonHtml()}
+        ${koStatusBannerSkeletonHtml()}
+        ${koMenuGridHtml()}
+        ${koAlertsListSkeletonHtml()}
+        <div class="section-label" id="koBranchesSectionLabel">${icon('users', 'icon-xs')} Filiallar</div>
+        <div class="kartochka">
+          <h2>Markaziy (joriy) joylashuv nomi</h2>
+          <div class="bosh">Yangi filial qo'shgandan keyin, hozirgi (bosh) oshxonangizga ham nom qo'yishingiz mumkin — masalan "1-oshxona".</div>
+          <input type="text" id="centralBranchNameInput" placeholder="Masalan: 1-oshxona" value="${escapeHtml(branchState.centralBranchName || '')}" style="margin-top:8px;">
+          <button class="btn" id="saveCentralBranchNameBtn">Saqlash</button>
+          <div class="xabar" id="centralBranchNameMsg"></div>
+        </div>
+        <div class="kartochka">
+          <h2>Filial qo'shish</h2>
+          <input type="text" id="branchNameInput" placeholder="Filial nomi (masalan: Chilonzor filiali)">
+          <input type="text" id="branchAddressInput" placeholder="Manzil">
+          <input type="text" id="branchPhoneInput" placeholder="Telefon (ixtiyoriy)">
+          <button class="btn" id="addBranchBtn">Filial qo'shish</button>
+          <div class="xabar" id="branchMsg"></div>
+        </div>
+        <div class="kartochka">
+          <h2>Filiallar</h2>
+          <div class="owner-username" id="branchLimitLabel" style="margin-bottom:6px;"></div>
+          <div class="owner-list" id="branchList"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+        <div class="section-label">${icon('link', 'icon-xs')} Mijozlar bilan ishlash</div>
+        <div class="kartochka">
+          <h2>Mijozlar uchun menyu</h2>
+          <div class="bosh">Mijozlar shu havola orqali chiroyli katalog-menyuni ochib, o'zlari buyurtma berishlari mumkin.</div>
+          <button class="btn ikkinchi" id="getCustomerLinkBtn" style="margin-top:10px;">${icon('link', 'icon-xs')} Mijozlar havolasini olish</button>
+          <div id="customerLinkWrap"></div>
+          <div class="xabar" id="customerLinkMsg"></div>
+        </div>
+      </div>
+      ${koBottomNavHtml('bosh')}
+    `);
+
+    loadKoKpiGrid(profile);
+    wireKoStatusBanner(profile);
+    loadKoStatusBanner(profile);
+    wireKoMenuGrid(profile);
+    loadKoAlertsList(profile);
+    wireKoHomeHeader(profile);
+    wireKoBottomNav(profile);
+
+    document.getElementById('addBranchBtn').addEventListener('click', async () => {
+      const name = document.getElementById('branchNameInput').value.trim();
+      const address = document.getElementById('branchAddressInput').value.trim();
+      const phone = document.getElementById('branchPhoneInput').value.trim();
+      const msgEl = document.getElementById('branchMsg');
+      if (!name || !address) {
+        setMsg(msgEl, 'Filial nomi va manzilini kiriting.', 'err');
+        return;
+      }
+      setMsg(msgEl, 'Qo\'shilmoqda...');
+      const res = await apiPost('/api/branch-add', { name, address, phone });
+      if (res.ok) {
+        setMsg(msgEl, 'Filial qo\'shildi.', 'ok');
+        document.getElementById('branchNameInput').value = '';
+        document.getElementById('branchAddressInput').value = '';
+        document.getElementById('branchPhoneInput').value = '';
+        loadBranchAndRender();
+      } else {
+        handleFeatureBlocked(res);
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+      }
+    });
+
+    document.getElementById('branchList').addEventListener('click', async (e) => {
+      const id = e.target.getAttribute('data-remove-branch-id');
+      if (id) {
+        e.target.disabled = true;
+        await apiPost('/api/branch-remove', { id });
+        loadBranchAndRender();
+        return;
+      }
+      const copyBtn = e.target.closest('[data-copy-cmd]');
+      if (copyBtn) {
+        const cmd = copyBtn.getAttribute('data-copy-cmd');
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(cmd).catch(() => {});
+        }
+      }
+    });
+
+    document.getElementById('saveCentralBranchNameBtn').addEventListener('click', async () => {
+      const name = document.getElementById('centralBranchNameInput').value.trim();
+      const msgEl = document.getElementById('centralBranchNameMsg');
+      setMsg(msgEl, 'Saqlanmoqda...');
+      const res = await apiPost('/api/central-branch-rename', { name });
+      if (res.ok) {
+        setMsg(msgEl, 'Saqlandi.', 'ok');
+        branchState.centralBranchName = res.centralBranchName || null;
+        loadBranchAndRender();
+      } else {
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+      }
+    });
+
+    document.getElementById('getCustomerLinkBtn').addEventListener('click', async () => {
+      const msgEl = document.getElementById('customerLinkMsg');
+      const wrap = document.getElementById('customerLinkWrap');
+      setMsg(msgEl, 'Yaratilmoqda...');
+      const res = await apiPost('/api/customer-link');
+      if (!res.ok) {
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+        wrap.innerHTML = '';
+        return;
+      }
+      msgEl.textContent = '';
+      wrap.innerHTML = `
+        <div class="link-box">
+          <span>${escapeHtml(res.link)}</span>
+          <button id="copyCustomerLinkBtn">Nusxalash</button>
+        </div>
+        <div class="customer-link-hint">Bu havolani mijozlaringizga (masalan, ijtimoiy tarmoqlarda yoki stol ustida QR kod qilib) ulashing.</div>
+      `;
+      document.getElementById('copyCustomerLinkBtn').addEventListener('click', () => {
+        navigator.clipboard.writeText(res.link).then(() => {
+          setMsg(msgEl, 'Havola nusxalandi.', 'ok');
+        }).catch(() => {
+          setMsg(msgEl, 'Nusxalab bo\'lmadi, havolani qo\'lda ko\'chiring.', 'err');
+        });
+      });
+    });
+
+    loadBranchAndRender();
+  }
+
+  async function loadDeliveryGroupStatus() {
+    const statusEl = document.getElementById('deliveryGroupStatus');
+    const removeBtn = document.getElementById('removeDeliveryGroupBtn');
+    if (!statusEl) return;
+    const res = await apiPost('/api/delivery-group-status');
+    if (res.ok && res.bound) {
+      statusEl.innerHTML = `${icon('check', 'icon-xs icon-success')} Biriktirilgan: <b>${escapeHtml(res.groupTitle || 'guruh')}</b>${res.threadBound ? ' <span style="opacity:0.7;">📌 (mavzuga bog\'langan)</span>' : ''}`;
+      if (removeBtn) removeBtn.classList.remove('hidden');
+    } else {
+      statusEl.textContent = '— Hali admin guruhi biriktirilmagan.';
+      if (removeBtn) removeBtn.classList.add('hidden');
+    }
+  }
+
+  async function loadKitchenGroupStatus() {
+    const statusEl = document.getElementById('kitchenGroupStatus');
+    const removeBtn = document.getElementById('removeKitchenGroupBtn');
+    if (!statusEl) return;
+    const res = await apiPost('/api/kitchen-group-status');
+    if (res.ok && res.bound) {
+      statusEl.innerHTML = `${icon('check', 'icon-xs icon-success')} Biriktirilgan: <b>${escapeHtml(res.groupTitle || 'guruh')}</b>${res.threadBound ? ' <span style="opacity:0.7;">📌 (mavzuga bog\'langan)</span>' : ''}`;
+      if (removeBtn) removeBtn.classList.remove('hidden');
+    } else {
+      statusEl.textContent = '— Hali Oshpazlar guruhi biriktirilmagan.';
+      if (removeBtn) removeBtn.classList.add('hidden');
+    }
+  }
+
+  let ownerCategoriesCache = [];
+
+  function categoryListHtml(categories) {
+    if (!categories || !categories.length) return `<div class="bosh">Hali bo'lim qo'shilmagan.</div>`;
+    return categories.map((c, i) => `
+      <div class="owner-item">
+        <div class="owner-id">${escapeHtml(c.name)}</div>
+        <div class="owner-actions">
+          <button data-cat-up="${escapeHtml(c.id)}" ${i === 0 ? 'disabled' : ''}>↑</button>
+          <button data-cat-down="${escapeHtml(c.id)}" ${i === categories.length - 1 ? 'disabled' : ''}>↓</button>
+          <button data-remove-cat-id="${escapeHtml(c.id)}">O'chirish</button>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  async function moveCategory(id, direction) {
+    const ids = ownerCategoriesCache.map(c => c.id);
+    const idx = ids.indexOf(id);
+    const swapWith = idx + direction;
+    if (idx < 0 || swapWith < 0 || swapWith >= ids.length) return;
+    const tmp = ids[idx];
+    ids[idx] = ids[swapWith];
+    ids[swapWith] = tmp;
+    await apiPost('/api/category-reorder', { orderedIds: ids });
+    loadCategoriesAndRender();
+  }
+
+  async function loadCategoriesAndRender(branchId) {
+    const listEl = document.getElementById('categoryList');
+    const selectEl = document.getElementById('menuCategoryInput');
+    if (!listEl && !selectEl) return;
+    const res = await apiPost('/api/category-list', { branchId: branchId || null });
+    ownerCategoriesCache = (res.ok && Array.isArray(res.categories)) ? res.categories : [];
+
+    if (listEl) {
+      listEl.innerHTML = categoryListHtml(ownerCategoriesCache);
+      listEl.querySelectorAll('[data-remove-cat-id]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          btn.disabled = true;
+          await apiPost('/api/category-remove', { id: btn.getAttribute('data-remove-cat-id') });
+          loadCategoriesAndRender();
+        });
+      });
+      listEl.querySelectorAll('[data-cat-up]').forEach(btn => {
+        btn.addEventListener('click', () => moveCategory(btn.getAttribute('data-cat-up'), -1));
+      });
+      listEl.querySelectorAll('[data-cat-down]').forEach(btn => {
+        btn.addEventListener('click', () => moveCategory(btn.getAttribute('data-cat-down'), 1));
+      });
+    }
+
+    if (selectEl) {
+      const prevVal = selectEl.value;
+      selectEl.innerHTML = '<option value="">— Bo\'lim tanlanmagan —</option>' +
+        ownerCategoriesCache.map(c => `<option value="${escapeHtml(c.name)}">${escapeHtml(c.name)}</option>`).join('');
+      selectEl.value = prevVal;
+    }
+  }
+
+  function promoListHtml(promotions) {
+    if (!promotions || !promotions.length) return `<div class="bosh">Hali aksiya qo'shilmagan.</div>`;
+    return promotions.map(p => `
+      <div class="owner-item" style="align-items:flex-start;">
+        <div>
+          <div class="owner-id">${escapeHtml(p.title)} — ${p.discountPercent}%</div>
+          ${p.description ? `<div class="owner-username">${escapeHtml(p.description)}</div>` : ''}
+          ${p.minTotal ? `<div class="owner-username">Min: ${fmtNum(p.minTotal)} so'm</div>` : ''}
+        </div>
+        <div class="owner-actions">
+          <span class="badge ${p.active ? 'paid' : 'unpaid'}">${p.active ? 'Faol' : 'Nofaol'}</span>
+          <button data-toggle-promo-id="${escapeHtml(p.id)}">${p.active ? 'To\'xtatish' : 'Yoqish'}</button>
+          <button data-remove-promo-id="${escapeHtml(p.id)}">O'chirish</button>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  async function loadPromoAndRender() {
+    const listEl = document.getElementById('promoList');
+    if (!listEl) return;
+    const res = await apiPost('/api/promo-list');
+    if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, loadPromoAndRender); return; }
+    listEl.innerHTML = promoListHtml(res.ok ? res.promotions : []);
+  }
+
+  const BANNER_WEEKDAY_LABELS = { 0: 'Har yakshanba', 1: 'Har dushanba', 2: 'Har seshanba', 3: 'Har chorshanba', 4: 'Har payshanba', 5: 'Har juma', 6: 'Har shanba' };
+
+  function bannerListHtml(banners) {
+    if (!banners || !banners.length) return `<div class="bosh">Hali banner qo'shilmagan.</div>`;
+    return banners.map(b => `
+      <div class="owner-item" style="align-items:flex-start;">
+        <img src="${escapeHtml(b.imageUrl)}" alt="" style="width:56px; height:56px; border-radius:10px; object-fit:cover; flex-shrink:0; margin-right:10px;" onerror="this.style.visibility='hidden'">
+        <div style="flex:1; min-width:0;">
+          <div class="owner-id">${escapeHtml(b.title || "(sarlavhasiz)")}</div>
+          ${b.link ? `<div class="owner-username">${escapeHtml(b.link)}</div>` : ''}
+          ${(b.startAt || b.endAt) ? `<div class="owner-username">${b.startAt ? new Date(b.startAt).toLocaleDateString('uz-UZ') : '...'} — ${b.endAt ? new Date(b.endAt).toLocaleDateString('uz-UZ') : '...'}</div>` : ''}
+          ${(b.weeklyDay !== null && b.weeklyDay !== undefined) ? `<div class="owner-username">🔁 ${BANNER_WEEKDAY_LABELS[b.weeklyDay] || ''}</div>` : ''}
+        </div>
+        <div class="owner-actions">
+          <span class="badge ${b.active ? 'paid' : 'unpaid'}">${b.active ? 'Faol' : 'Nofaol'}</span>
+          <button data-toggle-banner-id="${escapeHtml(b.id)}">${b.active ? 'To\'xtatish' : 'Yoqish'}</button>
+          <button data-remove-banner-id="${escapeHtml(b.id)}">O'chirish</button>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  async function loadBannerAndRender() {
+    const listEl = document.getElementById('bannerList');
+    if (!listEl) return;
+    const res = await apiPost('/api/banner-list');
+    if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, loadBannerAndRender); return; }
+    listEl.innerHTML = bannerListHtml(res.ok ? res.banners : []);
+  }
+
+  function fridayBannerStatusHtml(banner) {
+    if (!banner) return `<div class="bosh">Hali juma banneri qo'shilmagan.</div>`;
+    return `
+      <div class="owner-item" style="align-items:flex-start;">
+        <img src="${escapeHtml(banner.imageUrl)}" alt="" style="width:56px; height:56px; border-radius:10px; object-fit:cover; flex-shrink:0; margin-right:10px;" onerror="this.style.visibility='hidden'">
+        <div style="flex:1; min-width:0;">
+          <div class="owner-id">${escapeHtml(banner.title || "(sarlavhasiz)")}</div>
+          ${banner.link ? `<div class="owner-username">${escapeHtml(banner.link)}</div>` : ''}
+          <div class="owner-username">🔁 Har juma</div>
+        </div>
+        <div class="owner-actions">
+          <span class="badge ${banner.active !== false ? 'paid' : 'unpaid'}">${banner.active !== false ? 'Faol' : 'Nofaol'}</span>
+          <button data-toggle-friday-banner>${banner.active !== false ? "To'xtatish" : 'Yoqish'}</button>
+          <button data-remove-friday-banner>O'chirish</button>
+        </div>
+      </div>
+    `;
+  }
+
+  async function loadFridayBannerAndRender() {
+    const listEl = document.getElementById('fridayBannerStatus');
+    if (!listEl) return;
+    const res = await apiPost('/api/friday-banner-get');
+    if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, loadFridayBannerAndRender); return; }
+    listEl.innerHTML = fridayBannerStatusHtml(res.ok ? res.banner : null);
+  }
+
+  async function loadBonusSettingsAndRender() {
+    const enabledEl = document.getElementById('bonusEnabledInput');
+    if (!enabledEl) return;
+    const res = await apiPost('/api/bonus-settings-get');
+    const settings = res.ok ? res.settings : { enabled: false, earnPercent: 5 };
+    enabledEl.checked = !!settings.enabled;
+    document.getElementById('bonusPercentInput').value = settings.earnPercent || '';
+  }
+
+  async function loadStaffAndRender() {
+    const listEl = document.getElementById('staffList');
+    if (!listEl) return;
+    const res = await apiPost('/api/staff-list');
+    if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, loadStaffAndRender); return; }
+    listEl.innerHTML = staffListHtml(res.ok ? res.staff : []);
+  }
+
+  function ownerMenuListHtml(menu) {
+    if (!menu || !menu.length) return `<div class="bosh">Menyu hali bo'sh.</div>`;
+    return menu.map(m => `
+      <div class="menu-item">
+        <div>
+          <div class="m-name">${escapeHtml(m.name)} ${m.available === false ? '<span class="badge unpaid">Nofaol</span>' : ''}</div>
+          ${m.category ? `<div class="m-cat">${escapeHtml(m.category)}</div>` : ''}
+          <div class="m-price">${Array.isArray(m.prices) && m.prices.length ? m.prices.map((p, idx) => `${escapeHtml(variantLabel(p, idx))}: ${fmtNum(p.price)} so'm`).join(' · ') : `${fmtNum(m.price)} so'm`}${m.directStockId ? ` · to'g'ridan sklad ${icon('check', 'icon-xs icon-success')}` : (m.recipe && m.recipe.length ? ` · retsept ${icon('check', 'icon-xs icon-success')}` : '')}</div>
+        </div>
+        <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
+          <button data-edit-menu-id="${escapeHtml(m.id)}" class="row-action-btn brand">Tahrirlash</button>
+          ${m.directStockId ? '' : `<button data-recipe-menu-id="${escapeHtml(m.id)}" class="row-action-btn brand">Retsept</button>`}
+          <button data-toggle-avail-id="${escapeHtml(m.id)}" class="row-action-btn brand">${m.available === false ? 'Faollashtirish' : 'Yashirish'}</button>
+          <button data-remove-menu-id="${escapeHtml(m.id)}" class="row-action-btn danger">O'chirish</button>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  function priceOptionRowHtml(label, price) {
+    return `
+      <div class="price-option-row" style="display:flex; gap:6px; margin-top:6px;">
+        <input type="text" class="price-option-label" placeholder="Nomi (masalan: Katta)" value="${escapeHtml(label || '')}" style="flex:1;">
+        <input type="text" class="price-option-price" placeholder="Narx" inputmode="numeric" value="${escapeHtml(price != null ? String(price) : '')}" style="width:110px;">
+        <button type="button" class="row-action-btn price-option-remove-btn">✕</button>
+      </div>
+    `;
+  }
+
+  function attachPriceOptionsHandlers(containerId, addBtnId) {
+    const container = document.getElementById(containerId);
+    document.getElementById(addBtnId).addEventListener('click', () => {
+      container.insertAdjacentHTML('beforeend', priceOptionRowHtml('', ''));
+    });
+    container.addEventListener('click', (e) => {
+      const btn = e.target.closest('.price-option-remove-btn');
+      if (!btn) return;
+      btn.closest('.price-option-row').remove();
+    });
+  }
+
+  // Konteynerdagi to'ldirilgan narx variant qatorlarini yig'ib qaytaradi.
+  // Bo'sh bo'lsa — [], noto'g'ri bo'lsa — null (xatolik bor degani).
+  function variantLabel(p, idx) {
+    return p.label ? p.label : `${idx + 1}-narx`;
+  }
+
+  function collectPriceOptions(containerId) {
+    const rows = document.querySelectorAll(`#${containerId} .price-option-row`);
+    const list = [];
+    for (const row of rows) {
+      const label = row.querySelector('.price-option-label').value.trim();
+      const price = row.querySelector('.price-option-price').value.trim();
+      if (!label && !price) continue;
+      if (!price || !/^\d+$/.test(price) || parseInt(price, 10) <= 0) return null;
+      list.push({ label, price: parseInt(price, 10) });
+    }
+    return list;
+  }
+
+  function menuAddSectionHtml() {
+    return `
+      <div class="kartochka">
+        <h2>Menyu</h2>
+        <div id="menuList"><div class="bosh">Yuklanmoqda...</div></div>
+      </div>
+      <div class="section-label">${icon('restaurant', 'icon-xs')} Menyu</div>
+      <div class="kartochka">
+        <h2>Menyuga taom qo'shish</h2>
+        <input type="text" id="menuNameInput" placeholder="Taom nomi">
+        <input type="text" id="menuPriceInput" placeholder="Narxi (so'm) — bitta narx bo'lsa" inputmode="numeric">
+        <label class="field-label" style="margin-top:10px;">Bir nechta narx (masalan: Kichik / Katta) — ixtiyoriy</label>
+        <div class="staff-hint">Bo'lsa, yuqoridagi yakka narx o'rniga shu variantlar ishlatiladi va mijoz tanlab buyurtma beradi.</div>
+        <div id="menuPriceOptionsAdd"></div>
+        <button type="button" class="row-action-btn" id="addPriceOptionAddBtn" style="margin-top:6px;">+ Narx varianti qo'shish</button>
+        <label class="field-label">Bo'lim (ixtiyoriy)</label>
+        <select id="menuCategoryInput"><option value="">— Bo'lim tanlanmagan —</option></select>
+        <textarea id="menuDescriptionInput" placeholder="Tavsif (ixtiyoriy, mijozlar menyusida ko'rinadi)"></textarea>
+        <input type="file" id="menuImageFileInput" accept="image/*" style="margin-top:8px;">
+        <div class="staff-hint" style="margin-top:4px;">Rasmni telefon galereyasidan tanlang (ixtiyoriy)</div>
+        <img id="menuImagePreview" class="logo-preview" style="display:none; width:120px; height:120px; margin-top:8px;">
+        <input type="hidden" id="menuImageInput">
+
+        <label class="field-label" style="margin-top:10px;">Turi</label>
+        <select id="menuTypeInput">
+          <option value="recipe">Tayyorlanadigan (retsept keyinroq belgilanadi)</option>
+          <option value="direct">To'g'ridan skladdan (masalan: shishada suv)</option>
+        </select>
+        <div id="menuDirectStockWrap" class="hidden" style="margin-top:8px;">
+          <label class="field-label">Sklad mahsuloti</label>
+          <select id="menuDirectStockInput"><option value="">Yuklanmoqda...</option></select>
+        </div>
+
+        <button class="btn" id="addMenuBtn" style="margin-top:10px;">Qo'shish</button>
+        <div class="xabar" id="menuMsg"></div>
+      </div>
+    `;
+  }
+
+  function attachMenuAddSectionHandlers() {
+    document.getElementById('menuImageFileInput').addEventListener('change', async (e) => {
+      const file = e.target.files && e.target.files[0];
+      const msgEl = document.getElementById('menuMsg');
+      const preview = document.getElementById('menuImagePreview');
+      if (!file) return;
+      try {
+        const dataUrl = await readImageFileAsCompressedDataUrl(file);
+        document.getElementById('menuImageInput').value = dataUrl || '';
+        preview.src = dataUrl;
+        preview.style.display = 'block';
+      } catch (err) {
+        setMsg(msgEl, err.message || 'Rasmni yuklab bo\'lmadi.', 'err');
+        e.target.value = '';
+      }
+    });
+
+    document.getElementById('menuTypeInput').addEventListener('change', (e) => {
+      const wrap = document.getElementById('menuDirectStockWrap');
+      const isDirect = e.target.value === 'direct';
+      wrap.classList.toggle('hidden', !isDirect);
+      if (isDirect) loadMenuDirectStockOptions();
+    });
+
+    attachPriceOptionsHandlers('menuPriceOptionsAdd', 'addPriceOptionAddBtn');
+
+    document.getElementById('addMenuBtn').addEventListener('click', async () => {
+      const name = document.getElementById('menuNameInput').value.trim();
+      const price = document.getElementById('menuPriceInput').value.trim();
+      const category = document.getElementById('menuCategoryInput').value.trim();
+      const description = document.getElementById('menuDescriptionInput').value.trim();
+      const imageUrl = document.getElementById('menuImageInput').value.trim();
+      const menuType = document.getElementById('menuTypeInput').value;
+      const directStockId = menuType === 'direct' ? document.getElementById('menuDirectStockInput').value : '';
+      const msgEl = document.getElementById('menuMsg');
+      const priceOptions = collectPriceOptions('menuPriceOptionsAdd');
+      if (priceOptions === null) {
+        setMsg(msgEl, 'Narx variantlarini to\'g\'ri kiriting (nomi va narxi).', 'err');
+        return;
+      }
+      if (priceOptions.length === 1) {
+        setMsg(msgEl, 'Kamida 2 ta narx variantini kiriting yoki bittasini o\'chirib, yakka narxdan foydalaning.', 'err');
+        return;
+      }
+      if (!priceOptions.length && (!name || !price || !/^\d+$/.test(price) || parseInt(price, 10) <= 0)) {
+        setMsg(msgEl, 'Taom nomi va to\'g\'ri narx kiriting.', 'err');
+        return;
+      }
+      if (!name) {
+        setMsg(msgEl, 'Taom nomini kiriting.', 'err');
+        return;
+      }
+      setMsg(msgEl, 'Qo\'shilmoqda...');
+      const res = await apiPost('/api/menu-add', { name, price, prices: priceOptions, category, description, imageUrl, directStockId, branchId: currentStockBranchId });
+      if (res.ok) {
+        setMsg(msgEl, 'Qo\'shildi.', 'ok');
+        document.getElementById('menuNameInput').value = '';
+        document.getElementById('menuPriceInput').value = '';
+        document.getElementById('menuPriceOptionsAdd').innerHTML = '';
+        document.getElementById('menuCategoryInput').value = '';
+        document.getElementById('menuDescriptionInput').value = '';
+        document.getElementById('menuImageInput').value = '';
+        document.getElementById('menuImageFileInput').value = '';
+        document.getElementById('menuImagePreview').style.display = 'none';
+        document.getElementById('menuTypeInput').value = 'recipe';
+        document.getElementById('menuDirectStockWrap').classList.add('hidden');
+        loadMenuAndRender();
+      } else {
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+      }
+    });
+
+    loadCategoriesAndRender(currentStockBranchId);
+    loadMenuAndRender();
+  }
+
+  async function loadMenuAndRender() {
+    const listEl = document.getElementById('menuList');
+    if (!listEl) return;
+    const res = await apiPost('/api/menu-list', { branchId: currentStockBranchId });
+    if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, loadMenuAndRender); return; }
+    const menu = res.ok ? res.menu : [];
+    listEl.innerHTML = ownerMenuListHtml(menu);
+    listEl.querySelectorAll('[data-remove-menu-id]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        await apiPost('/api/menu-remove', { id: btn.getAttribute('data-remove-menu-id'), branchId: currentStockBranchId });
+        loadMenuAndRender();
+      });
+    });
+    listEl.querySelectorAll('[data-edit-menu-id]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.getAttribute('data-edit-menu-id');
+        const menuItem = menu.find(m => m.id === id);
+        if (menuItem) renderMenuItemEditOverlay(menuItem);
+      });
+    });
+    listEl.querySelectorAll('[data-recipe-menu-id]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.getAttribute('data-recipe-menu-id');
+        const menuItem = menu.find(m => m.id === id);
+        if (menuItem) openRecipeEditor(menuItem);
+      });
+    });
+    listEl.querySelectorAll('[data-toggle-avail-id]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.getAttribute('data-toggle-avail-id');
+        const menuItem = menu.find(m => m.id === id);
+        btn.disabled = true;
+        await apiPost('/api/menu-update', { id, available: menuItem ? menuItem.available === false : true, branchId: currentStockBranchId });
+        loadMenuAndRender();
+      });
+    });
+  }
+
+  function renderStaffRolePicker(data) {
+    clearAppHeader();
+    applyBrandColor(data.ownerBrandColor);
+    const restaurantName = data.ownerRestaurantName || 'Oshxona';
+    const logoHtml = data.ownerLogoUrl
+      ? `<img src="${escapeHtml(data.ownerLogoUrl)}" alt="" style="width:72px; height:72px; border-radius:50%; object-fit:cover; margin:0 auto 14px; display:block;">`
+      : `<div style="width:72px; height:72px; margin:0 auto 14px; border-radius:50%; background:var(--brand-primary-light); display:flex; align-items:center; justify-content:center;">${icon('restaurant', 'icon-lg')}</div>`;
+    ekran(`
+      <div class="panel" style="text-align:center;">
+        ${logoHtml}
+        <div class="salom">Xush kelibsiz!</div>
+        <div class="bosh" style="text-align:center;">
+          <b>${escapeHtml(restaurantName)}</b> jamoasidasiz. Sizga bir nechta vakolat berilgan — qaysi bo'limda ishlaysiz?
+        </div>
+        <div class="kartochka" style="text-align:left; margin-top:14px;">
+          ${data.roles.map(r => `
+            <button type="button" class="btn ikkinchi role-pick-btn" data-role="${escapeHtml(r)}" style="width:100%; margin-bottom:8px; justify-content:flex-start; gap:10px;">
+              ${icon(ROLE_ICONS[r] || 'user', 'icon-xs')}<span>${escapeHtml(ROLE_LABELS[r] || r)}</span>
+            </button>
+          `).join('')}
+        </div>
+      </div>
+    `);
+    document.querySelectorAll('.role-pick-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const chosenRole = btn.getAttribute('data-role');
+        const key = staffChosenRoleKey();
+        if (key) localStorage.setItem(key, chosenRole);
+        renderStaffScreen(chosenRole, ROLE_LABELS[chosenRole] || chosenRole, data.ownerRestaurantName, data.ownerLogoUrl, data.ownerBrandColor, data.roles);
+      });
+    });
+  }
+
+  function renderStaffScreen(role, roleLabel, restaurantName, logoUrl, brandColor, roles) {
+    applyBrandColor(brandColor);
+
+    const multiRole = Array.isArray(roles) && roles.length > 1;
+    setAppHeader(logoUrl, restaurantName, roleLabel, multiRole ? staffRoleSwitchHandler : null);
+    if (role === 'kassir') {
+      renderCashierScreen(restaurantName);
+      return;
+    }
+    ekran(`
+      <div class="panel" style="text-align:center;">
+        <div class="salom">Salom!</div>
+        <div class="kartochka">
+          <div class="bosh" style="text-align:center; font-size:15px;">
+            Siz <b>${escapeHtml(restaurantName || 'oshxona')}</b> jamoasida
+          </div>
+          <div style="text-align:center; margin-top:10px;">
+            <span class="role-badge" style="font-size:14px; padding:8px 16px;">${escapeHtml(roleLabel)}</span>
+          </div>
+          <div class="bosh" style="text-align:center; margin-top:14px;">
+            Sizning ish bo'limingiz tez orada shu yerga qo'shiladi.
+          </div>
+        </div>
+      </div>
+    `);
+  }
+
+  function staffRoleSwitchHandler() {
+    const key = staffChosenRoleKey();
+    if (key) localStorage.removeItem(key);
+    bootstrapApp();
+  }
+
+  let myStatsState = { period: 'today' };
+
+  function myStatsPeriodLabel(period) {
+    return { today: 'Bugun', week: 'Bu hafta', month: 'Bu oy', all: 'Hammasi' }[period] || period;
+  }
+
+  function myStatsBodyHtml(stats) {
+    const blocks = [];
+    if (stats.kassir) {
+      blocks.push(`
+        <div class="kartochka">
+          <h2>Yaratgan buyurtmalarim</h2>
+          <div class="profile-row"><b>Soni:</b> ${stats.kassir.orderCount} ta</div>
+          <div class="profile-row"><b>Jami summa:</b> ${cfFormatSum(stats.kassir.totalAmount)}</div>
+        </div>
+      `);
+    }
+    if (stats.oshpaz) {
+      blocks.push(`
+        <div class="kartochka">
+          <h2>Tayyorlagan buyurtmalarim</h2>
+          <div class="profile-row"><b>Soni:</b> ${stats.oshpaz.orderCount} ta</div>
+        </div>
+      `);
+    }
+    if (stats.dostavka) {
+      blocks.push(`
+        <div class="kartochka">
+          <h2>Yetkazgan buyurtmalarim</h2>
+          <div class="profile-row"><b>Soni:</b> ${stats.dostavka.orderCount} ta</div>
+          <div class="profile-row"><b>Jami pul:</b> ${cfFormatSum(stats.dostavka.totalAmount)}</div>
+          <div class="profile-row"><b>Komissiyam:</b> ${cfFormatSum(stats.dostavka.commission)}</div>
+        </div>
+      `);
+    }
+    if (stats.sklad) {
+      blocks.push(`
+        <div class="kartochka">
+          <h2>Sklad harakatlarim</h2>
+          <div class="profile-row"><b>Jami:</b> ${stats.sklad.movementCount} ta</div>
+          <div class="profile-row"><b>Kirim:</b> ${stats.sklad.kirimCount} ta</div>
+          <div class="profile-row"><b>Chiqim:</b> ${stats.sklad.chiqimCount} ta</div>
+        </div>
+      `);
+    }
+    if (!blocks.length) return `<div class="bosh">Hozircha statistika yo'q.</div>`;
+    return blocks.join('');
+  }
+
+  function renderMyStatsScreen(onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Statistikam</div>
+        <button class="btn ikkinchi" id="msBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="tab-row">
+          <div class="tab-opt ${myStatsState.period === 'today' ? 'selected' : ''}" data-ms-period="today">Bugun</div>
+          <div class="tab-opt ${myStatsState.period === 'week' ? 'selected' : ''}" data-ms-period="week">Hafta</div>
+          <div class="tab-opt ${myStatsState.period === 'month' ? 'selected' : ''}" data-ms-period="month">Oy</div>
+        </div>
+        <div id="msBody"><div class="bosh">Yuklanmoqda...</div></div>
+      </div>
+    `);
+
+    document.getElementById('msBackBtn').addEventListener('click', () => { stopOrdersPolling(); onBack && onBack(); });
+    document.querySelector('.tab-row').addEventListener('click', (e) => {
+      const p = e.target.getAttribute('data-ms-period');
+      if (!p || p === myStatsState.period) return;
+      myStatsState.period = p;
+      renderMyStatsScreen(onBack);
+    });
+
+    loadMyStats();
+  }
+
+  async function loadMyStats() {
+    const bodyEl = document.getElementById('msBody');
+    if (!bodyEl) return;
+    const res = await apiPost('/api/my-stats', { period: myStatsState.period });
+    if (res.networkError) { renderNetworkErrorInline(bodyEl, res.reason, () => loadMyStats()); return; }
+    if (!res.ok) {
+      bodyEl.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
+      return;
+    }
+    bodyEl.innerHTML = myStatsBodyHtml(res.stats);
+  }
+
+  const ORDER_TYPE_LABELS = { olib_ketish: 'Olib ketish', dostavka: 'Dostavka', zal: 'Zal', tashqari: 'Tashqari' };
+  // Mijozning bot ichidagi buyurtma oynasida "Zal" turi ko'rsatilmaydi —
+  // bu tur faqat kassir/ega tomonidan zalda o'tirgan mijoz uchun yaratiladi.
+  const CUSTOMER_ORDER_TYPE_LABELS = { olib_ketish: 'Olib ketish', dostavka: 'Dostavka' };
+  const PAYMENT_TYPE_LABELS = { naqd: 'Naqd', karta: 'Karta', click: 'Click', dostavka_orqali: "Naqd" };
+
+  function visiblePaymentTypeEntries(orderType) {
+    return Object.entries(PAYMENT_TYPE_LABELS).filter(([k]) => {
+      if (k === 'dostavka_orqali' && customerState.cardOnlyRestricted) return false;
+      if (orderType === 'dostavka') return k !== 'naqd';
+      return k !== 'dostavka_orqali';
+    });
+  }
+
+  function ensureValidPaymentType(state) {
+    const visibleKeys = visiblePaymentTypeEntries(state.orderType).map(([k]) => k);
+    if (!visibleKeys.includes(state.paymentType)) {
+      state.paymentType = 'karta';
+    }
+  }
+
+  let cashierState = {
+    menu: [], cart: {}, orderType: 'olib_ketish', paymentType: 'naqd', tab: 'yaratish', lastOrderRequestId: null, comment: '',
+    // Mavjud buyurtmani tahrirlash rejimi uchun: null bo'lsa - yangi buyurtma yaratish rejimi.
+    editingOrderId: null, editingOrderNumber: null, editingComboItems: null, editingReturn: null,
+    // Egasi "Kassir paneli"ni o'zi sinab ko'rganda qaysi filial nomidan
+    // buyurtma yaratayotganini tanlashi uchun (oddiy kassir uchun bu har doim
+    // null qoladi va e'tiborga olinmaydi — server ctx.branchId'dan foydalanadi).
+    role: null, branches: [], branchId: null
+  };
+
+  function cashierCartTotal() {
+    return Object.entries(cashierState.cart).reduce((sum, [key, qty]) => sum + (qty || 0) * menuItemPriceForCartKey(cashierState.menu, key), 0);
+  }
+
+  // Savatga "+" bosib qo'shilgan mahsulotlar ro'yxati — pastdagi bekitilmas
+  // savat panelida darhol ko'rinadi, har birini "✕" bilan bekor qilsa bo'ladi.
+  function cashierCartItemsHtml() {
+    const entries = Object.entries(cashierState.cart).filter(([, qty]) => qty > 0);
+    if (!entries.length) return '';
+    return `
+      <div class="cart-items-list">
+        ${entries.map(([key, qty]) => `
+          <div class="cart-item-row">
+            <span class="cart-item-name">${escapeHtml(menuItemNameForCartKey(cashierState.menu, key))} × ${qty}</span>
+            <span class="cart-item-price">${fmtNum((menuItemPriceForCartKey(cashierState.menu, key) || 0) * qty)} so'm</span>
+            <button type="button" class="cart-item-remove" data-cart-remove="${escapeHtml(key)}" aria-label="Bekor qilish">✕</button>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  function cashierTabRowHtml() {
+    return `
+      <div class="tab-row">
+        <div class="tab-opt ${cashierState.tab === 'yaratish' ? 'selected' : ''}" data-cashier-tab="yaratish">Yangi buyurtma</div>
+        <div class="tab-opt ${cashierState.tab === 'holat' ? 'selected' : ''}" data-cashier-tab="holat">Buyurtmalar holati</div>
+        <div class="tab-opt ${cashierState.tab === 'statistika' ? 'selected' : ''}" data-cashier-tab="statistika">Statistikam</div>
+      </div>
+    `;
+  }
+
+  function cancelEditOrder(restaurantName, onBack) {
+    const returnFn = cashierState.editingReturn;
+    cashierState.editingOrderId = null;
+    cashierState.editingOrderNumber = null;
+    cashierState.editingComboItems = null;
+    cashierState.editingReturn = null;
+    cashierState.cart = {};
+    cashierState.comment = '';
+    if (returnFn) returnFn();
+    else renderCashierScreen(restaurantName, onBack);
+  }
+
+  function renderCashierScreen(restaurantName, onBack) {
+    stopOrdersPolling();
+    disconnectSectionedMenuObserver('cashierCatRow');
+    const isEditing = !!cashierState.editingOrderId;
+    if (cashierState.tab === 'holat' && !isEditing) {
+      renderCashierOrdersTab(restaurantName, onBack);
+      return;
+    }
+    if (cashierState.tab === 'statistika' && !isEditing) {
+      renderMyStatsScreen(() => { cashierState.tab = 'yaratish'; renderCashierScreen(restaurantName, onBack); });
+      return;
+    }
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">${escapeHtml(restaurantName || 'Kassir')}</div>
+        ${isEditing ? `<div class="xabar ok" style="margin-bottom:12px;">✏️ Buyurtma${cashierState.editingOrderNumber ? ' #' + escapeHtml(String(cashierState.editingOrderNumber)) : ''} tahrirlanmoqda — mahsulot qo'shing yoki olib tashlang.</div>` : ''}
+        ${isEditing ? `<button class="btn ikkinchi" id="cashierCancelEditBtn" style="margin-bottom:12px;">✕ Tahrirlashni bekor qilish</button>` : (onBack ? `<button class="btn ikkinchi" id="cashierBackBtn" style="margin-bottom:12px;">← Orqaga</button>` : '')}
+        ${isEditing ? '' : cashierTabRowHtml()}
+        ${isEditing ? '' : shiftWidgetHtml()}
+        <div id="cashierBranchBar"></div>
+        <div class="bosh">Taomni bosib savatga qo'shing.</div>
+        <div id="cashierMenu" style="margin-top:14px;"><div class="bosh">Yuklanmoqda...</div></div>
+        <div class="cart-bar">
+          <div id="cashierCartItemsWrap">${cashierCartItemsHtml()}</div>
+          <div class="cart-total"><span>Jami:</span><span id="cartTotalVal">${fmtNum(cashierCartTotal())} so'm</span></div>
+          <button class="btn" id="cashierOpenCheckoutBtn">${isEditing ? 'Buyurtmani yangilash' : "Oshxonaga yuborish"}</button>
+          <div class="xabar" id="cashierCartMsg"></div>
+        </div>
+      </div>
+    `);
+
+    if (isEditing) {
+      document.getElementById('cashierCancelEditBtn').addEventListener('click', () => cancelEditOrder(restaurantName, onBack));
+    } else if (onBack) {
+      document.getElementById('cashierBackBtn').addEventListener('click', () => onBack());
+    }
+    if (!isEditing) {
+      document.querySelector('.tab-row').addEventListener('click', (e) => {
+        const t = e.target.getAttribute('data-cashier-tab');
+        if (!t || t === cashierState.tab) return;
+        cashierState.tab = t;
+        renderCashierScreen(restaurantName, onBack);
+      });
+    }
+
+    document.getElementById('cashierOpenCheckoutBtn').addEventListener('click', () => openCashierCheckoutClick(restaurantName, onBack));
+    document.getElementById('cashierCartItemsWrap').addEventListener('click', (e) => {
+      const key = e.target.getAttribute('data-cart-remove');
+      if (!key) return;
+      cashierState.cart[key] = 0;
+      updateCashierQtyDisplay(key);
+      updateCashierCartItemsList();
+      updateCartTotal();
+    });
+
+    attachShiftWidgetHandler();
+    loadShiftWidget();
+    loadCashierMenu(restaurantName);
+    watchCashierCartBarHeight();
+  }
+
+  // "Oshxonaga yuborish" bosilganda: savat bo'sh bo'lsa shu yerdayoq xabar
+  // ko'rsatiladi; bo'lmasa — "Olib ketish/Dostavka/Zal/Tashqari",
+  // "Naqd/Karta/Click" va izoh shu tugma bosilgandan KEYIN, keyingi oynada
+  // (modalda) ochiladi. Savat ro'yxati esa asosiy ekranda, x bilan
+  // o'chirsa bo'ladigan holda qolaveradi.
+  function openCashierCheckoutClick(restaurantName, onBack) {
+    const cartItems = Object.entries(cashierState.cart).filter(([, qty]) => qty > 0);
+    const comboItems = cashierState.editingComboItems || [];
+    const msgEl = document.getElementById('cashierCartMsg');
+    if (!cartItems.length && !comboItems.length) {
+      if (msgEl) { msgEl.textContent = "Savat bo'sh. Kamida bitta taom tanlang."; msgEl.className = 'xabar err'; }
+      return;
+    }
+    if (msgEl) { msgEl.textContent = ''; msgEl.className = 'xabar'; }
+    openCashierCheckoutModal(restaurantName, onBack);
+  }
+
+  function cashierCheckoutModalBodyHtml(isEditing) {
+    return `
+      <h3>${isEditing ? 'Buyurtmani yangilash' : 'Buyurtmani rasmiylashtirish'}</h3>
+      <div class="type-row" id="orderTypeRow">
+        ${Object.entries(ORDER_TYPE_LABELS).map(([k, label]) => `
+          <div class="type-opt ${cashierState.orderType === k ? 'selected' : ''}" data-order-type="${k}">${label}</div>
+        `).join('')}
+      </div>
+      <div class="type-row" id="paymentTypeRow">
+        ${visiblePaymentTypeEntries(cashierState.orderType).map(([k, label]) => `
+          <div class="type-opt ${cashierState.paymentType === k ? 'selected' : ''}" data-payment-type="${k}">${label}</div>
+        `).join('')}
+      </div>
+      <textarea id="orderCommentInput" placeholder="Izoh (masalan: piyozsiz, achchiq sous ko'proq...)" rows="2">${escapeHtml(cashierState.comment || '')}</textarea>
+      <div class="cart-total"><span>Jami:</span><span id="cartTotalVal">${fmtNum(cashierCartTotal())} so'm</span></div>
+      <div class="xabar" id="orderMsg"></div>
+      <div class="btn-row">
+        <button type="button" class="btn ikkinchi" id="cashierCheckoutCloseBtn">Bekor qilish</button>
+        <button type="button" class="btn" id="sendOrderBtn">${isEditing ? 'Buyurtmani yangilash' : "Oshxonaga yuborish"}</button>
+      </div>
+    `;
+  }
+
+  function renderCashierCheckoutModalBody(overlay, restaurantName, onBack) {
+    const modalEl = overlay.querySelector('.modal');
+    modalEl.innerHTML = cashierCheckoutModalBodyHtml(!!cashierState.editingOrderId);
+    wireCashierCheckoutModal(overlay, restaurantName, onBack);
+  }
+
+  function wireCashierCheckoutModal(overlay, restaurantName, onBack) {
+    const modalEl = overlay.querySelector('.modal');
+    modalEl.querySelector('#cashierCheckoutCloseBtn').addEventListener('click', () => overlay.remove());
+    modalEl.querySelector('#orderTypeRow').addEventListener('click', (e) => {
+      const t = e.target.getAttribute('data-order-type');
+      if (!t) return;
+      cashierState.orderType = t;
+      ensureValidPaymentType(cashierState);
+      renderCashierCheckoutModalBody(overlay, restaurantName, onBack);
+    });
+    modalEl.querySelector('#paymentTypeRow').addEventListener('click', (e) => {
+      const t = e.target.getAttribute('data-payment-type');
+      if (!t) return;
+      cashierState.paymentType = t;
+      renderCashierCheckoutModalBody(overlay, restaurantName, onBack);
+    });
+    modalEl.querySelector('#orderCommentInput').addEventListener('input', (e) => {
+      cashierState.comment = e.target.value;
+    });
+    modalEl.querySelector('#sendOrderBtn').addEventListener('click', () => sendCashierOrder(restaurantName, onBack, overlay));
+  }
+
+  function openCashierCheckoutModal(restaurantName, onBack) {
+    const overlay = openOverlay(`<div class="modal" style="max-width:380px; max-height:85vh; overflow:auto;"></div>`);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    renderCashierCheckoutModalBody(overlay, restaurantName, onBack);
+  }
+
+  function renderCashierOrdersTab(restaurantName, onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">${escapeHtml(restaurantName || 'Kassir')}</div>
+        ${onBack ? `<button class="btn ikkinchi" id="cashierBackBtn" style="margin-bottom:12px;">← Orqaga</button>` : ''}
+        ${cashierTabRowHtml()}
+        ${shiftWidgetHtml()}
+        ${soundToggleBtnHtml()}
+        ${cashierStatusChipsHtml()}
+        <div id="ordersBoard"><div class="bosh">Yuklanmoqda...</div></div>
+      </div>
+    `);
+    if (onBack) {
+      document.getElementById('cashierBackBtn').addEventListener('click', () => onBack());
+    }
+    document.querySelector('.tab-row').addEventListener('click', (e) => {
+      const t = e.target.getAttribute('data-cashier-tab');
+      if (!t || t === cashierState.tab) return;
+      cashierState.tab = t;
+      renderCashierScreen(restaurantName, onBack);
+    });
+    document.getElementById('cashierStatusChips').addEventListener('click', (e) => {
+      const key = e.target.getAttribute('data-status-chip');
+      if (!key || key === cashierStatusFilter) return;
+      cashierStatusFilter = key;
+      document.querySelectorAll('#cashierStatusChips [data-status-chip]').forEach(el => {
+        el.classList.toggle('selected', el.getAttribute('data-status-chip') === key);
+      });
+      lastOrdersSnapshot = null;
+      refreshOrdersBoard('kassir', restaurantName, cashierOrdersReturnFn(restaurantName, onBack));
+    });
+    attachSoundToggleHandler();
+    attachShiftWidgetHandler();
+    loadShiftWidget();
+    startOrdersPolling('kassir', restaurantName, cashierOrdersReturnFn(restaurantName, onBack));
+  }
+
+  // Tahrirlashdan qaytganda (yoki bekor qilinganda) kassirning "Buyurtmalar
+  // holati" bo'limiga qayta chiqib kelishi uchun.
+  function cashierOrdersReturnFn(restaurantName, onBack) {
+    return () => { cashierState.tab = 'holat'; renderCashierScreen(restaurantName, onBack); };
+  }
+
+  function groupMenuItems(items, categories) {
+    const orderIndex = {};
+    (categories || []).forEach((c, i) => { orderIndex[c.name] = i; });
+    const order = [];
+    const groups = {};
+    items.forEach(m => {
+      const cat = m.category || 'Boshqa';
+      if (!groups[cat]) { groups[cat] = []; order.push(cat); }
+      groups[cat].push(m);
+    });
+    order.sort((a, b) => {
+      const ai = Object.prototype.hasOwnProperty.call(orderIndex, a) ? orderIndex[a] : Infinity;
+      const bi = Object.prototype.hasOwnProperty.call(orderIndex, b) ? orderIndex[b] : Infinity;
+      return ai - bi;
+    });
+    return { order, groups };
+  }
+
+  function renderSectionedMenu(items, opts) {
+    if (!items.length) return `<div class="bosh">${opts.emptyText}</div>`;
+    const { order, groups } = groupMenuItems(items, opts.categories);
+    return order.map((cat, i) => `
+      <div class="menu-section" id="${opts.sectionIdPrefix}-${i}">
+        <div class="cat-heading">${escapeHtml(cat)}</div>
+        <div class="${opts.itemsWrapperClass || ''}">${groups[cat].map(opts.renderItem).join('')}</div>
+      </div>
+    `).join('');
+  }
+
+  function sectionedMenuTabsHtml(items, opts) {
+    const { order } = groupMenuItems(items, opts.categories);
+    if (order.length <= 1) return '';
+    return `
+      <div class="cat-row sectioned-menu-tabs" id="${opts.tabRowId}">
+        ${order.map((c, i) => `<div class="cat-opt" data-section-id="${opts.sectionIdPrefix}-${i}">${escapeHtml(c)}</div>`).join('')}
+      </div>
+    `;
+  }
+
+  const sectionedMenuObservers = {};
+
+  function disconnectSectionedMenuObserver(tabRowId) {
+    if (sectionedMenuObservers[tabRowId]) {
+      sectionedMenuObservers[tabRowId].disconnect();
+      delete sectionedMenuObservers[tabRowId];
+    }
+  }
+
+  function attachSectionedMenuTabHandlers(tabRowId) {
+    const tabRow = document.getElementById(tabRowId);
+    if (!tabRow) return;
+    tabRow.addEventListener('click', (e) => {
+      const opt = e.target.closest('[data-section-id]');
+      if (!opt) return;
+      const targetEl = document.getElementById(opt.getAttribute('data-section-id'));
+      if (targetEl) targetEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+  }
+
+  function attachSectionedMenuScrollSpy(tabRowId, listElId) {
+    disconnectSectionedMenuObserver(tabRowId);
+    const tabRow = document.getElementById(tabRowId);
+    if (!tabRow) return;
+    const sections = Array.from(document.querySelectorAll('#' + listElId + ' .menu-section'));
+    if (!sections.length) return;
+
+    const setActiveTab = (sectionId) => {
+      tabRow.querySelectorAll('[data-section-id]').forEach(opt => {
+        const isActive = opt.getAttribute('data-section-id') === sectionId;
+        opt.classList.toggle('selected', isActive);
+        if (isActive) {
+          // opt.scrollIntoView() ishlatilganda, tabRow "position: sticky"
+          // ekani uchun ba'zi brauzerlarda butun sahifani tepaga (elementning
+          // "stuck bo'lmagan" asl joyiga) aylantirib yuboradi — masalan,
+          // menyuni pastga tushirganda sahifa to'satdan tepaga otilib ketardi.
+          // Shu sababli faqat tabRow'ning o'zini (gorizontal) aylantiramiz,
+          // butun sahifa scroll holatiga tegmaymiz.
+          const rowRect = tabRow.getBoundingClientRect();
+          const optRect = opt.getBoundingClientRect();
+          const delta = (optRect.left + optRect.width / 2) - (rowRect.left + rowRect.width / 2);
+          tabRow.scrollTo({ left: tabRow.scrollLeft + delta, behavior: 'smooth' });
+        }
+      });
+    };
+    setActiveTab(sections[0].id);
+
+    const observer = new IntersectionObserver((entries) => {
+      entries.forEach(entry => { if (entry.isIntersecting) setActiveTab(entry.target.id); });
+    }, { rootMargin: '-96px 0px -70% 0px', threshold: 0 });
+    sections.forEach(sec => observer.observe(sec));
+    sectionedMenuObservers[tabRowId] = observer;
+  }
+
+  function cashierItemRowHtml(m) {
+    const hasVariants = Array.isArray(m.prices) && m.prices.length > 0;
+    const qty = cashierState.cart[m.id] || 0;
+    const thumbHtml = m.imageUrl
+      ? `<img class="menu-item-thumb" src="${escapeHtml(m.imageUrl)}" onerror="this.style.display='none'">`
+      : `<div class="menu-item-thumb-empty"></div>`;
+
+    if (m.outOfStock) {
+      return `
+        <div class="menu-item" style="opacity:0.55;">
+          <div class="menu-item-info">
+            ${thumbHtml}
+            <div>
+              <div class="m-name">${escapeHtml(m.name)} <span class="badge warning">Tugagan</span></div>
+              <div class="m-price">${menuPriceFromLabel(m)}</div>
+            </div>
+          </div>
+          <div class="qty-controls">
+            <button disabled>-</button>
+            <span class="qty-val">0</span>
+            <button disabled>+</button>
+          </div>
+        </div>
+      `;
+    }
+
+    if (hasVariants) {
+      return `
+        <div class="menu-item" style="flex-direction:column; align-items:stretch;">
+          <div class="menu-item-info">
+            ${thumbHtml}
+            <div class="m-name">${escapeHtml(m.name)}</div>
+          </div>
+          <div class="price-variant-list">
+            ${m.prices.map((p, idx) => {
+              const key = cartKeyFor(m.id, p.id);
+              const vQty = cashierState.cart[key] || 0;
+              return `
+                <div class="price-variant-row">
+                  <span class="price-variant-label">${escapeHtml(variantLabel(p, idx))} — ${fmtNum(p.price)} so'm</span>
+                  <div class="qty-controls">
+                    <button data-qty-minus="${escapeHtml(key)}">-</button>
+                    <span class="qty-val">${vQty}</span>
+                    <button data-qty-plus="${escapeHtml(key)}">+</button>
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        </div>
+      `;
+    }
+
+    return `
+      <div class="menu-item">
+        <div class="menu-item-info">
+          ${thumbHtml}
+          <div>
+            <div class="m-name">${escapeHtml(m.name)}</div>
+            <div class="m-price">${fmtNum(m.price)} so'm</div>
+          </div>
+        </div>
+        <div class="qty-controls">
+          <button data-qty-minus="${escapeHtml(m.id)}">-</button>
+          <span class="qty-val">${qty}</span>
+          <button data-qty-plus="${escapeHtml(m.id)}">+</button>
+        </div>
+      </div>
+    `;
+  }
+
+  function cashierMenuHtml() {
+    return `
+      ${sectionedMenuTabsHtml(cashierState.menu, { tabRowId: 'cashierCatRow', sectionIdPrefix: 'menu-section-cashier', listElId: 'cashierMenuList', categories: cashierState.categories })}
+      <div id="cashierMenuList">${renderSectionedMenu(cashierState.menu, {
+        sectionIdPrefix: 'menu-section-cashier',
+        itemsWrapperClass: '',
+        renderItem: cashierItemRowHtml,
+        emptyText: "Menyu hali bo'sh. Egadan menyuga taom qo'shishni so'rang.",
+        categories: cashierState.categories
+      })}</div>
+    `;
+  }
+
+  // Egasi "Kassir paneli"ni o'zi sinab ko'rganda (Mini App'dagi profil
+  // ekranidan) qaysi filial nomidan buyurtma yaratayotganini tanlashi kerak —
+  // aks holda buyurtma har doim MARKAZIY (filialsiz) hisoblanib, filialga
+  // biriktirilgan guruhga hech qachon yetib bormaydi. Oddiy kassir uchun bu
+  // panel ko'rsatilmaydi — server ularning o'z ctx.branchId'sidan foydalanadi.
+  function cashierBranchBarHtml() {
+    if (cashierState.role !== 'egasi' || !(cashierState.branches || []).length || cashierState.editingOrderId) return '';
+    return `
+      <div class="bosh" style="margin-top:10px;">Qaysi filial nomidan buyurtma yaratyapsiz?</div>
+      <select id="cashierBranchSelect" style="margin-bottom:10px;">
+        <option value="">— Markaziy (filialsiz) —</option>
+        ${(cashierState.branches || []).map(b => `<option value="${escapeHtml(b.id)}" ${cashierState.branchId === b.id ? 'selected' : ''}>${escapeHtml(b.name)}</option>`).join('')}
+      </select>
+    `;
+  }
+
+  async function loadCashierMenu(restaurantName) {
+    const el = document.getElementById('cashierMenu');
+    const res = await apiPost('/api/menu-list', { branchId: cashierState.branchId });
+    if (res.networkError) { renderNetworkErrorInline(el, res.reason, () => loadCashierMenu(restaurantName)); return; }
+    cashierState.menu = res.ok ? res.menu : [];
+    cashierState.categories = res.ok ? (res.categories || []) : [];
+    cashierState.role = res.ok ? res.role : cashierState.role;
+    cashierState.branches = res.ok ? (res.branches || []) : cashierState.branches;
+    el.innerHTML = cashierMenuHtml();
+    attachQtyHandlers(restaurantName);
+    attachSectionedMenuTabHandlers('cashierCatRow');
+    attachSectionedMenuScrollSpy('cashierCatRow', 'cashierMenuList');
+    const branchBarEl = document.getElementById('cashierBranchBar');
+    if (branchBarEl) {
+      branchBarEl.innerHTML = cashierBranchBarHtml();
+      const selectEl = document.getElementById('cashierBranchSelect');
+      if (selectEl) {
+        selectEl.addEventListener('change', (e) => {
+          cashierState.branchId = e.target.value || null;
+          cashierState.cart = {};
+          loadCashierMenu(restaurantName);
+        });
+      }
+    }
+  }
+
+  function attachQtyHandlers(restaurantName) {
+    const el = document.getElementById('cashierMenu');
+    el.querySelectorAll('[data-qty-plus]').forEach(btn => btn.onclick = () => {
+      const id = btn.getAttribute('data-qty-plus');
+      cashierState.cart[id] = (cashierState.cart[id] || 0) + 1;
+      updateCashierQtyDisplay(id);
+      updateCashierCartItemsList();
+      updateCartTotal();
+    });
+    el.querySelectorAll('[data-qty-minus]').forEach(btn => btn.onclick = () => {
+      const id = btn.getAttribute('data-qty-minus');
+      cashierState.cart[id] = Math.max(0, (cashierState.cart[id] || 0) - 1);
+      updateCashierQtyDisplay(id);
+      updateCashierCartItemsList();
+      updateCartTotal();
+    });
+  }
+
+  // Savat ro'yxatini (pastdagi bekitilmas panelda) joriy holatga moslab
+  // qayta chizadi — "+"/"-" bosilganda va "✕" bilan bekor qilinganda chaqiriladi.
+  function updateCashierCartItemsList() {
+    const wrap = document.getElementById('cashierCartItemsWrap');
+    if (wrap) wrap.innerHTML = cashierCartItemsHtml();
+  }
+
+  // Pastki savat paneli "fixed" bo'lgani uchun, uning balandligi o'zgarganda
+  // (mahsulot qo'shilib-ro'chirilganda, izoh matni ko'p qatorli bo'lganda)
+  // .panel pastiga xuddi shuncha bo'sh joy qo'shib turamiz — aks holda
+  // panel tagidagi kontent savat paneli ostida yashirinib qolardi.
+  let cashierCartBarRO = null;
+  function watchCashierCartBarHeight() {
+    if (cashierCartBarRO) { cashierCartBarRO.disconnect(); cashierCartBarRO = null; }
+    const barEl = document.querySelector('.cart-bar');
+    const panelEl = document.querySelector('.panel');
+    if (!barEl || !panelEl) return;
+    const sync = () => { panelEl.style.paddingBottom = (barEl.offsetHeight + 16) + 'px'; };
+    sync();
+    if (window.ResizeObserver) {
+      cashierCartBarRO = new ResizeObserver(sync);
+      cashierCartBarRO.observe(barEl);
+    } else {
+      window.addEventListener('resize', sync);
+    }
+  }
+
+  // Miqdor +/- bosilganda BUTUN menyuni qayta chizib yubormaslik uchun — bu
+  // fokusdagi tugmani yo'q qilib, brauzerni sahifa boshiga aylantirib yuborardi
+  // (har bo'limni o'zgartirgach yuqoriga otilib ketish muammosi shundan edi).
+  // Endi faqat tegishli miqdor yozuvi joyida yangilanadi, qolgan DOM va scroll
+  // holati tegilmaydi.
+  function updateCashierQtyDisplay(key) {
+    const el = document.getElementById('cashierMenu');
+    if (!el) return;
+    const qty = cashierState.cart[key] || 0;
+    el.querySelectorAll('[data-qty-plus]').forEach(btn => {
+      if (btn.getAttribute('data-qty-plus') !== key) return;
+      const qtyEl = btn.previousElementSibling;
+      if (qtyEl && qtyEl.classList.contains('qty-val')) qtyEl.textContent = String(qty);
+    });
+    el.querySelectorAll('[data-qty-minus]').forEach(btn => {
+      if (btn.getAttribute('data-qty-minus') !== key) return;
+      const qtyEl = btn.nextElementSibling;
+      if (qtyEl && qtyEl.classList.contains('qty-val')) qtyEl.textContent = String(qty);
+    });
+  }
+
+  function updateCartTotal() {
+    const el = document.getElementById('cartTotalVal');
+    if (el) el.textContent = fmtNum(cashierCartTotal()) + " so'm";
+  }
+
+  async function sendCashierOrder(restaurantName, onBack, overlay) {
+    const msgEl = document.getElementById('orderMsg');
+    const sendBtn = document.getElementById('sendOrderBtn');
+    const cartItems = Object.entries(cashierState.cart)
+      .filter(([, qty]) => qty > 0)
+      .map(([key, qty]) => {
+        const { itemId, priceId } = cartKeyParts(key);
+        return priceId ? { id: itemId, qty, priceId } : { id: itemId, qty };
+      });
+    // Tahrirlash rejimida combo'lar kassir savatida ko'rinmaydi (kassir UI faqat
+    // oddiy menyu bandlarini boshqaradi) - shuning uchun ular o'zgartirilmagan
+    // holda saqlanib, yangilangan buyurtmaga qaytadan qo'shiladi.
+    const comboItems = (cashierState.editingComboItems || []).map(it => ({ id: it.id, qty: it.qty, isCombo: true }));
+    const items = cartItems.concat(comboItems);
+
+    if (!items.length) {
+      setMsg(msgEl, 'Savat bo\'sh. Kamida bitta taom tanlang.', 'err');
+      return;
+    }
+    if (sendBtn) sendBtn.disabled = true;
+
+    if (cashierState.editingOrderId) {
+      setMsg(msgEl, 'Yangilanmoqda...');
+      const res = await apiPost('/api/edit-order', {
+        orderId: cashierState.editingOrderId,
+        items,
+        orderType: cashierState.orderType,
+        paymentType: cashierState.paymentType,
+        comment: cashierState.comment,
+        branchId: cashierState.branchId
+      });
+
+      if (res.ok) {
+        const returnFn = cashierState.editingReturn;
+        cashierState.cart = {};
+        cashierState.comment = '';
+        cashierState.editingOrderId = null;
+        cashierState.editingOrderNumber = null;
+        cashierState.editingComboItems = null;
+        cashierState.editingReturn = null;
+        lastOrdersSnapshot = null;
+        if (overlay) overlay.remove();
+        if (returnFn) {
+          returnFn();
+        } else {
+          renderCashierScreen(restaurantName, onBack);
+        }
+      } else {
+        if (sendBtn) sendBtn.disabled = false;
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+      }
+      return;
+    }
+
+    if (!cashierState.lastOrderRequestId) {
+      cashierState.lastOrderRequestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    }
+
+    setMsg(msgEl, 'Yuborilmoqda...');
+    const res = await apiPost('/api/create-order', {
+      items: cartItems,
+      orderType: cashierState.orderType,
+      paymentType: cashierState.paymentType,
+      comment: cashierState.comment,
+      requestId: cashierState.lastOrderRequestId,
+      branchId: cashierState.branchId
+    });
+
+    if (res.ok) {
+      cashierState.cart = {};
+      cashierState.comment = '';
+      cashierState.lastOrderRequestId = null;
+      // Yuborilgandan keyin keyingi buyurtma uchun "Olib ketish" / "Naqd"
+      // standart tanlovga qaytadi (oldingi buyurtmadagi tur saqlanib qolmasin).
+      cashierState.orderType = 'olib_ketish';
+      cashierState.paymentType = 'naqd';
+      msgEl.textContent = '';
+      if (overlay) overlay.remove();
+      renderCashierScreen(restaurantName, onBack);
+      const topMsg = document.createElement('div');
+      topMsg.className = 'xabar ok';
+      topMsg.innerHTML = `${icon('check-circle', 'icon-xs icon-success')} Buyurtma yuborildi (${fmtNum(res.total)} so'm)`;
+      document.querySelector('.panel').prepend(topMsg);
+    } else {
+      if (sendBtn) sendBtn.disabled = false;
+      setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+    }
+  }
+
+  const ORDER_STATUS_LABELS = { yangi: 'Yangi', tayyorlanmoqda: 'Tayyorlanmoqda', tayyor: 'Tayyor', bekor_qilindi: 'Bekor qilindi' };
+  let ordersPollTimer = null;
+  let lastOrdersSnapshot = null;
+  let knownOrderIds = null;
+
+  let cashierStatusFilter = 'hammasi';
+  const CASHIER_STATUS_CHIPS = [
+    { key: 'hammasi', label: 'Hammasi' },
+    { key: 'yangi', label: 'Yangi' },
+    { key: 'tayyorlanmoqda', label: 'Tayyorlanmoqda' },
+    { key: 'tayyor', label: 'Tayyor' }
+  ];
+  function cashierStatusChipsHtml() {
+    return `
+      <div class="cat-row" id="cashierStatusChips">
+        ${CASHIER_STATUS_CHIPS.map(c => `<div class="cat-opt ${cashierStatusFilter === c.key ? 'selected' : ''}" data-status-chip="${c.key}">${escapeHtml(c.label)}</div>`).join('')}
+      </div>
+    `;
+  }
+
+  function stopOrdersPolling() {
+    if (ordersPollTimer) { clearInterval(ordersPollTimer); ordersPollTimer = null; }
+    lastOrdersSnapshot = null;
+    knownOrderIds = null;
+  }
+
+  const SOUND_NOTIF_STORAGE_KEY = 'kitchenOsSoundNotif';
+  function soundNotifEnabled() {
+    return localStorage.getItem(SOUND_NOTIF_STORAGE_KEY) !== 'off';
+  }
+  function setSoundNotifEnabled(on) {
+    localStorage.setItem(SOUND_NOTIF_STORAGE_KEY, on ? 'on' : 'off');
+  }
+  let sharedAudioCtx = null;
+  function playNewOrderBeep() {
+    if (!soundNotifEnabled()) return;
+    try {
+      if (!sharedAudioCtx) sharedAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const ctx = sharedAudioCtx;
+      if (ctx.state === 'suspended') ctx.resume();
+
+      [0, 0.22].forEach(delay => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = 880;
+        gain.gain.setValueAtTime(0.0001, ctx.currentTime + delay);
+        gain.gain.exponentialRampToValueAtTime(0.35, ctx.currentTime + delay + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + delay + 0.18);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(ctx.currentTime + delay);
+        osc.stop(ctx.currentTime + delay + 0.2);
+      });
+    } catch (e) {
+
+    }
+  }
+
+  let shiftState = { active: false, startedAt: null };
+  let shiftTickTimer = null;
+
+  function shiftDurationText(startedAt) {
+    if (!startedAt) return '';
+    const ms = Date.now() - new Date(startedAt).getTime();
+    const totalMin = Math.max(0, Math.floor(ms / 60000));
+    const h = Math.floor(totalMin / 60);
+    const m = totalMin % 60;
+    return h > 0 ? `${h} soat ${m} daqiqa` : `${m} daqiqa`;
+  }
+
+  function stopShiftTicker() {
+    if (shiftTickTimer) { clearInterval(shiftTickTimer); shiftTickTimer = null; }
+  }
+
+  function startShiftTickerIfNeeded() {
+    stopShiftTicker();
+    if (!shiftState.active) return;
+    shiftTickTimer = setInterval(() => {
+      const el = document.getElementById('shiftElapsedText');
+      if (!el) { stopShiftTicker(); return; }
+      el.textContent = shiftDurationText(shiftState.startedAt);
+    }, 30000);
+  }
+
+  function shiftWidgetInnerHtml() {
+    if (shiftState.active) {
+      return `
+        <div class="kartochka shift-widget shift-widget-active">
+          <div class="shift-widget-row">
+            <div class="shift-widget-info">
+              ${icon('clock', 'icon-xs')}
+              <div>
+                <b>Smena boshlangan</b>
+                <div class="shift-widget-time" id="shiftElapsedText">${escapeHtml(shiftDurationText(shiftState.startedAt))}</div>
+              </div>
+            </div>
+            <button type="button" class="btn xavfli shift-widget-btn" id="shiftToggleBtn">Tugatish</button>
+          </div>
+        </div>
+      `;
+    }
+    return `
+      <div class="kartochka shift-widget">
+        <div class="shift-widget-row">
+          <div class="shift-widget-info">${icon('clock', 'icon-xs')}<b>Smena boshlanmagan</b></div>
+          <button type="button" class="btn shift-widget-btn" id="shiftToggleBtn">Smenani boshlash</button>
+        </div>
+      </div>
+    `;
+  }
+
+  function shiftWidgetHtml() {
+    return `<div id="shiftWidgetWrap" style="margin-bottom:12px;">${shiftWidgetInnerHtml()}</div>`;
+  }
+
+  function attachShiftWidgetHandler() {
+    const btn = document.getElementById('shiftToggleBtn');
+    if (!btn) return;
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      const res = await apiPost('/api/shift-toggle');
+      if (res.ok) {
+        shiftState.active = res.active;
+        shiftState.startedAt = res.startedAt;
+        const wrap = document.getElementById('shiftWidgetWrap');
+        if (wrap) wrap.innerHTML = shiftWidgetInnerHtml();
+        attachShiftWidgetHandler();
+        startShiftTickerIfNeeded();
+      } else {
+        btn.disabled = false;
+        alert(res.reason || 'Xatolik yuz berdi.');
+      }
+    });
+  }
+
+  async function loadShiftWidget() {
+    const res = await apiPost('/api/shift-status');
+    if (!res.ok) return;
+    shiftState.active = res.active;
+    shiftState.startedAt = res.startedAt;
+    const wrap = document.getElementById('shiftWidgetWrap');
+    if (wrap) wrap.innerHTML = shiftWidgetInnerHtml();
+    attachShiftWidgetHandler();
+    startShiftTickerIfNeeded();
+  }
+
+  function soundToggleBtnHtml() {
+    const on = soundNotifEnabled();
+    return `<button class="btn ikkinchi" id="soundNotifToggleBtn" style="margin-bottom:12px;">${on ? '🔔 Ovoz: Yoqilgan' : '🔕 Ovoz: O\'chirilgan'}</button>`;
+  }
+  function attachSoundToggleHandler() {
+    const btn = document.getElementById('soundNotifToggleBtn');
+    if (!btn) return;
+    btn.addEventListener('click', () => {
+      setSoundNotifEnabled(!soundNotifEnabled());
+      btn.textContent = soundNotifEnabled() ? '🔔 Ovoz: Yoqilgan' : '🔕 Ovoz: O\'chirilgan';
+
+      if (soundNotifEnabled()) playNewOrderBeep();
+    });
+  }
+
+  function timeAgo(iso) {
+    const ms = Date.now() - new Date(iso).getTime();
+    const min = Math.floor(ms / 60000);
+    if (min < 1) return 'hozirgina';
+    if (min < 60) return `${min} daqiqa oldin`;
+    const soat = Math.floor(min / 60);
+    return `${soat} soat oldin`;
+  }
+
+  function orderCardHtml(order, role) {
+    const orderLabel = `${ORDER_TYPE_LABELS[order.orderType] || order.orderType}`;
+    const itemsHtml = order.items.map(it => `${escapeHtml(it.name)} x${it.qty}`).join('<br>');
+
+    const allDirectStock = Array.isArray(order.items) && order.items.length > 0 &&
+      order.items.every(it => it.directStockId);
+
+    let actionBtn = '';
+    const paymentPending = order.paymentProofStatus === 'kutilmoqda';
+    if (paymentPending) {
+      // To'lov (karta skrinshoti yoki stoldagi naqd) hali tasdiqlanmagan -
+      // shu buyurtma uchun HECH QANDAY holat o'zgartirish tugmasi
+      // ko'rsatilmaydi (backend ham buni taqiqlaydi, qarang: canSetOrderStatus).
+    } else if (order.status === 'yangi') {
+      if (allDirectStock && (role === 'oshpaz' || role === 'kassir')) {
+        actionBtn = `<button class="order-action-btn ready" data-order-id="${escapeHtml(order.id)}" data-set-status="tayyor">Tayyor</button>`;
+      } else if (role === 'oshpaz') {
+        actionBtn = `<button class="order-action-btn start" data-order-id="${escapeHtml(order.id)}" data-set-status="tayyorlanmoqda">Boshlash</button>`;
+      } else if (role === 'egasi') {
+
+        actionBtn = `<button class="order-action-btn ready" data-order-id="${escapeHtml(order.id)}" data-set-status="tayyor">Tayyor (majburiy)</button>`;
+      }
+
+    } else if (order.status === 'tayyorlanmoqda') {
+      actionBtn = `<button class="order-action-btn ready" data-order-id="${escapeHtml(order.id)}" data-set-status="tayyor">Tayyor</button>`;
+    } else if ((role === 'kassir' || role === 'egasi') && order.orderType !== 'dostavka' && order.status === 'tayyor' && !order.customerReceivedAt) {
+      actionBtn = `<button class="order-action-btn ready" data-mark-received-id="${escapeHtml(order.id)}">${icon('check-circle', 'icon-xs')} Mijoz oldi</button>`;
+    } else if (role === 'egasi' && order.orderType === 'dostavka' && order.deliveredBy) {
+
+      actionBtn = `<button class="order-action-btn ikkinchi" data-undo-deliver-id="${escapeHtml(order.id)}">Yetkazildi belgisini bekor qilish</button>`;
+    }
+
+    // Mijoz qo'shimcha narsa xohlasa yoki buyurtmadan biror narsani olib
+    // tashlashni so'rasa, kassir/ega yangi buyurtma yaratmasdan shu buyurtmani
+    // tahrirlab qo'yishi mumkin — "Tayyor" bo'lgan buyurtmalarda ham (bekor
+    // qilingan buyurtma bundan mustasno). Agar "Tayyor" buyurtmaga yangi
+    // mahsulot qo'shilsa, backend o'sha qo'shimchani alohida oshxona guruhiga
+    // (o'ziga xos "Tayyor" tugmasi bilan) yuboradi.
+    let editBtn = '';
+    if (!paymentPending && (role === 'kassir' || role === 'egasi') && order.status !== 'bekor_qilindi') {
+      editBtn = `<button class="order-action-btn ikkinchi" data-edit-order-id="${escapeHtml(order.id)}">✏️ Tahrirlash</button>`;
+    }
+    const deliveredNote = (order.orderType === 'dostavka' && order.deliveredBy)
+      ? `<div class="order-time">✅ Yetkazib berilgan (${timeAgo(order.deliveredAt)})</div>`
+      : '';
+    const receivedNote = (order.orderType !== 'dostavka' && order.customerReceivedAt)
+      ? `<div class="order-time">✅ Mijoz oldi (${timeAgo(order.customerReceivedAt)})</div>`
+      : '';
+    const paymentPendingNote = paymentPending
+      ? `<div class="order-time" style="color:var(--danger);">⏳ To'lov hali tasdiqlanmagan</div>`
+      : '';
+
+    return `
+      <div class="order-card">
+        <div class="order-top">
+          <div>
+            <div class="order-type">${orderLabel}</div>
+            <div class="order-time">${timeAgo(order.createdAt)}</div>
+          </div>
+          <span class="status-badge ${order.status}">${ORDER_STATUS_LABELS[order.status] || order.status}</span>
+        </div>
+        ${order.customerName ? `<div class="order-time">👤 ${escapeHtml(order.customerName)}${order.customerPhone ? ` · <button type="button" class="call-link" data-call-phone="${escapeHtml(order.customerPhone)}" data-call-tgid="${escapeHtml(String(order.customerId || ''))}">📞 ${escapeHtml(order.customerPhone)}</button>` : ''}</div>` : ''}
+        ${order.orderType === 'dostavka' && order.extraPhone ? `<div class="order-time"><button type="button" class="call-link" data-call-phone="${escapeHtml(order.extraPhone)}">📞 ${escapeHtml(order.extraPhone)}</button></div>` : ''}
+        <div class="order-items">${itemsHtml}</div>
+        ${order.comment ? `<div class="order-time" style="color:var(--warning);">💬 ${escapeHtml(order.comment)}</div>` : ''}
+        ${deliveredNote}
+        ${receivedNote}
+        ${paymentPendingNote}
+        <div class="order-bottom">
+          <span class="order-total">${fmtNum(order.total)} so'm</span>
+          ${editBtn}
+          ${actionBtn}
+        </div>
+      </div>
+    `;
+  }
+
+  function ordersBoardHtml(orders, role) {
+    let list = orders || [];
+    if (role === 'kassir' && cashierStatusFilter !== 'hammasi') {
+      list = list.filter(o => o.status === cashierStatusFilter);
+    }
+    if (!list.length) {
+      return `<div class="bosh">${role === 'kassir' && cashierStatusFilter !== 'hammasi' ? "Bu holatda buyurtma yo'q." : "Hozircha buyurtmalar yo'q."}</div>`;
+    }
+    return list.map(o => orderCardHtml(o, role)).join('');
+  }
+
+  let lastOrdersForBoard = [];
+
+  function attachOrdersBoardHandlers(role, restaurantName, onReturn) {
+    const board = document.getElementById('ordersBoard');
+    if (!board) return;
+    board.querySelectorAll('[data-set-status]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        const orderId = btn.getAttribute('data-order-id');
+        const status = btn.getAttribute('data-set-status');
+        const res = await apiPost('/api/update-order-status', { orderId, status });
+        if (!res.ok) {
+          alert(res.reason || 'Xatolik yuz berdi.');
+        }
+        lastOrdersSnapshot = null;
+        await refreshOrdersBoard(role, restaurantName, onReturn);
+      });
+    });
+    board.querySelectorAll('[data-mark-received-id]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        const orderId = btn.getAttribute('data-mark-received-id');
+        const res = await apiPost('/api/staff-mark-received', { orderId });
+        if (!res.ok) {
+          alert(res.reason || 'Xatolik yuz berdi.');
+        }
+        lastOrdersSnapshot = null;
+        await refreshOrdersBoard(role, restaurantName, onReturn);
+      });
+    });
+    board.querySelectorAll('[data-undo-deliver-id]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!confirm('Bu buyurtmaning "Yetkazildi" belgisini bekor qilmoqchimisiz?')) return;
+        btn.disabled = true;
+        const orderId = btn.getAttribute('data-undo-deliver-id');
+        const res = await apiPost('/api/undo-deliver-order', { orderId });
+        if (!res.ok) {
+          alert(res.reason || 'Xatolik yuz berdi.');
+        }
+        lastOrdersSnapshot = null;
+        await refreshOrdersBoard(role, restaurantName, onReturn);
+      });
+    });
+    board.querySelectorAll('[data-edit-order-id]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const orderId = btn.getAttribute('data-edit-order-id');
+        const order = lastOrdersForBoard.find(o => o.id === orderId);
+        if (!order) { alert('Buyurtma topilmadi. Ro\'yxatni yangilab qayta urinib ko\'ring.'); return; }
+        stopOrdersPolling();
+        cashierState.tab = 'yaratish';
+        cashierState.editingOrderId = order.id;
+        cashierState.editingOrderNumber = order.orderNumber || null;
+        cashierState.editingReturn = onReturn || null;
+        cashierState.orderType = order.orderType;
+        cashierState.paymentType = order.paymentType;
+        cashierState.comment = order.comment || '';
+        cashierState.cart = {};
+        (order.items || []).forEach(it => {
+          if (it.isCombo) return;
+          const key = it.priceId ? cartKeyFor(it.id, it.priceId) : it.id;
+          cashierState.cart[key] = (cashierState.cart[key] || 0) + it.qty;
+        });
+        cashierState.editingComboItems = (order.items || []).filter(it => it.isCombo);
+        renderCashierScreen(restaurantName, onReturn);
+      });
+    });
+  }
+
+  async function refreshOrdersBoard(role, restaurantName, onReturn) {
+    const board = document.getElementById('ordersBoard');
+    if (!board) { stopOrdersPolling(); return; }
+    const res = await apiPost('/api/orders-list', { branchId: role === 'egasi' ? activeBranchIdForApi() : undefined });
+    if (!res.ok) {
+
+      if (res.networkError && lastOrdersSnapshot === null) {
+        renderNetworkErrorInline(board, res.reason, () => refreshOrdersBoard(role, restaurantName, onReturn));
+      }
+      return;
+    }
+
+    lastOrdersForBoard = res.orders || [];
+
+    const currentIds = new Set((res.orders || []).map(o => o.id));
+    if (knownOrderIds && (role === 'oshpaz' || role === 'kassir' || role === 'egasi')) {
+      const hasNew = (res.orders || []).some(o => o.status === 'yangi' && !knownOrderIds.has(o.id));
+      if (hasNew) playNewOrderBeep();
+    }
+    knownOrderIds = currentIds;
+
+    const snapshot = JSON.stringify(res.orders);
+    if (snapshot === lastOrdersSnapshot) return;
+    lastOrdersSnapshot = snapshot;
+    board.innerHTML = ordersBoardHtml(res.orders, role);
+    attachOrdersBoardHandlers(role, restaurantName, onReturn);
+  }
+
+  function startOrdersPolling(role, restaurantName, onReturn) {
+    stopOrdersPolling();
+    refreshOrdersBoard(role, restaurantName, onReturn);
+    ordersPollTimer = setInterval(() => refreshOrdersBoard(role, restaurantName, onReturn), 4000);
+  }
+
+  function renderKitchenScreen(restaurantName, onBack) {
+    // onBack faqat do'kon egasi shu ekranga o'z menyusidan kirganda beriladi
+    // (haqiqiy oshpaz xodim to'g'ridan-to'g'ri renderStaffScreen orqali,
+    // onBack'siz kiradi) - shu orqali egasi uchun 'egasi' rolini ishlatib,
+    // "Mijoz oldi" (va boshqa egasiga xos) tugmalari ham shu yerda chiqadi.
+    const boardRole = onBack ? 'egasi' : 'oshpaz';
+
+    ekran(`
+      <div class="panel">
+        ${onBack ? `<button type="button" class="btn" id="kitchenMenuManageBtn" style="margin-bottom:12px;">${icon('restaurant', 'icon-xs')} Menyu boshqaruvi</button>` : ''}
+        <div class="salom" style="font-size:20px;">Kelgan buyurtmalar</div>
+        ${onBack ? `<button class="btn ikkinchi" id="kitchenBackBtn" style="margin-bottom:12px;">← Orqaga</button>` : ''}
+        <button class="btn ikkinchi" id="kitchenStatsBtn" style="margin-bottom:12px;">📊 Statistikam</button>
+        ${shiftWidgetHtml()}
+        ${soundToggleBtnHtml()}
+        <div class="bosh">Pastdagi tugmalar bilan holatini o'zgartiring.</div>
+        <div id="ordersBoard" class="orders-board-large" style="margin-top:14px;"><div class="bosh">Yuklanmoqda...</div></div>
+      </div>
+    `);
+    if (onBack) document.getElementById('kitchenBackBtn').addEventListener('click', () => { stopOrdersPolling(); onBack(); });
+    document.getElementById('kitchenStatsBtn').addEventListener('click', () => {
+      stopOrdersPolling();
+      renderMyStatsScreen(() => renderKitchenScreen(restaurantName, onBack));
+    });
+    attachSoundToggleHandler();
+    attachShiftWidgetHandler();
+    loadShiftWidget();
+    startOrdersPolling(boardRole, restaurantName, () => renderKitchenScreen(restaurantName, onBack));
+    if (onBack) {
+      document.getElementById('kitchenMenuManageBtn').addEventListener('click', () => openKitchenMenuManageMenu(restaurantName, onBack));
+    }
+  }
+
+  function openKitchenMenuManageMenu(restaurantName, onBack) {
+    const overlay = openOverlay(`
+      <div class="modal" style="max-width:380px;">
+        <h3>Menyu boshqaruvi</h3>
+        <div class="ko-menu-grid" style="margin-top:10px;">
+          <button type="button" class="ko-menu-item" id="kmmAddMenuBtn">
+            <span class="ko-menu-item-icon">${icon('plus')}</span>
+            <span class="ko-menu-item-label">Menyu qo'shish</span>
+          </button>
+          <button type="button" class="ko-menu-item" id="kmmAddRecipeBtn">
+            <span class="ko-menu-item-icon">${icon('clipboard')}</span>
+            <span class="ko-menu-item-label">Retsept qo'shish</span>
+          </button>
+          <button type="button" class="ko-menu-item" id="kmmStockBtn">
+            <span class="ko-menu-item-icon">${icon('box')}</span>
+            <span class="ko-menu-item-label">Mahsulotlar</span>
+          </button>
+          <button type="button" class="ko-menu-item" id="kmmComboBtn">
+            <span class="ko-menu-item-icon">${icon('star')}</span>
+            <span class="ko-menu-item-label">Combo</span>
+          </button>
+        </div>
+        <button class="btn ikkinchi" id="kmmCancelBtn" style="margin-top:14px;">Bekor qilish</button>
+      </div>
+    `);
+    const close = () => overlay.remove();
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    document.getElementById('kmmCancelBtn').addEventListener('click', close);
+    document.getElementById('kmmAddMenuBtn').addEventListener('click', () => {
+      close();
+      openMenuAddOverlay();
+    });
+    document.getElementById('kmmAddRecipeBtn').addEventListener('click', () => {
+      close();
+      openRecipePickerOverlay();
+    });
+    document.getElementById('kmmStockBtn').addEventListener('click', () => {
+      close();
+      stopOrdersPolling();
+      renderStockScreen(restaurantName, 'egasi', () => renderKitchenScreen(restaurantName, onBack));
+    });
+    document.getElementById('kmmComboBtn').addEventListener('click', () => {
+      close();
+      stopOrdersPolling();
+      renderComboScreen(restaurantName, () => renderKitchenScreen(restaurantName, onBack));
+    });
+  }
+
+  function openMenuAddOverlay() {
+    const overlay = openOverlay(`
+      <div class="modal" style="max-width:480px; max-height:85vh; overflow-y:auto;">
+        <button type="button" class="btn ikkinchi" id="menuAddOverlayCloseBtn" style="margin-bottom:12px;">← Yopish</button>
+        ${menuAddSectionHtml()}
+      </div>
+    `);
+    const close = () => overlay.remove();
+    document.getElementById('menuAddOverlayCloseBtn').addEventListener('click', close);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    attachMenuAddSectionHandlers();
+  }
+
+  let comboScreenMenuCache = [];
+
+  function comboItemsSummary(combo, menu) {
+    return (combo.itemIds || []).map(e => {
+      const m = (menu || []).find(mm => mm.id === e.menuItemId);
+      return `${m ? m.name : '?'} x${e.qty}`;
+    }).join(', ');
+  }
+
+  function comboListHtml(combos, menu) {
+    if (!combos || !combos.length) return `<div class="bosh">Hali combo qo'shilmagan.</div>`;
+    return combos.map(c => `
+      <div class="owner-item" style="align-items:flex-start;">
+        <div>
+          <div class="owner-id">${escapeHtml(c.name)} — ${fmtNum(c.price)} so'm${c.outOfStock ? ' <span class="badge unpaid">Tugagan</span>' : ''}</div>
+          <div class="owner-username">${escapeHtml(comboItemsSummary(c, menu))}</div>
+          ${c.category ? `<div class="owner-username">Bo'lim: ${escapeHtml(c.category)}</div>` : ''}
+        </div>
+        <div class="owner-actions">
+          <span class="badge ${c.available !== false ? 'paid' : 'unpaid'}">${c.available !== false ? 'Faol' : 'Nofaol'}</span>
+          <button data-edit-combo-id="${escapeHtml(c.id)}">Tahrirlash</button>
+          <button data-toggle-combo-id="${escapeHtml(c.id)}">${c.available !== false ? 'Yashirish' : 'Faollashtirish'}</button>
+          <button data-remove-combo-id="${escapeHtml(c.id)}">O'chirish</button>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  function comboItemPickerRowsHtml(menu, prefix, selectedMap) {
+    selectedMap = selectedMap || {};
+    if (!menu || !menu.length) return `<div class="bosh">Avval menyuga taom qo'shing.</div>`;
+    return menu.map(m => {
+      const checked = Object.prototype.hasOwnProperty.call(selectedMap, m.id);
+      const qty = checked ? selectedMap[m.id] : 1;
+      return `
+        <div class="menu-item" style="align-items:center;">
+          <label style="display:flex; align-items:center; gap:8px; flex:1; min-width:0; cursor:pointer;">
+            <input type="checkbox" class="${prefix}-item-check" data-combo-item-id="${escapeHtml(m.id)}" ${checked ? 'checked' : ''}>
+            <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(m.name)} (${fmtNum(m.price)} so'm)</span>
+          </label>
+          <input type="text" class="${prefix}-item-qty" data-combo-item-qty="${escapeHtml(m.id)}" value="${qty}" inputmode="numeric" style="width:56px; text-align:center;" ${checked ? '' : 'disabled'}>
+        </div>
+      `;
+    }).join('');
+  }
+
+  function wireComboItemPicker(container, prefix) {
+    container.querySelectorAll(`.${prefix}-item-check`).forEach(cb => {
+      cb.addEventListener('change', () => {
+        const id = cb.getAttribute('data-combo-item-id');
+        const qtyInput = container.querySelector(`.${prefix}-item-qty[data-combo-item-qty="${id}"]`);
+        if (qtyInput) qtyInput.disabled = !cb.checked;
+      });
+    });
+  }
+
+  function collectComboItemIds(container, prefix) {
+    const itemIds = [];
+    container.querySelectorAll(`.${prefix}-item-check:checked`).forEach(cb => {
+      const id = cb.getAttribute('data-combo-item-id');
+      const qtyInput = container.querySelector(`.${prefix}-item-qty[data-combo-item-qty="${id}"]`);
+      const qty = qtyInput ? (parseInt(qtyInput.value, 10) || 1) : 1;
+      itemIds.push({ menuItemId: id, qty });
+    });
+    return itemIds;
+  }
+
+  async function loadComboMenuPickerAndRender() {
+    const picker = document.getElementById('comboItemPicker');
+    if (!picker) return;
+    const res = await apiPost('/api/menu-list');
+    comboScreenMenuCache = res.ok ? res.menu : [];
+    picker.innerHTML = comboItemPickerRowsHtml(comboScreenMenuCache, 'combo', {});
+    wireComboItemPicker(picker, 'combo');
+  }
+
+  async function loadComboListAndRender() {
+    const listEl = document.getElementById('comboList');
+    if (!listEl) return;
+    const res = await apiPost('/api/combo-list');
+    if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, loadComboListAndRender); return; }
+    const combos = res.ok ? res.combos : [];
+    let menu = comboScreenMenuCache;
+    if (!menu.length) {
+      const menuRes = await apiPost('/api/menu-list');
+      menu = menuRes.ok ? menuRes.menu : [];
+    }
+    listEl.innerHTML = comboListHtml(combos, menu);
+    listEl.querySelectorAll('[data-remove-combo-id]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        if (!confirm("Combo o'chirilsinmi?")) return;
+        btn.disabled = true;
+        await apiPost('/api/combo-remove', { id: btn.getAttribute('data-remove-combo-id') });
+        loadComboListAndRender();
+      });
+    });
+    listEl.querySelectorAll('[data-toggle-combo-id]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.getAttribute('data-toggle-combo-id');
+        const combo = combos.find(c => c.id === id);
+        btn.disabled = true;
+        await apiPost('/api/combo-update', { id, available: combo ? combo.available === false : true });
+        loadComboListAndRender();
+      });
+    });
+    listEl.querySelectorAll('[data-edit-combo-id]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.getAttribute('data-edit-combo-id');
+        const combo = combos.find(c => c.id === id);
+        if (combo) renderComboEditOverlay(combo, menu);
+      });
+    });
+  }
+
+  function renderComboEditOverlay(combo, menu) {
+    const selectedMap = {};
+    (combo.itemIds || []).forEach(e => { selectedMap[e.menuItemId] = e.qty; });
+    let pendingImage = combo.imageUrl || '';
+    const overlay = openOverlay(`
+      <div class="modal" style="max-width:420px; max-height:85vh; overflow:auto;">
+        <h3>Comboni tahrirlash</h3>
+        <input type="text" id="editComboNameInput" placeholder="Combo nomi" value="${escapeHtml(combo.name || '')}">
+        <label class="field-label" style="margin-top:8px;">Tarkibi (kamida 2 ta taom)</label>
+        <div id="editComboItemPicker">${comboItemPickerRowsHtml(menu, 'editCombo', selectedMap)}</div>
+        <label class="field-label" style="margin-top:10px;">Narx</label>
+        <select id="editComboPriceModeInput">
+          <option value="auto" ${combo.priceMode !== 'manual' ? 'selected' : ''}>Avtomatik (tarkib narxlari yig'indisi)</option>
+          <option value="manual" ${combo.priceMode === 'manual' ? 'selected' : ''}>Qo'lda kiritish</option>
+        </select>
+        <input type="text" id="editComboPriceInput" placeholder="Combo narxi (so'm)" inputmode="numeric" value="${escapeHtml(String(combo.price || ''))}" class="${combo.priceMode === 'manual' ? '' : 'hidden'}" style="margin-top:8px;">
+        <label class="field-label" style="margin-top:10px;">Bo'lim (ixtiyoriy)</label>
+        <input type="text" id="editComboCategoryInput" placeholder="Masalan: Combolar" value="${escapeHtml(combo.category || '')}">
+        <div class="staff-hint" style="margin-top:8px;">Rasm (galereyadan yangisini tanlash ixtiyoriy):</div>
+        <img id="editComboImagePreview" src="${escapeHtml(pendingImage)}" class="logo-preview" style="${pendingImage ? '' : 'display:none;'} width:120px; height:120px; display:block;">
+        <input type="file" id="editComboImageFileInput" accept="image/*">
+        <label style="display:flex; align-items:center; gap:8px; margin-top:10px;">
+          <input type="checkbox" id="editComboAvailableInput" ${combo.available !== false ? 'checked' : ''}>
+          <span>Faol (mijozlar menyusida ko'rinadi)</span>
+        </label>
+        <div class="xabar" id="editComboMsg"></div>
+        <div class="btn-row">
+          <button class="btn ikkinchi" id="editComboCancelBtn">Bekor qilish</button>
+          <button class="btn" id="editComboSaveBtn">Saqlash</button>
+        </div>
+      </div>
+    `);
+    const picker = document.getElementById('editComboItemPicker');
+    wireComboItemPicker(picker, 'editCombo');
+
+    document.getElementById('editComboCancelBtn').onclick = () => overlay.remove();
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+
+    document.getElementById('editComboPriceModeInput').addEventListener('change', (e) => {
+      document.getElementById('editComboPriceInput').classList.toggle('hidden', e.target.value !== 'manual');
+    });
+
+    document.getElementById('editComboImageFileInput').addEventListener('change', async (e) => {
+      const file = e.target.files && e.target.files[0];
+      const msgEl = document.getElementById('editComboMsg');
+      if (!file) return;
+      try {
+        const dataUrl = await readImageFileAsCompressedDataUrl(file);
+        pendingImage = dataUrl || '';
+        const preview = document.getElementById('editComboImagePreview');
+        preview.src = pendingImage;
+        preview.style.display = pendingImage ? 'block' : 'none';
+      } catch (err) {
+        setMsg(msgEl, err.message || 'Rasmni yuklab bo\'lmadi.', 'err');
+        e.target.value = '';
+      }
+    });
+
+    document.getElementById('editComboSaveBtn').onclick = async () => {
+      const name = document.getElementById('editComboNameInput').value.trim();
+      const itemIds = collectComboItemIds(picker, 'editCombo');
+      const priceMode = document.getElementById('editComboPriceModeInput').value;
+      const price = document.getElementById('editComboPriceInput').value.trim();
+      const category = document.getElementById('editComboCategoryInput').value.trim();
+      const available = document.getElementById('editComboAvailableInput').checked;
+      const msgEl = document.getElementById('editComboMsg');
+
+      if (!name) {
+        setMsg(msgEl, 'Combo nomini kiriting.', 'err');
+        return;
+      }
+      if (itemIds.length < 2) {
+        setMsg(msgEl, 'Combo tarkibida kamida 2 ta taom tanlang.', 'err');
+        return;
+      }
+      if (priceMode === 'manual' && (!price || !Number.isFinite(Number(price)) || Number(price) <= 0)) {
+        setMsg(msgEl, 'Combo narxini to\'g\'ri kiriting.', 'err');
+        return;
+      }
+      setMsg(msgEl, 'Saqlanmoqda...');
+      const res = await apiPost('/api/combo-update', {
+        id: combo.id, name, itemIds, priceMode, price, category, imageUrl: pendingImage, available
+      });
+      if (res.ok) {
+        overlay.remove();
+        loadComboListAndRender();
+      } else {
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+      }
+    };
+  }
+
+  function renderComboScreen(restaurantName, onBack) {
+    ekran(`
+      <div class="panel">
+        <button class="btn ikkinchi" id="comboBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="salom" style="font-size:20px;">${icon('star', 'icon-xs')} Combo</div>
+        <div class="bosh">Bir nechta taomni birlashtirib, chegirmali combo yarating.</div>
+        <div class="kartochka" style="margin-top:14px;">
+          <h2>Yangi combo qo'shish</h2>
+          <input type="text" id="comboNameInput" placeholder="Combo nomi">
+          <label class="field-label" style="margin-top:8px;">Tarkibi (kamida 2 ta taom tanlang)</label>
+          <div id="comboItemPicker"><div class="bosh">Yuklanmoqda...</div></div>
+          <label class="field-label" style="margin-top:10px;">Narx</label>
+          <select id="comboPriceModeInput">
+            <option value="auto">Avtomatik (tarkib narxlari yig'indisi)</option>
+            <option value="manual">Qo'lda kiritish</option>
+          </select>
+          <input type="text" id="comboPriceInput" placeholder="Combo narxi (so'm)" inputmode="numeric" class="hidden" style="margin-top:8px;">
+          <label class="field-label" style="margin-top:10px;">Bo'lim (ixtiyoriy)</label>
+          <input type="text" id="comboCategoryInput" placeholder="Masalan: Combolar">
+          <div class="staff-hint" style="margin-top:8px;">Rasm (ixtiyoriy):</div>
+          <input type="file" id="comboImageFileInput" accept="image/*">
+          <img id="comboImagePreview" class="logo-preview" style="display:none; width:120px; height:120px; margin-top:8px;">
+          <input type="hidden" id="comboImageInput">
+          <button class="btn" id="addComboBtn" style="margin-top:10px;">Qo'shish</button>
+          <div class="xabar" id="comboMsg"></div>
+        </div>
+        <div class="kartochka">
+          <h2>${icon('star', 'icon-xs')} Combolar</h2>
+          <div id="comboList"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+      </div>
+    `);
+
+    document.getElementById('comboBackBtn').addEventListener('click', onBack);
+
+    document.getElementById('comboPriceModeInput').addEventListener('change', (e) => {
+      document.getElementById('comboPriceInput').classList.toggle('hidden', e.target.value !== 'manual');
+    });
+
+    document.getElementById('comboImageFileInput').addEventListener('change', async (e) => {
+      const file = e.target.files && e.target.files[0];
+      const msgEl = document.getElementById('comboMsg');
+      if (!file) return;
+      try {
+        const dataUrl = await readImageFileAsCompressedDataUrl(file);
+        document.getElementById('comboImageInput').value = dataUrl || '';
+        const preview = document.getElementById('comboImagePreview');
+        preview.src = dataUrl;
+        preview.style.display = 'block';
+      } catch (err) {
+        setMsg(msgEl, err.message || 'Rasmni yuklab bo\'lmadi.', 'err');
+        e.target.value = '';
+      }
+    });
+
+    document.getElementById('addComboBtn').addEventListener('click', async () => {
+      const msgEl = document.getElementById('comboMsg');
+      const name = document.getElementById('comboNameInput').value.trim();
+      const picker = document.getElementById('comboItemPicker');
+      const itemIds = collectComboItemIds(picker, 'combo');
+      const priceMode = document.getElementById('comboPriceModeInput').value;
+      const price = document.getElementById('comboPriceInput').value.trim();
+      const category = document.getElementById('comboCategoryInput').value.trim();
+      const imageUrl = document.getElementById('comboImageInput').value.trim();
+
+      if (!name) {
+        setMsg(msgEl, 'Combo nomini kiriting.', 'err');
+        return;
+      }
+      if (itemIds.length < 2) {
+        setMsg(msgEl, 'Combo tarkibida kamida 2 ta taom tanlang.', 'err');
+        return;
+      }
+      if (priceMode === 'manual' && (!price || !Number.isFinite(Number(price)) || Number(price) <= 0)) {
+        setMsg(msgEl, 'Combo narxini to\'g\'ri kiriting.', 'err');
+        return;
+      }
+      setMsg(msgEl, 'Qo\'shilmoqda...');
+      const res = await apiPost('/api/combo-add', { name, itemIds, priceMode, price, category, imageUrl });
+      if (res.ok) {
+        setMsg(msgEl, 'Combo qo\'shildi.', 'ok');
+        document.getElementById('comboNameInput').value = '';
+        document.getElementById('comboPriceInput').value = '';
+        document.getElementById('comboCategoryInput').value = '';
+        document.getElementById('comboImageInput').value = '';
+        document.getElementById('comboImageFileInput').value = '';
+        document.getElementById('comboImagePreview').style.display = 'none';
+        document.getElementById('comboPriceModeInput').value = 'auto';
+        document.getElementById('comboPriceInput').classList.add('hidden');
+        loadComboMenuPickerAndRender();
+        loadComboListAndRender();
+      } else {
+        handleFeatureBlocked(res);
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+      }
+    });
+
+    loadComboMenuPickerAndRender();
+    loadComboListAndRender();
+  }
+
+  async function openRecipePickerOverlay() {
+    const overlay = openOverlay(`
+      <div class="modal" style="max-width:420px; max-height:80vh; overflow-y:auto;">
+        <h3>Retsept qo'shish</h3>
+        <div class="bosh">Retsept qo'shmoqchi bo'lgan taomni tanlang.</div>
+        <div id="recipePickerList" style="margin-top:10px;"><div class="bosh">Yuklanmoqda...</div></div>
+        <button type="button" class="btn ikkinchi" id="recipePickerCloseBtn" style="margin-top:12px;">Yopish</button>
+      </div>
+    `);
+    const close = () => overlay.remove();
+    document.getElementById('recipePickerCloseBtn').addEventListener('click', close);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+
+    const listEl = document.getElementById('recipePickerList');
+    const res = await apiPost('/api/menu-list');
+    if (!listEl.isConnected) return;
+    if (!res.ok) {
+      listEl.innerHTML = `<div class="bosh">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
+      return;
+    }
+    const menu = (res.menu || []).filter(m => !m.directStockId);
+    if (!menu.length) {
+      listEl.innerHTML = `<div class="bosh">Retsept qo'shish uchun avval menyuga taom qo'shing.</div>`;
+      return;
+    }
+    listEl.innerHTML = menu.map(m => `
+      <div class="menu-item">
+        <div>
+          <div class="m-name">${escapeHtml(m.name)}</div>
+          ${m.recipe && m.recipe.length ? `<div class="m-cat">Retsept mavjud ${icon('check', 'icon-xs icon-success')}</div>` : ''}
+        </div>
+        <button type="button" data-pick-recipe-id="${escapeHtml(m.id)}" class="row-action-btn brand">${m.recipe && m.recipe.length ? "Tahrirlash" : "Qo'shish"}</button>
+      </div>
+    `).join('');
+    listEl.querySelectorAll('[data-pick-recipe-id]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.getAttribute('data-pick-recipe-id');
+        const menuItem = menu.find(m => m.id === id);
+        close();
+        if (menuItem) openRecipeEditor(menuItem);
+      });
+    });
+  }
+
+  function deliveryRouteUrl(order) {
+    const loc = order.location;
+    if (loc && typeof loc.lat === 'number' && typeof loc.lng === 'number') {
+      return `https://www.google.com/maps/dir/?api=1&destination=${loc.lat},${loc.lng}&travelmode=driving`;
+    }
+    if (order.addressNote && order.addressNote.trim()) {
+      return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(order.addressNote.trim())}`;
+    }
+    return null;
+  }
+  function openExternalLink(url) {
+    if (tg && typeof tg.openLink === 'function') {
+      tg.openLink(url);
+    } else {
+      window.open(url, '_blank');
+    }
+  }
+
+  function deliveryCardHtml(order) {
+    const itemsHtml = order.items.map(it => `${escapeHtml(it.name)} x${it.qty}`).join('<br>');
+
+    const isDelivered = !!order.deliveredBy;
+    const routeUrl = deliveryRouteUrl(order);
+    return `
+      <div class="order-card">
+        <div class="order-top">
+          <div>
+            <div class="order-type">Dostavka</div>
+            <div class="order-time">${timeAgo(order.createdAt)}</div>
+          </div>
+          <span class="status-badge tayyor">${isDelivered ? 'Yetkazildi' : ORDER_STATUS_LABELS.tayyor}</span>
+        </div>
+        ${order.customerName ? `<div class="order-time">👤 ${escapeHtml(order.customerName)}${order.customerPhone ? ` · <button type="button" class="call-link" data-call-phone="${escapeHtml(order.customerPhone)}" data-call-tgid="${escapeHtml(String(order.customerId || ''))}">📞 ${escapeHtml(order.customerPhone)}</button>` : ''}</div>` : ''}
+        ${order.addressNote ? `<div class="order-time">📝 ${escapeHtml(order.addressNote)}</div>` : ''}
+        ${order.extraPhone ? `<div class="order-time"><button type="button" class="call-link" data-call-phone="${escapeHtml(order.extraPhone)}">📞 ${escapeHtml(order.extraPhone)}</button> (qo'shimcha)</div>` : ''}
+        ${routeUrl ? `<button type="button" class="btn ikkinchi" data-route-order-id="${escapeHtml(order.id)}" style="margin:8px 0; width:100%;">🗺️ Marshrut (Google Maps)</button>` : ''}
+        <div class="order-items">${itemsHtml}</div>
+        ${order.comment ? `<div class="order-time" style="color:var(--warning);">💬 ${escapeHtml(order.comment)}</div>` : ''}
+        <div class="order-bottom">
+          <span class="order-total">${fmtNum(order.total)} so'm (${PAYMENT_TYPE_LABELS[order.paymentType] || order.paymentType})</span>
+          ${isDelivered
+            ? `<span class="order-time">✅ Yetkazib berildi (${timeAgo(order.deliveredAt)})</span>`
+            : `<button class="order-action-btn ready" data-deliver-order-id="${escapeHtml(order.id)}">Yetkazildi</button>`}
+        </div>
+        ${isDelivered ? '' : `<button type="button" class="btn ikkinchi" data-reject-order-id="${escapeHtml(order.id)}" style="width:100%; margin-top:8px; color:var(--danger); border-color:var(--danger);">Mijoz qabul qilmadi</button>`}
+      </div>
+    `;
+  }
+
+  let lastDeliveryOrdersById = new Map();
+  function deliveryBoardHtml(orders) {
+
+    const relevant = (orders || []).filter(o => o.orderType === 'dostavka' && o.status === 'tayyor');
+    lastDeliveryOrdersById = new Map(relevant.map(o => [o.id, o]));
+    if (!relevant.length) return `<div class="bosh">Hozircha yetkazib berish uchun buyurtma yo'q.</div>`;
+    return relevant.map(o => deliveryCardHtml(o)).join('');
+  }
+
+  function attachDeliveryBoardHandlers() {
+    const board = document.getElementById('ordersBoard');
+    if (!board) return;
+    board.querySelectorAll('[data-deliver-order-id]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        const orderId = btn.getAttribute('data-deliver-order-id');
+        const res = await apiPost('/api/deliver-order', { orderId });
+        if (!res.ok) alert(res.reason || 'Xatolik yuz berdi.');
+        lastOrdersSnapshot = null;
+        await refreshDeliveryBoard();
+      });
+    });
+    board.querySelectorAll('[data-route-order-id]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const orderId = btn.getAttribute('data-route-order-id');
+        const order = lastDeliveryOrdersById.get(orderId);
+        const url = order ? deliveryRouteUrl(order) : null;
+        if (url) openExternalLink(url);
+      });
+    });
+    board.querySelectorAll('[data-reject-order-id]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        let reason = '';
+        while (true) {
+          reason = prompt('Buyurtma bekor qilinadi. Sababini yozing (majburiy):', reason || '');
+          if (reason === null) return;
+          reason = reason.trim();
+          if (reason) break;
+          alert('Bekor qilish sababini yozish majburiy.');
+        }
+        const orderId = btn.getAttribute('data-reject-order-id');
+        const order = lastDeliveryOrdersById.get(orderId);
+        const returnedItems = order ? await promptReturnedStockItems(order) : [];
+        btn.disabled = true;
+        const res = await apiPost('/api/reject-delivery-order', { orderId, reason, returnedItems });
+        if (!res.ok) { alert(res.reason || 'Xatolik yuz berdi.'); btn.disabled = false; return; }
+        lastOrdersSnapshot = null;
+        await refreshDeliveryBoard();
+      });
+    });
+  }
+
+  function promptReturnedStockItems(order) {
+    const candidates = (order.items || [])
+      .map((it, index) => Object.assign({}, it, { index }))
+      .filter(it => it.directStockId && it.qty > 0);
+    if (!candidates.length) return Promise.resolve([]);
+
+    return new Promise(resolve => {
+      const overlay = document.createElement('div');
+      overlay.className = 'overlay';
+      const rowsHtml = candidates.map(it => `
+        <div class="profile-row" style="display:flex; align-items:center; gap:8px;">
+          <label style="flex:1; display:flex; align-items:center; gap:8px;">
+            <input type="checkbox" class="return-stock-check" data-return-index="${it.index}" checked>
+            ${escapeHtml(it.name)} (jami ${it.qty} dona)
+          </label>
+          <input type="number" class="return-stock-qty" data-return-qty-index="${it.index}" min="0" max="${it.qty}" value="${it.qty}" style="width:60px;">
+        </div>
+      `).join('');
+      overlay.innerHTML = `
+        <div class="modal" style="max-width:380px; text-align:left;">
+          <h3>📦 Ochilmagan mahsulotlar</h3>
+          <div class="bosh" style="margin-bottom:8px;">Qaysi mahsulotlar ochilmagan holda skladga qaytarildi? Kerak bo'lmasa, belgini olib tashlang yoki miqdorni o'zgartiring.</div>
+          ${rowsHtml}
+          <div class="btn-row" style="margin-top:12px;">
+            <button class="btn ikkinchi" id="returnStockNoneBtn">Hech nima qaytmadi</button>
+            <button class="btn" id="returnStockOkBtn">Tasdiqlash</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(overlay);
+
+      overlay.querySelectorAll('.return-stock-check').forEach(chk => {
+        chk.addEventListener('change', () => {
+          const idx = chk.getAttribute('data-return-index');
+          const qtyInput = overlay.querySelector(`[data-return-qty-index="${idx}"]`);
+          if (qtyInput) qtyInput.disabled = !chk.checked;
+        });
+      });
+
+      overlay.querySelector('#returnStockNoneBtn').onclick = () => {
+        overlay.remove();
+        resolve([]);
+      };
+      overlay.querySelector('#returnStockOkBtn').onclick = () => {
+        const result = [];
+        overlay.querySelectorAll('.return-stock-check').forEach(chk => {
+          if (!chk.checked) return;
+          const idx = Number(chk.getAttribute('data-return-index'));
+          const qtyInput = overlay.querySelector(`[data-return-qty-index="${idx}"]`);
+          const qty = Math.max(0, Math.floor(Number(qtyInput.value) || 0));
+          if (qty > 0) result.push({ index: idx, qty });
+        });
+        overlay.remove();
+        resolve(result);
+      };
+    });
+  }
+
+  async function refreshDeliveryBoard() {
+    const board = document.getElementById('ordersBoard');
+    if (!board) { stopOrdersPolling(); return; }
+    const res = await apiPost('/api/orders-list');
+    if (!res.ok) {
+      if (res.networkError && lastOrdersSnapshot === null) {
+        renderNetworkErrorInline(board, res.reason, () => refreshDeliveryBoard());
+      }
+      return;
+    }
+
+    const relevant = (res.orders || []).filter(o => o.orderType === 'dostavka' && o.status === 'tayyor' && !o.deliveredBy);
+    const currentIds = new Set(relevant.map(o => o.id));
+    if (knownOrderIds) {
+      const hasNew = relevant.some(o => !knownOrderIds.has(o.id));
+      if (hasNew) playNewOrderBeep();
+    }
+    knownOrderIds = currentIds;
+
+    const snapshot = JSON.stringify(res.orders);
+    if (snapshot === lastOrdersSnapshot) return;
+    lastOrdersSnapshot = snapshot;
+    board.innerHTML = deliveryBoardHtml(res.orders);
+    attachDeliveryBoardHandlers();
+  }
+
+  function startDeliveryPolling() {
+    stopOrdersPolling();
+    refreshDeliveryBoard();
+    ordersPollTimer = setInterval(refreshDeliveryBoard, 4000);
+  }
+
+  function renderDeliveryScreen(restaurantName, onBack) {
+
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Yetkazib berish</div>
+        ${onBack ? `<button class="btn ikkinchi" id="deliveryBackBtn" style="margin-bottom:12px;">← Orqaga</button>` : ''}
+        <button class="btn ikkinchi" id="deliveryStatsBtn" style="margin-bottom:12px;">📊 Statistikam</button>
+        ${onBack ? `<button class="btn ikkinchi" id="restrictedCustomersBtn" style="margin-bottom:12px;">🚫 Cheklangan mijozlar</button>` : ''}
+        ${onBack ? `<button class="btn ikkinchi" id="ownerReviewsBtn" style="margin-bottom:12px;">⭐ Mijoz sharhlari</button>` : ''}
+        ${soundToggleBtnHtml()}
+        <div class="bosh">Tayyor bo'lgan dostavka buyurtmalari — yetkazib bergach "Yetkazildi" tugmasini bosing.</div>
+        <div id="ordersBoard" class="orders-board-large" style="margin-top:14px;"><div class="bosh">Yuklanmoqda...</div></div>
+      </div>
+    `);
+    if (onBack) document.getElementById('deliveryBackBtn').addEventListener('click', () => { stopOrdersPolling(); onBack(); });
+    document.getElementById('deliveryStatsBtn').addEventListener('click', () => {
+      stopOrdersPolling();
+      renderMyStatsScreen(() => renderDeliveryScreen(restaurantName, onBack));
+    });
+
+    const restrictedBtn = document.getElementById('restrictedCustomersBtn');
+    if (restrictedBtn) {
+      restrictedBtn.addEventListener('click', () => {
+        stopOrdersPolling();
+        renderRestrictedCustomersScreen(() => renderDeliveryScreen(restaurantName, onBack));
+      });
+    }
+    const ownerReviewsBtn = document.getElementById('ownerReviewsBtn');
+    if (ownerReviewsBtn) {
+      ownerReviewsBtn.addEventListener('click', () => {
+        stopOrdersPolling();
+        renderReviewsScreen(null, 'Mijoz sharhlari', () => renderDeliveryScreen(restaurantName, onBack));
+      });
+    }
+    attachSoundToggleHandler();
+    startDeliveryPolling();
+  }
+
+  function restrictedCustomerCardHtml(c) {
+    const cancelsHtml = (c.recentCancellations || []).map(rc => `
+      <div class="order-time" style="margin-top:4px;">
+        ${timeAgo(rc.cancelledAt)} — ${fmtNum(rc.total)} so'm${rc.reason ? ' · ' + escapeHtml(rc.reason) : ''}
+      </div>
+    `).join('');
+    return `
+      <div class="order-card">
+        <div class="order-top">
+          <div>
+            <div class="order-type">${escapeHtml(c.name)}${c.username ? ' · @' + escapeHtml(c.username) : ''}</div>
+            <div class="order-time">Bekor qilingan dostavkalar: ${c.cancelledCount} ta</div>
+          </div>
+          <span class="status-badge ${c.restricted ? 'yangi' : 'tayyor'}">${c.restricted ? 'Cheklangan' : 'Cheklov olib tashlangan'}</span>
+        </div>
+        ${cancelsHtml}
+        <button type="button" class="btn ikkinchi" style="width:100%; margin-top:10px;"
+          data-toggle-restriction-id="${escapeHtml(String(c.id))}"
+          data-toggle-restriction-action="${c.restricted ? 'clear' : 'restore'}">
+          ${c.restricted ? '✅ Cheklovni olib tashlash' : '🚫 Cheklovni qayta tiklash'}
+        </button>
+      </div>
+    `;
+  }
+
+  async function renderReviewsScreen(targetOwnerId, title, onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">${escapeHtml(title)}</div>
+        <button class="btn ikkinchi" id="reviewsBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div id="reviewsSummary" class="bosh">Yuklanmoqda...</div>
+        <div id="reviewsList" style="margin-top:14px;"></div>
+      </div>
+    `);
+    document.getElementById('reviewsBackBtn').addEventListener('click', onBack);
+
+    const summaryEl = document.getElementById('reviewsSummary');
+    const listEl = document.getElementById('reviewsList');
+    const body = targetOwnerId ? { targetOwnerId } : {};
+    const res = await apiPost('/api/owner-reviews', body);
+    if (!res.ok) {
+      if (res.networkError) { renderNetworkErrorInline(summaryEl, res.reason, () => renderReviewsScreen(targetOwnerId, title, onBack)); return; }
+      summaryEl.textContent = res.reason || 'Xatolik yuz berdi.';
+      return;
+    }
+    summaryEl.innerHTML = res.avgRating !== null
+      ? `⭐ O'rtacha baho: <b>${escapeHtml(String(res.avgRating))}</b> (${res.ratingCount} ta baho)`
+      : `Hozircha baho yo'q.`;
+    if (!res.reviews.length) {
+      listEl.innerHTML = `<div class="bosh">Hozircha sharhlar yo'q.</div>`;
+      return;
+    }
+    listEl.innerHTML = res.reviews.map(r => `
+      <div class="order-card">
+        <div class="order-top">
+          <div class="order-type">${'⭐️'.repeat(r.stars)}</div>
+          <div class="order-time">${timeAgo(r.ratedAt)}</div>
+        </div>
+        ${r.comment ? `<div class="order-time" style="margin-top:6px;">"${escapeHtml(r.comment)}"</div>` : ''}
+        ${r.customerName ? `<div class="order-time" style="margin-top:4px;">— ${escapeHtml(r.customerName)}</div>` : ''}
+      </div>
+    `).join('');
+  }
+
+  function renderAdminOwnerReviewsScreen(ownerId, ownerName, onBack) {
+    renderReviewsScreen(ownerId, `${ownerName} — sharhlar`, onBack);
+  }
+
+  async function renderRestrictedCustomersScreen(onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Cheklangan mijozlar</div>
+        <button class="btn ikkinchi" id="restrictedBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="bosh">Ketma-ket 2 marta yoki ko'proq dostavkani bekor qildirgan mijozlarga tizim avtomatik ravishda faqat "Karta" bilan to'lashni taklif qiladi. Sabab asosli bo'lsa, cheklovni bu yerdan olib tashlashingiz mumkin.</div>
+        <div id="restrictedList" style="margin-top:14px;"><div class="bosh">Yuklanmoqda...</div></div>
+      </div>
+    `);
+    document.getElementById('restrictedBackBtn').addEventListener('click', onBack);
+
+    const listEl = document.getElementById('restrictedList');
+    const res = await apiPost('/api/restricted-customers');
+    if (!res.ok) {
+      if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, () => renderRestrictedCustomersScreen(onBack)); return; }
+      listEl.innerHTML = `<div class="bosh">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
+      return;
+    }
+    if (!res.customers.length) {
+      listEl.innerHTML = `<div class="bosh">Hozircha cheklangan mijozlar yo'q.</div>`;
+      return;
+    }
+    listEl.innerHTML = res.customers.map(restrictedCustomerCardHtml).join('');
+    listEl.querySelectorAll('[data-toggle-restriction-id]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        const customerId = btn.getAttribute('data-toggle-restriction-id');
+        const action = btn.getAttribute('data-toggle-restriction-action');
+        const res2 = await apiPost('/api/toggle-customer-restriction', { customerId, action });
+        if (!res2.ok) { alert(res2.reason || 'Xatolik yuz berdi.'); btn.disabled = false; return; }
+        renderRestrictedCustomersScreen(onBack);
+      });
+    });
+  }
+
+  const STOCK_UNIT_LABELS = { kg: 'kg', g: 'g', l: 'l', ml: 'ml', dona: 'dona' };
+
+  function unitConversionPair(unit) {
+    if (unit === 'kg' || unit === 'g') return { big: 'kg', small: 'g', bigLabel: 'Kilogramm', smallLabel: 'Gramm' };
+    if (unit === 'l' || unit === 'ml') return { big: 'l', small: 'ml', bigLabel: 'Litr', smallLabel: 'Mililitr' };
+    return null;
+  }
+
+  function openUnitConverter(targetUnit, onApply) {
+    const pair = unitConversionPair(targetUnit);
+    if (!pair) return;
+    const overlay = openOverlay(`
+      <div class="modal" style="max-width:340px;">
+        <h3>${pair.bigLabel} ⇄ ${pair.smallLabel}</h3>
+        <p class="bosh" style="margin-bottom:10px;">Birini kiriting — ikkinchisi avtomatik hisoblanadi.</p>
+        <input type="text" id="convBigInput" placeholder="${pair.bigLabel}, masalan 0.2" inputmode="decimal">
+        <input type="text" id="convSmallInput" placeholder="${pair.smallLabel}, masalan 200" inputmode="decimal">
+        <div class="xabar" id="convMsg"></div>
+        <div class="btn-row">
+          <button class="btn ikkinchi" id="convCancelBtn">Bekor qilish</button>
+          <button class="btn" id="convApplyBtn">${STOCK_UNIT_LABELS[targetUnit] || targetUnit} sifatida ishlatish</button>
+        </div>
+      </div>
+    `);
+    const bigInput = overlay.querySelector('#convBigInput');
+    const smallInput = overlay.querySelector('#convSmallInput');
+    bigInput.addEventListener('input', () => {
+      const v = parseFloat(bigInput.value);
+      smallInput.value = Number.isFinite(v) ? String(Math.round(v * 1e6) / 1e3) : '';
+    });
+    smallInput.addEventListener('input', () => {
+      const v = parseFloat(smallInput.value);
+      bigInput.value = Number.isFinite(v) ? String(Math.round((v / 1000) * 1e6) / 1e6) : '';
+    });
+    const close = () => overlay.remove();
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    overlay.querySelector('#convCancelBtn').addEventListener('click', close);
+    overlay.querySelector('#convApplyBtn').addEventListener('click', () => {
+      const msgEl = overlay.querySelector('#convMsg');
+      const bigVal = parseFloat(bigInput.value);
+      const smallVal = parseFloat(smallInput.value);
+      let result = null;
+      if (targetUnit === pair.big && Number.isFinite(bigVal) && bigVal > 0) result = bigVal;
+      else if (targetUnit === pair.small && Number.isFinite(smallVal) && smallVal > 0) result = smallVal;
+      if (result === null) {
+        setMsg(msgEl, "To'g'ri qiymat kiriting.", 'err');
+        return;
+      }
+      onApply(result);
+      close();
+    });
+  }
+
+  let stockState = { stock: [] };
+  let currentStockRole = null;
+  let currentStockBranchId = null;
+
+  function stockListHtml(stock, canRemove, canTransfer) {
+    if (!stock || !stock.length) return `<div class="bosh">Sklad hali bo'sh.</div>`;
+
+    const sorted = stock.slice().sort((a, b) => {
+      const lowA = a.minQty != null && a.qty <= a.minQty;
+      const lowB = b.minQty != null && b.qty <= b.minQty;
+      if (lowA !== lowB) return lowA ? -1 : 1;
+      return 0;
+    });
+    return sorted.map(s => {
+      const low = s.minQty !== null && s.minQty !== undefined && s.qty <= s.minQty;
+
+      const levelPct = s.minQty != null && s.minQty > 0
+        ? Math.max(4, Math.min(100, Math.round(s.qty / (s.minQty * 2) * 100)))
+        : null;
+      return `
+        <div class="menu-item ${low ? 'low-stock' : ''}">
+          <div style="flex:1;">
+            <div class="m-name">${escapeHtml(s.name)}${low ? ' <span class="badge warning">Kam qoldi</span>' : ''}</div>
+            <div class="m-price">${s.qty} ${escapeHtml(s.unit)}${s.minQty != null ? ' · chegara: ' + s.minQty + ' ' + escapeHtml(s.unit) : ''}</div>
+            ${levelPct !== null ? `<div class="stock-level-track"><div class="stock-level-fill ${low ? 'low' : ''}" style="width:${levelPct}%;"></div></div>` : ''}
+          </div>
+          <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
+            <button data-writeoff-stock-id="${escapeHtml(s.id)}" class="row-action-btn brand">🗑 Spisaniya</button>
+            ${canTransfer ? `<button data-transfer-stock-id="${escapeHtml(s.id)}" class="row-action-btn brand">Filialga o'tkazish</button>` : ''}
+            ${canRemove ? `<button data-remove-stock-id="${escapeHtml(s.id)}" class="row-action-btn danger">O'chirish</button>` : ''}
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  function movementTypeLabel(type) {
+    return { kirim: 'Kirim', chiqim: 'Chiqim', audit_tuzatish: 'Audit tuzatish' }[type] || type;
+  }
+
+  function movementsListHtml(movements) {
+    if (!movements || !movements.length) return `<div class="bosh">Hozircha harakatlar yo'q.</div>`;
+    return movements.map(mv => `
+      <div class="menu-item">
+        <div>
+          <div class="m-name">${escapeHtml(mv.stockName)} — ${movementTypeLabel(mv.type)}</div>
+          ${mv.note ? `<div class="m-cat">${escapeHtml(mv.note)}</div>` : ''}
+          <div class="m-price">${mv.qty > 0 ? '+' : ''}${mv.qty} ${escapeHtml(mv.unit)} · ${timeAgo(mv.createdAt)}</div>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  function renderStockScreen(restaurantName, role, onBack) {
+    currentStockRole = role;
+    currentStockBranchId = null;
+    ekran(`
+      <div class="panel">
+        ${onBack ? `<button class="btn ikkinchi" id="stockBackBtn" style="margin-bottom:12px;">← Orqaga</button>` : ''}
+        <div class="salom" style="font-size:20px;">Sklad</div>
+        ${role !== 'egasi' ? `<button class="btn ikkinchi" id="stockStatsBtn" style="margin-bottom:12px;">📊 Statistikam</button>` : ''}
+        ${role === 'egasi' ? `
+        <div class="kartochka">
+          <h2>Joylashuv</h2>
+          <select id="stockBranchSelect">${branchOptionsHtml(null, { centralSuffix: ' sklad' })}</select>
+          <div class="staff-hint" style="margin-top:6px;">Tanlangan joylashuv shu ekrandagi sklad va menyuni boshqaradi — har bir filialning menyusi mustaqil.</div>
+        </div>` : ''}
+        <div class="kartochka">
+          <h2>Mahsulot kiritish (kirim)</h2>
+          <input type="text" id="stockNameInput" placeholder="Mahsulot nomi">
+          <input type="text" id="stockQtyInput" placeholder="Miqdor" inputmode="decimal">
+          <select id="stockUnitInput">
+            ${Object.entries(STOCK_UNIT_LABELS).map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}
+          </select>
+          <button type="button" class="btn ikkinchi" id="stockUnitConvertBtn" style="margin-top:-2px;">${icon('repeat', 'icon-xs')} kg/gramm, litr/ml hisoblagich</button>
+          <input type="text" id="stockPriceInput" placeholder="Narxi, so'm *" inputmode="numeric">
+          <input type="text" id="stockMinInput" placeholder="Kam qolish chegarasi (ixtiyoriy)" inputmode="decimal">
+          <button class="btn" id="stockAddBtn">Qo'shish</button>
+          <div class="xabar" id="stockAddMsg"></div>
+        </div>
+        <div class="kartochka">
+          <h2>${icon('box', 'icon-xs')} Sklad qoldig'i</h2>
+          <div id="stockList"><div class="bosh">Yuklanmoqda...</div></div>
+          <button class="btn ikkinchi" id="openAuditBtn" style="margin-top:10px;">${icon('clipboard', 'icon-xs')} Kunlik audit qilish</button>
+        </div>
+        <div class="kartochka">
+          <h2>${icon('trending-up', 'icon-xs')} Harakatlar tarixi</h2>
+          <div id="stockMovements"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+        ${role === 'egasi' ? menuAddSectionHtml() : ''}
+      </div>
+    `);
+
+    if (onBack) document.getElementById('stockBackBtn').addEventListener('click', onBack);
+    if (role !== 'egasi') {
+      document.getElementById('stockStatsBtn').addEventListener('click', () => {
+        renderMyStatsScreen(() => renderStockScreen(restaurantName, role, onBack));
+      });
+    }
+
+    if (role === 'egasi') {
+      document.getElementById('stockBranchSelect').addEventListener('change', (e) => {
+        currentStockBranchId = e.target.value || null;
+        loadStockAndRender();
+        loadMovementsAndRender();
+        loadCategoriesAndRender(currentStockBranchId);
+        loadMenuAndRender();
+      });
+
+      apiPost('/api/branch-list').then(res => {
+        branchState.branches = res.ok ? res.branches : [];
+        const sel = document.getElementById('stockBranchSelect');
+        if (sel) {
+          const current = sel.value;
+          sel.innerHTML = branchOptionsHtml(current, { centralSuffix: ' sklad' });
+        }
+      });
+    }
+
+    document.getElementById('stockAddBtn').addEventListener('click', async () => {
+      const msgEl = document.getElementById('stockAddMsg');
+      const name = document.getElementById('stockNameInput').value.trim();
+      const qty = document.getElementById('stockQtyInput').value.trim();
+      const unit = document.getElementById('stockUnitInput').value;
+      const price = document.getElementById('stockPriceInput').value.trim();
+      const minQty = document.getElementById('stockMinInput').value.trim();
+      if (!name || !qty || !Number.isFinite(Number(qty)) || Number(qty) <= 0) {
+        setMsg(msgEl, 'Nomi va to\'g\'ri miqdorni kiriting.', 'err');
+        return;
+      }
+
+      if (!price || !Number.isFinite(Number(price)) || Number(price) <= 0) {
+        setMsg(msgEl, 'Narxni kiriting — u avtomatik xarajat yozish uchun kerak.', 'err');
+        return;
+      }
+      setMsg(msgEl, 'Qo\'shilmoqda...');
+      const res = await apiPost('/api/stock-add', { name, qty, unit, price, minQty, branchId: currentStockBranchId });
+      if (res.ok) {
+        setMsg(msgEl, 'Qo\'shildi. Xarajat Moliyaga avtomatik yozildi.', 'ok');
+        document.getElementById('stockNameInput').value = '';
+        document.getElementById('stockQtyInput').value = '';
+        document.getElementById('stockPriceInput').value = '';
+        document.getElementById('stockMinInput').value = '';
+        loadStockAndRender();
+        loadMovementsAndRender();
+      } else {
+        handleFeatureBlocked(res);
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+      }
+    });
+
+    document.getElementById('openAuditBtn').addEventListener('click', () => openAuditForm());
+
+    document.getElementById('stockUnitConvertBtn').addEventListener('click', () => {
+      const unit = document.getElementById('stockUnitInput').value;
+      if (unit === 'dona') { alert("Bu birlik uchun konvertatsiya kerak emas."); return; }
+      openUnitConverter(unit, (value) => {
+        document.getElementById('stockQtyInput').value = String(value);
+      });
+    });
+
+    if (role === 'egasi') {
+      attachMenuAddSectionHandlers();
+    }
+
+    loadStockAndRender();
+    loadMovementsAndRender();
+  }
+
+  async function loadStockAndRender() {
+    const el = document.getElementById('stockList');
+    if (!el) return;
+    const res = await apiPost('/api/stock-list', { branchId: currentStockBranchId });
+    if (res.networkError) { renderNetworkErrorInline(el, res.reason, loadStockAndRender); return; }
+    stockState.stock = res.ok ? res.stock : [];
+    const canTransfer = currentStockRole === 'egasi' && !currentStockBranchId && branchState.branches.length > 0;
+    el.innerHTML = stockListHtml(stockState.stock, currentStockRole === 'egasi', canTransfer);
+    el.querySelectorAll('[data-remove-stock-id]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        await apiPost('/api/stock-remove', { id: btn.getAttribute('data-remove-stock-id'), branchId: currentStockBranchId });
+        loadStockAndRender();
+      });
+    });
+    el.querySelectorAll('[data-writeoff-stock-id]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.getAttribute('data-writeoff-stock-id');
+        const item = stockState.stock.find(s => s.id === id);
+        if (item) openWriteoffForm(item);
+      });
+    });
+    el.querySelectorAll('[data-transfer-stock-id]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.getAttribute('data-transfer-stock-id');
+        const item = stockState.stock.find(s => s.id === id);
+        if (item) openTransferForm(item);
+      });
+    });
+  }
+
+  function openTransferForm(item) {
+    const overlay = openOverlay(`
+      <div class="modal" style="max-width:380px;">
+        <h3>Filialga o'tkazish</h3>
+        <p>${escapeHtml(item.name)} — omborda: ${item.qty} ${escapeHtml(item.unit)}</p>
+        <select id="transferBranchSelect">${branchOptionsHtml(null, { includeCentral: false })}</select>
+        <input type="text" id="transferQtyInput" placeholder="Miqdor (${escapeHtml(item.unit)})" inputmode="decimal">
+        <div class="xabar" id="transferMsg"></div>
+        <div class="btn-row">
+          <button class="btn ikkinchi" id="transferCancelBtn">Bekor qilish</button>
+          <button class="btn" id="transferSubmitBtn">O'tkazish</button>
+        </div>
+      </div>
+    `);
+
+    document.getElementById('transferCancelBtn').onclick = () => overlay.remove();
+    document.getElementById('transferSubmitBtn').onclick = async () => {
+      const branchId = document.getElementById('transferBranchSelect').value;
+      const qty = document.getElementById('transferQtyInput').value.trim();
+      const msgEl = document.getElementById('transferMsg');
+      if (!branchId) {
+        setMsg(msgEl, 'Filialni tanlang.', 'err');
+        return;
+      }
+      if (!qty || !Number.isFinite(Number(qty)) || Number(qty) <= 0) {
+        setMsg(msgEl, 'To\'g\'ri miqdor kiriting.', 'err');
+        return;
+      }
+      setMsg(msgEl, 'O\'tkazilmoqda...');
+      const res = await apiPost('/api/stock-transfer', { stockId: item.id, branchId, qty });
+      if (res.ok) {
+        overlay.remove();
+        loadStockAndRender();
+        loadMovementsAndRender();
+      } else {
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+      }
+    };
+  }
+
+  // Backenddagi WRITEOFF_REASONS bilan bir xil (server.js) — katlet kuysa,
+  // non qotib qolsa yoki yirtilsa kabi holatlarda spisaniya sababini tanlash uchun.
+  const WRITEOFF_REASON_LABELS = {
+    kuydi: '🔥 Kuydi',
+    qotib_qoldi: '🧊 Qotib qoldi',
+    yirtildi: '💔 Yirtildi / shikastlandi',
+    tushib_ketdi: "🫗 Tushib ketdi / to'kildi",
+    muddati_otdi: "⏳ Muddati o'tdi / buzilgan",
+    boshqa: '✏️ Boshqa sabab'
+  };
+
+  function openWriteoffForm(item) {
+    let selectedReason = null;
+    const overlay = openOverlay(`
+      <div class="modal" style="max-width:380px;">
+        <h3>🗑 Spisaniya qilish</h3>
+        <p>${escapeHtml(item.name)} — omborda: ${item.qty} ${escapeHtml(item.unit)}</p>
+        <input type="text" id="writeoffQtyInput" placeholder="Miqdor (${escapeHtml(item.unit)})" inputmode="decimal">
+        <div class="bosh" style="margin:8px 0 4px;text-align:left;">Sababi:</div>
+        <div class="type-row" id="writeoffReasonRow" style="flex-wrap:wrap;">
+          ${Object.entries(WRITEOFF_REASON_LABELS).map(([k, label]) => `
+            <div class="type-opt" data-writeoff-reason="${k}">${escapeHtml(label)}</div>
+          `).join('')}
+        </div>
+        <input type="text" id="writeoffNoteInput" placeholder="Izoh (ixtiyoriy, 'Boshqa sabab'da shart)" style="margin-top:8px;">
+        <div class="xabar" id="writeoffMsg"></div>
+        <div class="btn-row">
+          <button class="btn ikkinchi" id="writeoffCancelBtn">Bekor qilish</button>
+          <button class="btn" id="writeoffSubmitBtn">Spisaniya qilish</button>
+        </div>
+      </div>
+    `);
+
+    document.getElementById('writeoffReasonRow').addEventListener('click', (e) => {
+      const opt = e.target.closest('[data-writeoff-reason]');
+      if (!opt) return;
+      selectedReason = opt.getAttribute('data-writeoff-reason');
+      overlay.querySelectorAll('[data-writeoff-reason]').forEach(el => {
+        el.classList.toggle('selected', el.getAttribute('data-writeoff-reason') === selectedReason);
+      });
+    });
+
+    document.getElementById('writeoffCancelBtn').onclick = () => overlay.remove();
+    document.getElementById('writeoffSubmitBtn').onclick = async () => {
+      const qty = document.getElementById('writeoffQtyInput').value.trim();
+      const note = document.getElementById('writeoffNoteInput').value.trim();
+      const msgEl = document.getElementById('writeoffMsg');
+      if (!qty || !Number.isFinite(Number(qty)) || Number(qty) <= 0) {
+        setMsg(msgEl, 'To\'g\'ri miqdor kiriting.', 'err');
+        return;
+      }
+      if (!selectedReason) {
+        setMsg(msgEl, 'Spisaniya sababini tanlang.', 'err');
+        return;
+      }
+      if (selectedReason === 'boshqa' && !note) {
+        setMsg(msgEl, '"Boshqa sabab" tanlansa, izoh yozish shart.', 'err');
+        return;
+      }
+      setMsg(msgEl, 'Yuborilmoqda...');
+      const res = await apiPost('/api/stock-writeoff', {
+        id: item.id, qty, reason: selectedReason, note, branchId: currentStockBranchId
+      });
+      if (res.ok) {
+        overlay.remove();
+        loadStockAndRender();
+        loadMovementsAndRender();
+      } else {
+        handleFeatureBlocked(res);
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+      }
+    };
+  }
+
+  async function loadMovementsAndRender() {
+    const el = document.getElementById('stockMovements');
+    if (!el) return;
+    const res = await apiPost('/api/stock-movements', { branchId: currentStockBranchId });
+    if (res.networkError) { renderNetworkErrorInline(el, res.reason, loadMovementsAndRender); return; }
+    el.innerHTML = movementsListHtml(res.ok ? res.movements : []);
+  }
+
+  function openAuditForm() {
+    const stock = stockState.stock;
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay';
+    const rowsHtml = stock.length ? stock.map(s => `
+      <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+        <div style="flex:1; font-size:14px;">${escapeHtml(s.name)} <span style="opacity:.6;">(tizimda: ${s.qty} ${escapeHtml(s.unit)})</span></div>
+        <input type="text" inputmode="decimal" data-audit-qty="${escapeHtml(s.id)}" placeholder="${s.qty}" style="width:80px; margin:0;">
+      </div>
+    `).join('') : `<div class="bosh">Sklad bo'sh.</div>`;
+
+    overlay.innerHTML = `
+      <div class="modal" style="max-width:380px; max-height:80vh; overflow:auto;">
+        <h3>Kunlik audit</h3>
+        <p>Har bir mahsulotning haqiqiy (ko'zdan kechirilgan) qoldig'ini kiriting. Bo'sh qoldirilsa — o'zgarmaydi.</p>
+        <div>${rowsHtml}</div>
+        <div class="xabar" id="auditMsg"></div>
+        <div class="btn-row">
+          <button class="btn ikkinchi" id="auditCancelBtn">Bekor qilish</button>
+          <button class="btn" id="auditSubmitBtn">Yuborish</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    document.getElementById('auditCancelBtn').onclick = () => overlay.remove();
+    document.getElementById('auditSubmitBtn').onclick = async () => {
+      const entries = [];
+      overlay.querySelectorAll('[data-audit-qty]').forEach(inp => {
+        const val = inp.value.trim();
+        if (val === '') return;
+        const num = Number(val);
+        if (Number.isFinite(num) && num >= 0) {
+          entries.push({ stockId: inp.getAttribute('data-audit-qty'), actualQty: num });
+        }
+      });
+      const msgEl = document.getElementById('auditMsg');
+      if (!entries.length) {
+        setMsg(msgEl, 'Kamida bitta mahsulot uchun qoldiq kiriting.', 'err');
+        return;
+      }
+      setMsg(msgEl, 'Yuborilmoqda...');
+      const res = await apiPost('/api/audit-submit', { entries, branchId: currentStockBranchId });
+      if (res.ok) {
+        overlay.remove();
+        showAuditReport(res.audit);
+      } else {
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+      }
+    };
+  }
+
+  function shortDateLabel(dateKey) {
+    const parts = String(dateKey || '').split('-');
+    if (parts.length !== 3) return dateKey || '';
+    return `${parts[2]}.${parts[1]}`;
+  }
+
+  function trendBarChartSvg(points) {
+    if (!points || !points.length) return `<div class="bosh">Hali ma'lumot yo'q.</div>`;
+    const W = 300, H = 120, padTop = 10, padBottom = 20, padSide = 6;
+    const chartH = H - padTop - padBottom;
+    const maxAbs = Math.max(1, ...points.map(p => Math.abs(p.value)));
+    const n = points.length;
+    const slot = (W - padSide * 2) / n;
+    const barW = Math.max(4, Math.min(22, slot * 0.55));
+    const zeroY = padTop + chartH / 2;
+    const bars = points.map((p, i) => {
+      const cx = padSide + slot * i + slot / 2;
+      const h = Math.abs(p.value) / maxAbs * (chartH / 2 - 4);
+      const y = p.value >= 0 ? zeroY - h : zeroY;
+      const cls = p.value >= 0 ? 'trend-bar-pos' : 'trend-bar-neg';
+      return `<rect class="${cls}" x="${(cx - barW / 2).toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(1, h).toFixed(1)}" rx="2"></rect>
+        <text class="trend-label" x="${cx.toFixed(1)}" y="${H - 4}" text-anchor="middle">${escapeHtml(p.label)}</text>`;
+    }).join('');
+    return `
+      <svg class="trend-svg" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Sof foyda dinamikasi">
+        <line class="trend-axis" x1="0" y1="${zeroY.toFixed(1)}" x2="${W}" y2="${zeroY.toFixed(1)}"></line>
+        ${bars}
+      </svg>
+    `;
+  }
+
+  function incomeExpenseChartSvg(points) {
+    if (!points || !points.length) return `<div class="bosh">Hali ma'lumot yo'q.</div>`;
+    const W = 300, H = 130, padTop = 10, padBottom = 20, padSide = 6;
+    const chartH = H - padTop - padBottom;
+    const maxVal = Math.max(1, ...points.map(p => Math.max(p.income, p.expense)));
+    const n = points.length;
+    const slot = (W - padSide * 2) / n;
+    const barW = Math.max(3, Math.min(11, slot * 0.32));
+    const gap = 2;
+    const baseY = padTop + chartH;
+    const bars = points.map((p, i) => {
+      const cx = padSide + slot * i + slot / 2;
+      const hIncome = p.income / maxVal * chartH;
+      const hExpense = p.expense / maxVal * chartH;
+      const xIncome = cx - barW - gap / 2;
+      const xExpense = cx + gap / 2;
+      return `
+        <rect class="trend-bar-income" x="${xIncome.toFixed(1)}" y="${(baseY - hIncome).toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(1, hIncome).toFixed(1)}" rx="2"></rect>
+        <rect class="trend-bar-expense" x="${xExpense.toFixed(1)}" y="${(baseY - hExpense).toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(1, hExpense).toFixed(1)}" rx="2"></rect>
+        <text class="trend-label" x="${cx.toFixed(1)}" y="${H - 4}" text-anchor="middle">${escapeHtml(p.label)}</text>
+      `;
+    }).join('');
+    return `
+      <svg class="trend-svg" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Savdo va xarajat dinamikasi">
+        <line class="trend-axis" x1="0" y1="${baseY.toFixed(1)}" x2="${W}" y2="${baseY.toFixed(1)}"></line>
+        ${bars}
+      </svg>
+      <div class="chart-legend">
+        <div class="chart-legend-item"><span class="chart-legend-dot income"></span>Kirim</div>
+        <div class="chart-legend-item"><span class="chart-legend-dot expense"></span>Chiqim</div>
+      </div>
+    `;
+  }
+
+  function categoryBarChartHtml(rows) {
+    if (!rows || !rows.length) return '';
+    const maxSum = Math.max(1, ...rows.map(r => r.sum));
+    return rows.map(r => `
+      <div class="cat-bar-row">
+        <div class="cat-bar-top"><span class="cat-bar-name">${escapeHtml(r.name)}</span><span class="cat-bar-sum">${cfFormatSum(r.sum)}</span></div>
+        <div class="cat-bar-track"><div class="cat-bar-fill" style="width:${Math.max(3, Math.round(r.sum / maxSum * 100))}%;"></div></div>
+      </div>
+    `).join('');
+  }
+
+  let cashflowState = { period: 'today', branchId: undefined };
+
+  function cashflowLocationOptionsHtml(selected) {
+    const parts = [`<option value="__all__" ${selected === undefined ? 'selected' : ''}>Barcha joylashuvlar (umumiy)</option>`];
+    parts.push(`<option value="" ${selected === null ? 'selected' : ''}>${escapeHtml(centralLocationLabel())}</option>`);
+    for (const b of branchState.branches) {
+      parts.push(`<option value="${escapeHtml(b.id)}" ${selected === b.id ? 'selected' : ''}>${escapeHtml(b.name)}</option>`);
+    }
+    return parts.join('');
+  }
+  let cashflowCategories = { ijara: 'Ijara', maosh: 'Maosh', kommunal: 'Kommunal', mahsulot: 'Mahsulot xaridi', boshqa: 'Boshqa' };
+
+  function cfFormatSum(n) {
+    return fmtNum(n) + " so'm";
+  }
+
+  function cfCategoryOptionsHtml() {
+    return Object.entries(cashflowCategories).map(([k, label]) => `<option value="${escapeHtml(k)}">${escapeHtml(label)}</option>`).join('');
+  }
+
+  function cashflowStatsHtml(cf) {
+    const bucket = cf[cashflowState.period];
+    const netClass = bucket.net >= 0 ? 'positive' : 'negative';
+    const paymentRows = Object.entries(bucket.paymentBreakdown || {})
+      .filter(([, sum]) => sum > 0)
+      .map(([key, sum]) => `
+        <button type="button" class="profile-row cf-payment-row" data-cf-payment-type="${escapeHtml(key)}" style="width:100%; text-align:left; cursor:pointer; background:none; border:none;">
+          <b>${escapeHtml(PAYMENT_TYPE_LABELS[key] || key)}:</b> ${cfFormatSum(sum)}
+        </button>
+      `).join('');
+    return `
+      <div class="cf-stats">
+        <div class="cf-stat income">
+          <div class="cf-label">Kirim (savdo)</div>
+          <div class="cf-val">${cfFormatSum(bucket.income)}</div>
+        </div>
+        <div class="cf-stat expense">
+          <div class="cf-label">Chiqim (xarajat)</div>
+          <div class="cf-val">${cfFormatSum(bucket.expense)}</div>
+        </div>
+        <div class="cf-stat net ${netClass}" style="grid-column: 1 / -1;">
+          <div class="cf-label">Sof foyda</div>
+          <div class="cf-val">${cfFormatSum(bucket.net)}</div>
+        </div>
+      </div>
+      <div class="kartochka" style="margin-top:10px;">
+        <h2>Kassa va dostavka (alohida)</h2>
+        <div class="profile-row"><b>Kassadagi pul</b> (olib ketish + kartali dostavka): ${cfFormatSum(bucket.kassaIncome)}</div>
+        ${cfKassaBreakdownHtml(bucket.kassaBreakdown)}
+        <div class="profile-row"><b>Kuryer qo'lidagi naqd pul:</b> ${cfFormatSum(bucket.dostavkaIncome)} (${bucket.dostavkaOrderCount} ta buyurtma)</div>
+      </div>
+      ${paymentRows ? `
+      <div class="kartochka" style="margin-top:10px;">
+        <h2>To'lov turi bo'yicha</h2>
+        <div class="bosh" style="margin-bottom:6px;">Buyurtmalar tarixini shu turda ko'rish uchun bosing.</div>
+        ${paymentRows}
+      </div>` : ''}
+      <div class="bosh" style="margin-top:8px;">Buyurtmalar soni: ${bucket.orderCount}</div>
+      ${cfCategoryBreakdownHtml(bucket.byCategory)}
+    `;
+  }
+
+  function cfKassaBreakdownHtml(kassaBreakdown) {
+    if (!kassaBreakdown) return '';
+    const rows = Object.entries(kassaBreakdown)
+      .filter(([key, sum]) => key !== 'dostavka_orqali' && sum > 0)
+      .map(([key, sum]) => `<div>${escapeHtml(PAYMENT_TYPE_LABELS[key] || key)}: ${cfFormatSum(sum)}</div>`)
+      .join('');
+    if (!rows) return '';
+    return `<div class="bosh" style="margin:2px 0 8px 0; padding-left:4px;">${rows}</div>`;
+  }
+
+  function cfCategoryBreakdownHtml(byCategory) {
+    if (!byCategory) return '';
+    const rows = Object.entries(byCategory)
+      .filter(([, sum]) => sum > 0)
+      .map(([key, sum]) => ({ name: cashflowCategories[key] || key, sum }))
+      .sort((a, b) => b.sum - a.sum);
+    if (!rows.length) return '';
+    return `
+      <div class="kartochka" style="margin-top:10px;">
+        <h2>Xarajat kategoriyalari</h2>
+        ${categoryBarChartHtml(rows)}
+      </div>
+    `;
+  }
+
+  function cashflowExpensesHtml(expenses) {
+    if (!expenses.length) return `<div class="bosh">Xarajat kiritilmagan.</div>`;
+    return expenses.map(e => `
+      <div class="cf-expense-item">
+        <div>
+          <div class="cf-e-amount">-${cfFormatSum(e.amount)}</div>
+          <div class="cf-e-note">${escapeHtml(cashflowCategories[e.category] || 'Boshqa')}${e.note ? ' — ' + escapeHtml(e.note) : ''}</div>
+          <div class="cf-e-date">${new Date(e.createdAt).toLocaleString('uz-UZ')}</div>
+        </div>
+        <button data-remove-expense="${escapeHtml(e.id)}">O'chirish</button>
+      </div>
+    `).join('');
+  }
+
+  function renderCashflowScreen(profile, onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Moliya</div>
+        <button class="btn ikkinchi" id="cfBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <button class="btn ikkinchi" id="cfZReportBtn" style="margin-bottom:12px;">${icon('clipboard', 'icon-xs')} Kunlik Z-hisobot</button>
+        <button class="btn ikkinchi" id="cfOrderHistoryBtn" style="margin-bottom:12px;">${icon('clipboard', 'icon-xs')} Buyurtmalar tarixi</button>
+        ${branchState.branches.length ? `
+        <div class="kartochka">
+          <h2>Joylashuv</h2>
+          <select id="cfBranchSelect">${cashflowLocationOptionsHtml(cashflowState.branchId)}</select>
+        </div>` : ''}
+        <div class="tab-row">
+          <div class="tab-opt ${cashflowState.period === 'today' ? 'selected' : ''}" data-cf-period="today">Bugun</div>
+          <div class="tab-opt ${cashflowState.period === 'week' ? 'selected' : ''}" data-cf-period="week">Hafta</div>
+          <div class="tab-opt ${cashflowState.period === 'month' ? 'selected' : ''}" data-cf-period="month">Oy</div>
+        </div>
+        <div id="cfStats"><div class="bosh">Yuklanmoqda...</div></div>
+        <div class="kartochka chart-card">
+          <h2>${icon('trending-up', 'icon-xs')} Savdo va xarajat dinamikasi</h2>
+          <div class="bosh">Oxirgi yopilgan kunlar bo'yicha (Z-hisobot asosida).</div>
+          <div id="cfTrendChart"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+        ${branchState.branches.length ? `
+        <div class="kartochka">
+          <h2>Filiallar solishtiruvi</h2>
+          <div id="cfBranchReport"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>` : ''}
+        <div class="kartochka">
+          <h2>Xarajat qo'shish</h2>
+          ${branchState.branches.length ? `<select id="cfExpenseBranchSelect">${branchOptionsHtml(cashflowState.branchId || null)}</select>` : ''}
+          <input type="text" id="cfAmountInput" placeholder="Summa (so'm)" inputmode="numeric">
+          <select id="cfCategoryInput">${cfCategoryOptionsHtml()}</select>
+          <input type="text" id="cfNoteInput" placeholder="Izoh (ixtiyoriy)">
+          <button class="btn" id="cfAddExpenseBtn">Qo'shish</button>
+          <div class="xabar" id="cfExpenseMsg"></div>
+        </div>
+        <div class="kartochka">
+          <h2>So'nggi xarajatlar</h2>
+          <div id="cfExpenseList"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+      </div>
+    `);
+
+    document.getElementById('cfBackBtn').addEventListener('click', () => onBack && onBack());
+    document.getElementById('cfZReportBtn').addEventListener('click', () => {
+      renderZReportScreen(profile, () => renderCashflowScreen(profile, onBack));
+    });
+    document.getElementById('cfOrderHistoryBtn').addEventListener('click', () => {
+      renderOrderHistoryScreen(profile, () => renderCashflowScreen(profile, onBack));
+    });
+
+    document.querySelector('.tab-row').addEventListener('click', (e) => {
+      const p = e.target.getAttribute('data-cf-period');
+      if (!p || p === cashflowState.period) return;
+      cashflowState.period = p;
+      renderCashflowScreen(profile, onBack);
+    });
+
+    const cfBranchSelectEl = document.getElementById('cfBranchSelect');
+    if (cfBranchSelectEl) {
+      cfBranchSelectEl.addEventListener('change', (e) => {
+        const v = e.target.value;
+        cashflowState.branchId = v === '__all__' ? undefined : (v || null);
+        renderCashflowScreen(profile, onBack);
+      });
+    }
+
+    document.getElementById('cfAddExpenseBtn').addEventListener('click', async () => {
+      const amount = document.getElementById('cfAmountInput').value.trim();
+      const category = document.getElementById('cfCategoryInput').value;
+      const note = document.getElementById('cfNoteInput').value.trim();
+      const branchSelectEl = document.getElementById('cfExpenseBranchSelect');
+      const branchId = branchSelectEl ? (branchSelectEl.value || null) : null;
+      const msgEl = document.getElementById('cfExpenseMsg');
+      if (!amount || !/^\d+$/.test(amount) || parseInt(amount, 10) <= 0) {
+        setMsg(msgEl, 'To\'g\'ri summa kiriting.', 'err');
+        return;
+      }
+      setMsg(msgEl, 'Qo\'shilmoqda...');
+      const res = await apiPost('/api/expense-add', { amount, category, note, branchId });
+      if (res.ok) {
+        document.getElementById('cfAmountInput').value = '';
+        document.getElementById('cfNoteInput').value = '';
+        loadCashflowData(profile, onBack);
+      } else {
+        handleFeatureBlocked(res);
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+      }
+    });
+
+    loadCashflowData(profile, onBack);
+    loadCfTrendChart();
+    if (branchState.branches.length) loadBranchReportAndRender();
+  }
+
+  async function loadCfTrendChart() {
+    const el = document.getElementById('cfTrendChart');
+    if (!el) return;
+    const res = await apiPost('/api/z-report-list', { branchId: cashflowState.branchId });
+    if (res.networkError) { renderNetworkErrorInline(el, res.reason, loadCfTrendChart); return; }
+    if (!res.ok || !res.reports || !res.reports.length) {
+      el.innerHTML = `<div class="bosh">Grafik uchun hali yopilgan kun yo'q. "Kunlik Z-hisobot" bo'limidan kunni yoping.</div>`;
+      return;
+    }
+    const points = res.reports.slice(0, 7).slice().reverse().map(z => ({
+      label: shortDateLabel(z.date), income: z.income, expense: z.expense
+    }));
+    el.innerHTML = incomeExpenseChartSvg(points);
+  }
+
+  function branchReportHtml(report) {
+    if (!report || !report.length) return `<div class="bosh">Ma'lumot yo'q.</div>`;
+    const maxIncome = Math.max(1, ...report.map(r => r.income));
+    return report.map(r => `
+      <div class="menu-item">
+        <div style="flex:1;">
+          <div class="m-name">${escapeHtml(r.branchName)}</div>
+          <div class="m-price">${cfFormatSum(r.income)} · ${r.orderCount} buyurtma · o'rtacha chek: ${cfFormatSum(r.avgCheck)}</div>
+          <div style="background:rgba(120,120,120,.2); border-radius:4px; height:6px; margin-top:6px; overflow:hidden;">
+            <div style="background:var(--tg-theme-button-color,#2ea6ff); height:100%; width:${Math.round(r.income / maxIncome * 100)}%;"></div>
+          </div>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  async function loadBranchReportAndRender() {
+    const el = document.getElementById('cfBranchReport');
+    if (!el) return;
+    const res = await apiPost('/api/branch-report', { period: cashflowState.period });
+    if (res.networkError) { renderNetworkErrorInline(el, res.reason, loadBranchReportAndRender); return; }
+    el.innerHTML = branchReportHtml(res.ok ? res.report : []);
+  }
+
+  async function loadCashflowData(profile, onBack) {
+    const statsEl = document.getElementById('cfStats');
+    const listEl = document.getElementById('cfExpenseList');
+    const msgEl = document.getElementById('cfExpenseMsg');
+    if (!statsEl || !listEl) return;
+    const res = await apiPost('/api/cashflow', { branchId: cashflowState.branchId });
+    if (res.networkError) {
+      renderNetworkErrorInline(statsEl, res.reason, () => loadCashflowData(profile, onBack));
+      listEl.innerHTML = '';
+      return;
+    }
+    if (!res.ok) {
+      statsEl.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
+      return;
+    }
+    if (msgEl) { msgEl.textContent = ''; msgEl.className = 'xabar'; }
+    if (res.categories) cashflowCategories = res.categories;
+    statsEl.innerHTML = cashflowStatsHtml(res.cashflow);
+    listEl.innerHTML = cashflowExpensesHtml(res.expenses);
+
+    statsEl.querySelectorAll('[data-cf-payment-type]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const pt = btn.getAttribute('data-cf-payment-type');
+        orderHistoryState = { dateFrom: '', dateTo: '', employeeId: '', paymentType: pt, orderType: '', page: 1 };
+        renderOrderHistoryScreen(profile, () => renderCashflowScreen(profile, onBack));
+      });
+    });
+
+    listEl.querySelectorAll('[data-remove-expense]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        await apiPost('/api/expense-remove', { id: btn.getAttribute('data-remove-expense') });
+        loadCashflowData(profile, onBack);
+      });
+    });
+  }
+
+  let aiState = { period: 'week' };
+
+  let aiChatState = { messages: [], sending: false };
+  const AI_SUGGESTIONS = [
+    "Bugun foyda qancha bo'ldi?",
+    'Eng ko\'p sotilgan taom qaysi?',
+    "Ertaga sklad kerakmi?",
+    'Bu hafta qanday o\'tdi?'
+  ];
+
+  function aiTopItemsHtml(topItems) {
+    if (!topItems || !topItems.length) return `<div class="bosh">Bu davrda buyurtma bo'lmagan.</div>`;
+    const maxQty = Math.max(1, ...topItems.map(it => it.qty));
+    return topItems.map((it, i) => `
+      <div class="menu-item">
+        <div style="flex:1;">
+          <div class="m-name">${i + 1}. ${escapeHtml(it.name)}</div>
+          <div class="m-price">${it.qty} dona · ${cfFormatSum(it.revenue)}</div>
+          <div style="background:rgba(120,120,120,.2); border-radius:4px; height:6px; margin-top:6px; overflow:hidden;">
+            <div style="background:var(--tg-theme-button-color,#2ea6ff); height:100%; width:${Math.round(it.qty / maxQty * 100)}%;"></div>
+          </div>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  function aiPeakHtml(topHours, topDays) {
+    const hoursText = (topHours && topHours.length)
+      ? topHours.map(h => `${h.hour}:00 (${h.count} ta)`).join(', ')
+      : 'Ma\'lumot yo\'q';
+    const daysText = (topDays && topDays.length)
+      ? topDays.map(d => `${d.dayLabel} (${d.count} ta)`).join(', ')
+      : 'Ma\'lumot yo\'q';
+    return `
+      <div class="profile-row"><b>Eng band soatlar:</b> ${escapeHtml(hoursText)}</div>
+      <div class="profile-row"><b>Eng band kunlar:</b> ${escapeHtml(daysText)}</div>
+    `;
+  }
+
+  function aiForecastHtml(forecast) {
+    if (!forecast || !forecast.length) return `<div class="bosh">Prognoz uchun yetarli sklad harakati tarixi yo'q (oxirgi 7 kun).</div>`;
+    const urgentCount = forecast.filter(f => f.urgent).length;
+    const urgentNote = urgentCount
+      ? `<div class="xabar err" style="margin-bottom:8px;">⚠️ ${urgentCount} ta mahsulot 3 kun ichida tugashi mumkin.</div>`
+      : '';
+    return urgentNote + forecast.slice(0, 10).map(f => `
+      <div class="menu-item">
+        <div style="flex:1;">
+          <div class="m-name">${escapeHtml(f.name)}${f.urgent ? ' ' + icon('warning', 'icon-xs icon-warning') : ''}</div>
+          <div class="m-price">Bor: ${f.currentQty} ${escapeHtml(f.unit)} · Kunlik o'rtacha sarf: ${f.avgDailyUsage} ${escapeHtml(f.unit)}</div>
+          <div class="m-price">${f.daysLeft === null ? 'Muddatni hisoblab bo\'lmadi' : (f.daysLeft < 1 ? 'Bugun-erta tugashi mumkin' : `Taxminan ${f.daysLeft} kunga yetadi`)}</div>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  function aiChatMessagesHtml() {
+    if (!aiChatState.messages.length) {
+      return `<div class="ai-msg-empty">Savolingizni yozing yoki quyidagi takliflardan birini tanlang.</div>`;
+    }
+    const bubbles = aiChatState.messages.map(m => `
+      <div class="ai-msg ${m.role}">
+        <div class="ai-msg-bubble${m.isError ? ' err' : ''}">${escapeHtml(m.text)}</div>
+      </div>
+    `).join('');
+    const typing = aiChatState.sending ? `
+      <div class="ai-msg bot">
+        <div class="ai-msg-bubble">
+          <div class="ai-typing-bubble"><span class="ai-typing-dot"></span><span class="ai-typing-dot"></span><span class="ai-typing-dot"></span></div>
+        </div>
+      </div>
+    ` : '';
+    return bubbles + typing;
+  }
+
+  function aiScrollChatToBottom() {
+    const el = document.getElementById('aiChatMessages');
+    if (el) el.scrollTop = el.scrollHeight;
+  }
+
+  function aiRenderChat() {
+    const el = document.getElementById('aiChatMessages');
+    if (!el) return;
+    el.innerHTML = aiChatMessagesHtml();
+    aiScrollChatToBottom();
+  }
+
+  async function aiSendQuestion(question) {
+    const qTrim = (question || '').trim();
+    if (!qTrim || aiChatState.sending) return;
+    aiChatState.messages.push({ role: 'user', text: qTrim });
+    aiChatState.sending = true;
+    aiRenderChat();
+
+    const input = document.getElementById('aiQuestionInput');
+    const sendBtn = document.getElementById('aiSendBtn');
+    if (input) input.value = '';
+    if (sendBtn) sendBtn.disabled = true;
+
+    const res = await apiPost('/api/ai-ask', { question: qTrim });
+    aiChatState.sending = false;
+    if (res.ok) {
+      aiChatState.messages.push({ role: 'bot', text: res.answer });
+    } else {
+      aiChatState.messages.push({ role: 'bot', text: res.reason || 'Xatolik yuz berdi.', isError: true });
+    }
+    aiRenderChat();
+    if (sendBtn) sendBtn.disabled = false;
+    if (input) input.focus();
+  }
+
+  function renderAiScreen(profile, onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">AI tahlil</div>
+        <button class="btn ikkinchi" id="aiBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="tab-row">
+          <div class="tab-opt ${aiState.period === 'week' ? 'selected' : ''}" data-ai-period="week">Hafta</div>
+          <div class="tab-opt ${aiState.period === 'month' ? 'selected' : ''}" data-ai-period="month">Oy</div>
+          <div class="tab-opt ${aiState.period === 'all' ? 'selected' : ''}" data-ai-period="all">Hammasi</div>
+        </div>
+        <div class="kartochka">
+          <h2>Eng ko'p sotilgan taomlar</h2>
+          <div id="aiTopItems"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+        <div class="kartochka">
+          <h2>Pik vaqtlar</h2>
+          <div id="aiPeak"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+        <div class="kartochka">
+          <h2>Ertangi sklad ehtiyoji (prognoz)</h2>
+          <div id="aiForecast"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+        <div class="kartochka">
+          <h2>📊 Kunlik savdo hisoboti (Z-hisobot)</h2>
+          <div class="bosh" style="margin-bottom:8px;">Har kuni soat 08:00 (Toshkent) o'tgan kunning savdo/xarajat hisoboti avtomatik Telegram'ga yuboriladi.</div>
+          <label class="check-label" style="font-size:var(--fs-body);">
+            <input type="checkbox" id="dailyReportToggle">
+            Avtomatik kunlik hisobotni yoqish
+          </label>
+          <div id="dailyReportText" class="bosh" style="margin-top:8px;">Yuklanmoqda...</div>
+          <button class="btn ikkinchi" id="dailyReportSendBtn" style="margin-top:10px;">Hozir yubor</button>
+          <div class="xabar" id="dailyReportMsg"></div>
+        </div>
+        <div class="kartochka">
+          <h2>🤖 AI Direktor — kunlik hisobot</h2>
+          <div class="bosh" style="margin-bottom:8px;">Har kuni soat 08:00 (Toshkent) shu hisobot avtomatik Telegram'ga yuboriladi.</div>
+          <label class="check-label" style="font-size:var(--fs-body);">
+            <input type="checkbox" id="aiDirDailyToggle">
+            Avtomatik kunlik hisobotni yoqish
+          </label>
+          <div id="aiDirDailyText" class="bosh" style="margin-top:8px;">Yuklanmoqda...</div>
+          <button class="btn ikkinchi" id="aiDirDailySendBtn" style="margin-top:10px;">Hozir yubor</button>
+          <div class="xabar" id="aiDirDailyMsg"></div>
+        </div>
+        <div class="kartochka">
+          <h2>📅 AI Direktor — haftalik hisobot</h2>
+          <div class="bosh" style="margin-bottom:8px;">Har Dushanba soat 08:00 (Toshkent) haftalik yig'ma hisobot avtomatik Telegram'ga yuboriladi.</div>
+          <label class="check-label" style="font-size:var(--fs-body);">
+            <input type="checkbox" id="aiDirWeeklyToggle">
+            Avtomatik haftalik hisobotni yoqish
+          </label>
+          <div id="aiDirWeeklyText" class="bosh" style="margin-top:8px;">Yuklanmoqda...</div>
+          <button class="btn ikkinchi" id="aiDirWeeklySendBtn" style="margin-top:10px;">Hozir yubor</button>
+          <div class="xabar" id="aiDirWeeklyMsg"></div>
+        </div>
+        <div class="kartochka ai-chat-card">
+          <h2>${icon('ai', 'icon-xs')} AI-yordamchi</h2>
+          <div class="ai-chat-messages" id="aiChatMessages">${aiChatMessagesHtml()}</div>
+          <div class="ai-suggest-row" id="aiSuggestRow">
+            ${AI_SUGGESTIONS.map(s => `<button type="button" class="ai-suggest-chip" data-ai-suggest="${escapeHtml(s)}">${escapeHtml(s)}</button>`).join('')}
+          </div>
+          <div class="ai-chat-input-row">
+            <input type="text" id="aiQuestionInput" placeholder="Savolingizni yozing...">
+            <button class="btn ai-send-btn" id="aiSendBtn" aria-label="Yuborish">${icon('send')}</button>
+          </div>
+        </div>
+      </div>
+    `);
+
+    document.getElementById('aiBackBtn').addEventListener('click', () => onBack && onBack());
+
+    document.querySelector('.tab-row').addEventListener('click', (e) => {
+      const p = e.target.getAttribute('data-ai-period');
+      if (!p || p === aiState.period) return;
+      aiState.period = p;
+      renderAiScreen(profile, onBack);
+    });
+
+    const questionInput = document.getElementById('aiQuestionInput');
+    document.getElementById('aiSendBtn').addEventListener('click', () => aiSendQuestion(questionInput.value));
+    questionInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); aiSendQuestion(questionInput.value); }
+    });
+    document.getElementById('aiSuggestRow').addEventListener('click', (e) => {
+      const q = e.target.getAttribute('data-ai-suggest');
+      if (q) aiSendQuestion(q);
+    });
+
+    document.getElementById('dailyReportToggle').addEventListener('change', async (e) => {
+      const checked = e.target.checked;
+      e.target.disabled = true;
+      const res = await apiPost('/api/daily-report-toggle', { enabled: checked });
+      e.target.disabled = false;
+      if (!res.ok) { e.target.checked = !checked; alert(res.reason || 'Xatolik yuz berdi.'); }
+    });
+    document.getElementById('dailyReportSendBtn').addEventListener('click', async () => {
+      const btn = document.getElementById('dailyReportSendBtn');
+      const msgEl = document.getElementById('dailyReportMsg');
+      btn.disabled = true;
+      const res = await apiPost('/api/daily-report-send-now');
+      btn.disabled = false;
+      if (!res.ok) { msgEl.textContent = res.reason || 'Xatolik yuz berdi.'; msgEl.className = 'xabar err'; return; }
+      setMsg(msgEl, 'Yuborildi — Telegram\'dagi bot xabarini tekshiring.', 'ok');
+    });
+
+    document.getElementById('aiDirDailyToggle').addEventListener('change', async (e) => {
+      const checked = e.target.checked;
+      e.target.disabled = true;
+      const res = await apiPost('/api/ai-director-toggle', { enabled: checked });
+      e.target.disabled = false;
+      if (!res.ok) { e.target.checked = !checked; alert(res.reason || 'Xatolik yuz berdi.'); }
+    });
+    document.getElementById('aiDirDailySendBtn').addEventListener('click', async () => {
+      const btn = document.getElementById('aiDirDailySendBtn');
+      const msgEl = document.getElementById('aiDirDailyMsg');
+      btn.disabled = true;
+      const res = await apiPost('/api/ai-director-send-now');
+      btn.disabled = false;
+      if (!res.ok) { msgEl.textContent = res.reason || 'Xatolik yuz berdi.'; msgEl.className = 'xabar err'; return; }
+      setMsg(msgEl, 'Yuborildi — Telegram\'dagi bot xabarini tekshiring.', 'ok');
+    });
+
+    document.getElementById('aiDirWeeklyToggle').addEventListener('change', async (e) => {
+      const checked = e.target.checked;
+      e.target.disabled = true;
+      const res = await apiPost('/api/ai-director-weekly-toggle', { enabled: checked });
+      e.target.disabled = false;
+      if (!res.ok) { e.target.checked = !checked; alert(res.reason || 'Xatolik yuz berdi.'); }
+    });
+    document.getElementById('aiDirWeeklySendBtn').addEventListener('click', async () => {
+      const btn = document.getElementById('aiDirWeeklySendBtn');
+      const msgEl = document.getElementById('aiDirWeeklyMsg');
+      btn.disabled = true;
+      const res = await apiPost('/api/ai-director-weekly-send-now');
+      btn.disabled = false;
+      if (!res.ok) { msgEl.textContent = res.reason || 'Xatolik yuz berdi.'; msgEl.className = 'xabar err'; return; }
+      setMsg(msgEl, 'Yuborildi — Telegram\'dagi bot xabarini tekshiring.', 'ok');
+    });
+
+    aiRenderChat();
+    loadAiData();
+    loadAiDirectorPreviews();
+  }
+
+  async function loadAiDirectorPreviews() {
+    const dailyReportTextEl = document.getElementById('dailyReportText');
+    const dailyReportToggleEl = document.getElementById('dailyReportToggle');
+    if (dailyReportTextEl) {
+      const res = await apiPost('/api/daily-report-preview');
+      if (res.ok) {
+        dailyReportTextEl.innerHTML = `<div style="white-space:pre-line;">${res.text}</div>` +
+          (res.sentToday ? `<div class="bosh" style="margin-top:6px;">✅ Bugun allaqachon yuborilgan.</div>` : '');
+        dailyReportToggleEl.checked = res.enabled;
+      } else if (res.blockedFeature) {
+        renderFeatureBlockedInline(dailyReportTextEl, res.reason);
+      } else {
+        dailyReportTextEl.textContent = res.reason || 'Yuklab bo\'lmadi.';
+      }
+    }
+
+    const dailyTextEl = document.getElementById('aiDirDailyText');
+    const dailyToggle = document.getElementById('aiDirDailyToggle');
+    if (dailyTextEl) {
+      const res = await apiPost('/api/ai-director-preview');
+      if (res.ok) {
+        dailyTextEl.innerHTML = `<div style="white-space:pre-line;">${res.text}</div>` +
+          (res.sentToday ? `<div class="bosh" style="margin-top:6px;">✅ Bugun allaqachon yuborilgan.</div>` : '');
+        dailyToggle.checked = res.enabled;
+      } else if (res.blockedFeature) {
+        renderFeatureBlockedInline(dailyTextEl, res.reason);
+      } else {
+        dailyTextEl.textContent = res.reason || 'Yuklab bo\'lmadi.';
+      }
+    }
+
+    const weeklyTextEl = document.getElementById('aiDirWeeklyText');
+    const weeklyToggle = document.getElementById('aiDirWeeklyToggle');
+    if (weeklyTextEl) {
+      const res = await apiPost('/api/ai-director-weekly-preview');
+      if (res.ok) {
+        weeklyTextEl.innerHTML = `<div style="white-space:pre-line;">${res.text}</div>` +
+          (res.sentThisWeek ? `<div class="bosh" style="margin-top:6px;">✅ Shu hafta allaqachon yuborilgan.</div>` : '');
+        weeklyToggle.checked = res.enabled;
+      } else if (res.blockedFeature) {
+        renderFeatureBlockedInline(weeklyTextEl, res.reason);
+      } else {
+        weeklyTextEl.textContent = res.reason || 'Yuklab bo\'lmadi.';
+      }
+    }
+  }
+
+  async function loadAiData() {
+    const topEl = document.getElementById('aiTopItems');
+    const peakEl = document.getElementById('aiPeak');
+    const forecastEl = document.getElementById('aiForecast');
+    if (!topEl) return;
+    const res = await apiPost('/api/ai-analytics', { period: aiState.period });
+    if (res.networkError) {
+      renderNetworkErrorInline(topEl, res.reason, loadAiData);
+      peakEl.innerHTML = '';
+      forecastEl.innerHTML = '';
+      return;
+    }
+    if (!res.ok) {
+      if (res.blockedFeature) {
+        renderFeatureBlockedInline(topEl, res.reason);
+      } else {
+        topEl.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
+      }
+      peakEl.innerHTML = '';
+      forecastEl.innerHTML = '';
+      return;
+    }
+    topEl.innerHTML = aiTopItemsHtml(res.topItems);
+    peakEl.innerHTML = aiPeakHtml(res.topHours, res.topDays);
+    forecastEl.innerHTML = aiForecastHtml(res.forecast);
+  }
+
+  let staffControlState = { period: 'month' };
+  const STAFF_ACTION_LABELS = {
+    buyurtma_yaratdi: 'Buyurtma yaratdi',
+    holat_tayyorlanmoqda: 'Tayyorlanmoqda deb belgiladi',
+    holat_tayyor: 'Tayyor deb belgiladi',
+    yetkazdi: 'Yetkazib berdi',
+    sklad_kirim: 'Skladga kirim qildi',
+    audit_topshirdi: 'Audit topshirdi',
+    smena_boshladi: 'Smenani boshladi',
+    smena_tugatdi: 'Smenani tugatdi'
+  };
+
+  function staffPerformanceHtml(report) {
+    if (!report || !report.length) return `<div class="bosh">Hali xodim qo'shilmagan.</div>`;
+    return report.map((s, i) => `
+      <div class="owner-item">
+        <div>
+          <div class="owner-id">${i + 1}. ${escapeHtml(s.fullName || (s.username ? '@' + s.username : 'ID: ' + s.id))}${s.isTop ? ' ' + icon('trophy', 'icon-xs icon-warning') : ''}</div>
+          <div class="owner-username">${escapeHtml(s.roleLabel)}${(s.fullName && s.username) ? ` · @${escapeHtml(s.username)}` : ''}</div>
+          <div class="owner-expiry">Amallar: ${s.actionCount} ta${s.errorCount ? ` · Kamomad: ${s.errorCount} ta` : ''}</div>
+        </div>
+        <div class="rating-badge">${s.score}<div class="rating-unit">ball</div></div>
+      </div>
+    `).join('');
+  }
+
+  function notificationErrorLogHtml(entries) {
+    if (!entries || !entries.length) return `<div class="bosh">Hammasi joyida — yaqinda yetkazilmagan bildirishnoma yo'q.</div>`;
+    return entries.map(e => `
+      <div class="owner-item">
+        <div>
+          <div class="owner-id">${escapeHtml(e.targetName || ('ID: ' + e.targetId))}</div>
+          <div class="owner-username">${escapeHtml(e.context || '')}</div>
+          <div class="owner-expiry" style="color:var(--danger);">${escapeHtml(e.reason)} · ${timeAgo(e.createdAt)}</div>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  function staffActivityLogHtml(entries) {
+    if (!entries || !entries.length) return `<div class="bosh">Hali amal qayd etilmagan.</div>`;
+    return entries.map(e => `
+      <div class="cf-expense-item">
+        <div>
+          <div class="cf-e-note"><b>${escapeHtml(e.displayName)}</b> (${escapeHtml(e.roleLabel)}) — ${escapeHtml(STAFF_ACTION_LABELS[e.action] || e.action)}</div>
+          ${e.note ? `<div class="cf-e-note">${escapeHtml(e.note)}</div>` : ''}
+          <div class="cf-e-date">${new Date(e.createdAt).toLocaleString('uz-UZ')}</div>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  function renderStaffControlScreen(profile, onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Xodimlar</div>
+        <button class="btn ikkinchi" id="scBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="kartochka">
+          <h2>Xodim qo'shish</h2>
+          <input type="text" id="staffInput" placeholder="Telegram ID, @username yoki t.me havolasi">
+          <div class="staff-hint" style="margin-top:8px;">Lavozim:</div>
+          <div class="staff-role-grid">
+            <label class="check-label"><input type="checkbox" class="staffRoleAddCheckbox" value="kassir" checked> Kassir</label>
+            <label class="check-label"><input type="checkbox" class="staffRoleAddCheckbox" value="egasi"> Egasi (hamkor — to'liq huquq)</label>
+          </div>
+          <select id="staffBranchInput">
+            <option value="">— Markaziy (filialsiz) —</option>
+          </select>
+          <button class="btn" id="addStaffBtn">Xodim qo'shish</button>
+          <div class="xabar" id="staffMsg"></div>
+          <div class="staff-hint" style="margin-top:14px; border-top:1px solid var(--border-color); padding-top:12px;">
+            Yoki xodimning ID/username'ini bilmasangiz — yuqorida lavozim(lar)ni belgilab, bir martalik havola yarating. Xodim shu havolani bosib botni ochsa, avtomatik shu lavozim(lar) bilan qo'shiladi.<br>
+            <b>Eslatma:</b> "Egasi (hamkor)" huquqi havola orqali berilmaydi — buni faqat yuqorida ID/username kiritib, to'g'ridan-to'g'ri qo'shishda tanlash mumkin.
+          </div>
+          <button class="btn ikkinchi" id="createStaffInviteBtn" style="margin-top:8px;">${icon('link', 'icon-xs')} Bir martalik havola yaratish</button>
+          <div id="staffInviteLinkWrap"></div>
+          <div class="xabar" id="staffInviteMsg"></div>
+        </div>
+        <div class="kartochka">
+          <h2>Xodimlar ro'yxati</h2>
+          <div class="owner-list" id="staffList"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+        <div class="section-label">${icon('bar-chart', 'icon-xs')} Nazorat</div>
+        <div class="tab-row">
+          <div class="tab-opt ${staffControlState.period === 'week' ? 'selected' : ''}" data-sc-period="week">Hafta</div>
+          <div class="tab-opt ${staffControlState.period === 'month' ? 'selected' : ''}" data-sc-period="month">30 kun</div>
+          <div class="tab-opt ${staffControlState.period === 'all' ? 'selected' : ''}" data-sc-period="all">Hammasi</div>
+        </div>
+        <div class="kartochka">
+          <h2>Xodimlar reytingi</h2>
+          <div id="scRating"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+        <div class="kartochka">
+          <h2>So'nggi amallar (jurnal)</h2>
+          <div id="scLog"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+        <div class="kartochka">
+          <h2>Bildirishnoma xatolari</h2>
+          <div class="staff-hint">Xodimga Telegram orqali xabar yetib bormagan holatlar (odatda xodim botga hali <code>/start</code> bosmagan yoki uni block qilgan bo'lsa yuz beradi).</div>
+          <div id="scNotifErrors" style="margin-top:8px;"><div class="bosh">Yuklanmoqda...</div></div>
+          <button class="btn ikkinchi" id="clearNotifErrorsBtn" style="margin-top:8px;">Jurnalni tozalash</button>
+        </div>
+      </div>
+    `);
+
+    document.getElementById('scBackBtn').addEventListener('click', () => onBack && onBack());
+    document.querySelector('.tab-row').addEventListener('click', (e) => {
+      const p = e.target.getAttribute('data-sc-period');
+      if (!p || p === staffControlState.period) return;
+      staffControlState.period = p;
+      renderStaffControlScreen(profile, onBack);
+    });
+
+    document.getElementById('addStaffBtn').addEventListener('click', async () => {
+      const val = document.getElementById('staffInput').value.trim();
+      const roles = Array.from(document.querySelectorAll('.staffRoleAddCheckbox:checked')).map(cb => cb.value);
+      const branchId = document.getElementById('staffBranchInput').value;
+      const msgEl = document.getElementById('staffMsg');
+      if (!val) {
+        setMsg(msgEl, 'Iltimos, ID yoki username kiriting.', 'err');
+        return;
+      }
+      if (!roles.length) {
+        setMsg(msgEl, 'Kamida bitta lavozim belgilang.', 'err');
+        return;
+      }
+      setMsg(msgEl, 'Qo\'shilmoqda...');
+      const res = await apiPost('/api/add-staff', { input: val, roles, branchId });
+      if (res.ok) {
+        setMsg(msgEl, 'Xodim qo\'shildi.', 'ok');
+        document.getElementById('staffInput').value = '';
+        document.querySelectorAll('.staffRoleAddCheckbox').forEach(cb => cb.checked = false);
+        loadStaffAndRender();
+      } else {
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+      }
+    });
+
+    document.getElementById('createStaffInviteBtn').addEventListener('click', async () => {
+      const roles = Array.from(document.querySelectorAll('.staffRoleAddCheckbox:checked')).map(cb => cb.value).filter(r => r !== 'egasi');
+      const branchId = document.getElementById('staffBranchInput').value;
+      const msgEl = document.getElementById('staffInviteMsg');
+      const wrap = document.getElementById('staffInviteLinkWrap');
+      if (!roles.length) {
+        setMsg(msgEl, 'Kamida bitta lavozim belgilang. ("Egasi (hamkor)" havola orqali berilmaydi — buni faqat ID/username orqali qo\'shishda tanlang.)', 'err');
+        return;
+      }
+      setMsg(msgEl, 'Yaratilmoqda...');
+      wrap.innerHTML = '';
+      const res = await apiPost('/api/create-staff-invite', { roles, branchId });
+      if (!res.ok) {
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+        return;
+      }
+      msgEl.textContent = '';
+      wrap.innerHTML = `
+        <div class="link-box">
+          <span>${escapeHtml(res.link)}</span>
+          <button id="copyStaffInviteLinkBtn">Nusxalash</button>
+        </div>
+        <div class="customer-link-hint">Havola bir marta ishlatiladi va 24 soatdan keyin muddati tugaydi (${escapeHtml(rolesLabelClient(res.roles))}).</div>
+      `;
+      document.getElementById('copyStaffInviteLinkBtn').addEventListener('click', () => {
+        navigator.clipboard.writeText(res.link).then(() => {
+          setMsg(msgEl, 'Havola nusxalandi.', 'ok');
+        }).catch(() => {
+          setMsg(msgEl, 'Nusxalab bo\'lmadi, havolani qo\'lda ko\'chiring.', 'err');
+        });
+      });
+    });
+
+    document.getElementById('staffList').addEventListener('click', async (e) => {
+      const id = e.target.getAttribute('data-remove-staff-id');
+      if (!id) return;
+      e.target.disabled = true;
+      await apiPost('/api/remove-staff', { id });
+      loadStaffAndRender();
+    });
+
+    document.getElementById('staffList').addEventListener('change', async (e) => {
+      const branchStaffId = e.target.getAttribute('data-staff-branch-id');
+      if (branchStaffId) {
+        e.target.disabled = true;
+        await apiPost('/api/set-staff-branch', { id: branchStaffId, branchId: e.target.value });
+        loadStaffAndRender();
+        return;
+      }
+      const roleStaffId = e.target.getAttribute('data-staff-role-checkbox');
+      if (roleStaffId) {
+        const checkboxes = document.querySelectorAll(`[data-staff-role-checkbox="${roleStaffId}"]`);
+        const roles = Array.from(checkboxes).filter(cb => cb.checked).map(cb => cb.value);
+        if (!roles.length) {
+          e.target.checked = true;
+          alert('Xodimda kamida bitta lavozim qolishi kerak.');
+          return;
+        }
+        checkboxes.forEach(cb => cb.disabled = true);
+        await apiPost('/api/set-staff-roles', { id: roleStaffId, roles });
+        loadStaffAndRender();
+      }
+    });
+
+    document.getElementById('clearNotifErrorsBtn').addEventListener('click', async () => {
+      if (!confirm('Bildirishnoma xatolari jurnalini tozalamoqchimisiz?')) return;
+      await apiPost('/api/notification-error-log-clear');
+      loadStaffControlData();
+    });
+
+    loadBranchAndRender().then(loadStaffAndRender);
+    loadStaffControlData();
+  }
+
+  async function loadStaffControlData() {
+    const ratingEl = document.getElementById('scRating');
+    const logEl = document.getElementById('scLog');
+    if (!ratingEl) return;
+
+    const perfRes = await apiPost('/api/staff-performance-report', { period: staffControlState.period });
+    if (perfRes.networkError) {
+      renderNetworkErrorInline(ratingEl, perfRes.reason, loadStaffControlData);
+      return;
+    }
+    ratingEl.innerHTML = perfRes.ok
+      ? staffPerformanceHtml(perfRes.report)
+      : `<div class="xabar err">${escapeHtml(perfRes.reason || 'Xatolik yuz berdi.')}</div>`;
+
+    const logRes = await apiPost('/api/staff-activity-log', { limit: 50 });
+    if (logRes.networkError) {
+      renderNetworkErrorInline(logEl, logRes.reason, loadStaffControlData);
+      return;
+    }
+    logEl.innerHTML = logRes.ok
+      ? staffActivityLogHtml(logRes.entries)
+      : `<div class="xabar err">${escapeHtml(logRes.reason || 'Xatolik yuz berdi.')}</div>`;
+
+    const notifErrEl = document.getElementById('scNotifErrors');
+    if (notifErrEl) {
+      const notifRes = await apiPost('/api/notification-error-log');
+      notifErrEl.innerHTML = notifRes.ok
+        ? notificationErrorLogHtml(notifRes.entries)
+        : `<div class="xabar err">${escapeHtml((notifRes.reason) || 'Xatolik yuz berdi.')}</div>`;
+    }
+  }
+
+  let orderHistoryState = { dateFrom: '', dateTo: '', employeeId: '', paymentType: '', orderType: '', page: 1 };
+  let orderHistoryEmployeesCache = null;
+
+  function orderHistoryStatusLabel(status) {
+    return ORDER_STATUS_LABELS[status] || status;
+  }
+
+  function orderHistoryRowsHtml(orders) {
+    if (!orders.length) return `<div class="bosh">Bu filtrga mos buyurtma topilmadi.</div>`;
+    return orders.map(o => {
+      const d = new Date(o.createdAt);
+      const sana = d.toLocaleString('uz-UZ', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+      const itemsText = (o.items || []).map(it => `${escapeHtml(it.name)} x${it.qty}`).join(', ');
+      return `
+        <div class="owner-item">
+          <div>
+            <div class="owner-id">${sana}</div>
+            <div class="owner-username">${escapeHtml(ORDER_TYPE_LABELS[o.orderType] || o.orderType)} · ${escapeHtml(PAYMENT_TYPE_LABELS[o.paymentType] || o.paymentType)} · ${escapeHtml(orderHistoryStatusLabel(o.status))}</div>
+            <div class="owner-expiry">${itemsText}</div>
+            <div class="owner-expiry">Xodim: ${escapeHtml(o.createdByName || '—')}</div>
+          </div>
+          <div class="rating-badge">${cfFormatSum(o.total)}</div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  function orderHistoryEmployeeOptionsHtml(employees) {
+    const opts = ['<option value="">Barcha xodimlar</option>']
+      .concat((employees || []).map(e => `<option value="${escapeHtml(e.id)}">${escapeHtml(e.name)}</option>`));
+    return opts.join('');
+  }
+
+  function renderOrderHistoryScreen(profile, onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Buyurtmalar tarixi</div>
+        <button class="btn ikkinchi" id="ohBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="kartochka">
+          <h2>Filtr</h2>
+          <div class="profile-row"><b>Sana (dan)</b></div>
+          <input type="date" id="ohDateFrom" value="${escapeHtml(orderHistoryState.dateFrom)}">
+          <div class="profile-row"><b>Sana (gacha)</b></div>
+          <input type="date" id="ohDateTo" value="${escapeHtml(orderHistoryState.dateTo)}">
+          <div class="profile-row"><b>Xodim</b></div>
+          <select id="ohEmployee"><option value="">Yuklanmoqda...</option></select>
+          <div class="profile-row"><b>To'lov turi</b></div>
+          <select id="ohPaymentType">
+            <option value="" ${!orderHistoryState.paymentType ? 'selected' : ''}>Barcha to'lov turlari</option>
+            <option value="naqd" ${orderHistoryState.paymentType === 'naqd' ? 'selected' : ''}>Naqd</option>
+            <option value="karta" ${orderHistoryState.paymentType === 'karta' ? 'selected' : ''}>Karta</option>
+            <option value="click" ${orderHistoryState.paymentType === 'click' ? 'selected' : ''}>Click</option>
+            <option value="dostavka_orqali" ${orderHistoryState.paymentType === 'dostavka_orqali' ? 'selected' : ''}>Naqd</option>
+          </select>
+          <div class="profile-row"><b>Buyurtma turi</b></div>
+          <select id="ohOrderType">
+            <option value="" ${!orderHistoryState.orderType ? 'selected' : ''}>Barcha turlar</option>
+            <option value="olib_ketish" ${orderHistoryState.orderType === 'olib_ketish' ? 'selected' : ''}>Olib ketish</option>
+            <option value="dostavka" ${orderHistoryState.orderType === 'dostavka' ? 'selected' : ''}>Dostavka</option>
+            <option value="zal" ${orderHistoryState.orderType === 'zal' ? 'selected' : ''}>Zal</option>
+            <option value="tashqari" ${orderHistoryState.orderType === 'tashqari' ? 'selected' : ''}>Tashqari</option>
+          </select>
+          <button class="btn" id="ohApplyBtn" style="margin-top:10px;">Filtrlash</button>
+          <button class="btn ikkinchi" id="ohResetBtn" style="margin-top:8px;">Tozalash</button>
+          <div style="display:flex; gap:8px; margin-top:8px;">
+            <button class="btn ikkinchi" id="ohExportCsvBtn" style="flex:1;">${icon('file-plus', 'icon-xs')} Excel</button>
+            <button class="btn ikkinchi" id="ohExportPdfBtn" style="flex:1;">${icon('file-plus', 'icon-xs')} PDF</button>
+          </div>
+        </div>
+        <div class="kartochka">
+          <div id="ohSummary" class="bosh">Yuklanmoqda...</div>
+        </div>
+        <div class="kartochka">
+          <h2>Buyurtmalar</h2>
+          <div id="ohList" class="owner-list"><div class="bosh">Yuklanmoqda...</div></div>
+          <div id="ohPagination" style="display:flex; justify-content:space-between; align-items:center; margin-top:10px;"></div>
+        </div>
+      </div>
+    `);
+
+    document.getElementById('ohBackBtn').addEventListener('click', () => onBack && onBack());
+
+    document.getElementById('ohApplyBtn').addEventListener('click', () => {
+      orderHistoryState.dateFrom = document.getElementById('ohDateFrom').value;
+      orderHistoryState.dateTo = document.getElementById('ohDateTo').value;
+      orderHistoryState.employeeId = document.getElementById('ohEmployee').value;
+      orderHistoryState.paymentType = document.getElementById('ohPaymentType').value;
+      orderHistoryState.orderType = document.getElementById('ohOrderType').value;
+      orderHistoryState.page = 1;
+      loadOrderHistory();
+    });
+
+    document.getElementById('ohResetBtn').addEventListener('click', () => {
+      orderHistoryState = { dateFrom: '', dateTo: '', employeeId: '', paymentType: '', orderType: '', page: 1 };
+      renderOrderHistoryScreen(profile, onBack);
+    });
+
+    document.getElementById('ohExportCsvBtn').addEventListener('click', (e) => exportOrderHistory('csv', e.target));
+    document.getElementById('ohExportPdfBtn').addEventListener('click', (e) => exportOrderHistory('pdf', e.target));
+
+    fillOrderHistoryEmployeeSelect();
+    loadOrderHistory();
+  }
+
+  async function fillOrderHistoryEmployeeSelect() {
+    const selectEl = document.getElementById('ohEmployee');
+    if (!selectEl) return;
+    if (orderHistoryEmployeesCache) {
+      selectEl.innerHTML = orderHistoryEmployeeOptionsHtml(orderHistoryEmployeesCache);
+      selectEl.value = orderHistoryState.employeeId;
+    }
+  }
+
+  function downloadFile(filename, mime, content, isBase64) {
+    let blob;
+    if (isBase64) {
+      const binary = atob(content);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      blob = new Blob([bytes], { type: mime });
+    } else {
+      blob = new Blob([content], { type: mime });
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+  }
+
+  async function exportOrderHistory(format, btnEl) {
+    if (btnEl) btnEl.disabled = true;
+    const res = await apiPost('/api/order-history-export', {
+      format,
+      dateFrom: orderHistoryState.dateFrom || undefined,
+      dateTo: orderHistoryState.dateTo || undefined,
+      employeeId: orderHistoryState.employeeId || undefined,
+      paymentType: orderHistoryState.paymentType || undefined,
+      orderType: orderHistoryState.orderType || undefined
+    });
+    if (btnEl) btnEl.disabled = false;
+    if (res.networkError || !res.ok) {
+      const alertFn = (tg && tg.showAlert) ? (msg) => tg.showAlert(msg) : (msg) => alert(msg);
+      alertFn(res.reason || "Fayl tayyorlanmadi. Qayta urinib ko'ring.");
+      return;
+    }
+    if (res.format === 'csv') downloadFile(res.filename, res.mime, res.content, false);
+    else downloadFile(res.filename, res.mime, res.contentBase64, true);
+  }
+
+  async function loadOrderHistory() {
+    const listEl = document.getElementById('ohList');
+    const summaryEl = document.getElementById('ohSummary');
+    const pagEl = document.getElementById('ohPagination');
+    if (!listEl) return;
+    const res = await apiPost('/api/order-history', {
+      dateFrom: orderHistoryState.dateFrom || undefined,
+      dateTo: orderHistoryState.dateTo || undefined,
+      employeeId: orderHistoryState.employeeId || undefined,
+      paymentType: orderHistoryState.paymentType || undefined,
+      orderType: orderHistoryState.orderType || undefined,
+      page: orderHistoryState.page
+    });
+    if (res.networkError) { renderNetworkErrorInline(listEl, res.reason, () => loadOrderHistory()); return; }
+    if (!res.ok) {
+      listEl.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
+      if (summaryEl) summaryEl.innerHTML = '';
+      if (pagEl) pagEl.innerHTML = '';
+      return;
+    }
+
+    orderHistoryEmployeesCache = res.employees || [];
+    const selectEl = document.getElementById('ohEmployee');
+    if (selectEl) {
+      selectEl.innerHTML = orderHistoryEmployeeOptionsHtml(orderHistoryEmployeesCache);
+      selectEl.value = orderHistoryState.employeeId;
+    }
+
+    if (summaryEl) {
+      summaryEl.innerHTML = `Topildi: <b>${res.totalCount}</b> ta buyurtma · Jami summa: <b>${cfFormatSum(res.totalSum)}</b>`;
+    }
+
+    listEl.innerHTML = orderHistoryRowsHtml(res.orders);
+
+    if (pagEl) {
+      if (res.totalPages > 1) {
+        pagEl.innerHTML = `
+          <button class="btn ikkinchi" id="ohPrevBtn" ${res.page <= 1 ? 'disabled' : ''} style="flex:1; margin-right:6px;">← Oldingi</button>
+          <span class="bosh" style="white-space:nowrap; padding:0 8px;">${res.page} / ${res.totalPages}</span>
+          <button class="btn ikkinchi" id="ohNextBtn" ${res.page >= res.totalPages ? 'disabled' : ''} style="flex:1; margin-left:6px;">Keyingi →</button>
+        `;
+        const prevBtn = document.getElementById('ohPrevBtn');
+        const nextBtn = document.getElementById('ohNextBtn');
+        if (prevBtn) prevBtn.addEventListener('click', () => { orderHistoryState.page = Math.max(1, res.page - 1); loadOrderHistory(); });
+        if (nextBtn) nextBtn.addEventListener('click', () => { orderHistoryState.page = Math.min(res.totalPages, res.page + 1); loadOrderHistory(); });
+      } else {
+        pagEl.innerHTML = '';
+      }
+    }
+  }
+
+  function zReportCardHtml(z) {
+    const netClass = z.net >= 0 ? 'positive' : 'negative';
+    return `
+      <div class="kartochka">
+        <h2>${escapeHtml(z.date)}</h2>
+        <div class="cf-stats">
+          <div class="cf-stat income">
+            <div class="cf-label">Savdo</div>
+            <div class="cf-val">${cfFormatSum(z.income)}</div>
+          </div>
+          <div class="cf-stat expense">
+            <div class="cf-label">Xarajat</div>
+            <div class="cf-val">${cfFormatSum(z.expense)}</div>
+          </div>
+          <div class="cf-stat net ${netClass}" style="grid-column: 1 / -1;">
+            <div class="cf-label">Sof foyda</div>
+            <div class="cf-val">${cfFormatSum(z.net)}</div>
+          </div>
+        </div>
+        <div class="profile-row" style="margin-top:8px;"><b>Kassa:</b> ${cfFormatSum(z.kassaIncome)}</div>
+        ${cfKassaBreakdownHtml(z.kassaBreakdown)}
+        <div class="profile-row"><b>Dostavka:</b> ${cfFormatSum(z.dostavkaIncome)}</div>
+        <div class="bosh" style="margin-top:8px;">Buyurtmalar soni: ${z.orderCount}</div>
+      </div>
+    `;
+  }
+
+  function zReportListHtml(reports) {
+    if (!reports.length) return `<div class="bosh">Hali Z-hisobot yopilmagan.</div>`;
+    return reports.map(z => zReportCardHtml(z)).join('');
+  }
+
+  let supportStaffPollTimer = null;
+
+  function supportStaffMsgTime(iso) {
+    return new Date(iso).toLocaleTimeString('uz-UZ', { hour: '2-digit', minute: '2-digit' });
+  }
+
+  function renderSupportInboxScreen(profile, onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Yordam so'rovlari</div>
+        <button class="btn ikkinchi" id="supBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div id="supInboxList"><div class="bosh">Yuklanmoqda...</div></div>
+      </div>
+    `);
+    document.getElementById('supBackBtn').addEventListener('click', () => {
+      if (supportStaffPollTimer) { clearInterval(supportStaffPollTimer); supportStaffPollTimer = null; }
+      onBack && onBack();
+    });
+    loadSupportInbox(profile, onBack);
+    supportStaffPollTimer = setInterval(() => loadSupportInbox(profile, onBack, true), 5000);
+  }
+
+  async function loadSupportInbox(profile, onBack, isBackgroundRefresh) {
+    const listEl = document.getElementById('supInboxList');
+    if (!listEl) { if (supportStaffPollTimer) { clearInterval(supportStaffPollTimer); supportStaffPollTimer = null; } return; }
+    const res = await apiPost('/api/support-inbox');
+    if (res.networkError) { if (!isBackgroundRefresh) renderNetworkErrorInline(listEl, res.reason, () => loadSupportInbox(profile, onBack)); return; }
+    if (!res.ok) {
+      if (!isBackgroundRefresh) { handleFeatureBlocked(res); renderFeatureBlockedInline(listEl, res.reason); }
+      return;
+    }
+    if (!res.threads.length) {
+      listEl.innerHTML = `<div class="bosh">Hozircha yordam so'rovlari yo'q.</div>`;
+      return;
+    }
+    listEl.innerHTML = res.threads.map(t => `
+      <div class="kartochka" data-thread-customer="${escapeHtml(t.customerId)}" style="cursor:pointer; display:flex; align-items:center; gap:10px;">
+        <div style="flex:1; min-width:0;">
+          <div style="font-weight:700; display:flex; align-items:center; gap:6px;">
+            ${escapeHtml(t.customerName)}
+            ${t.unreadCount > 0 ? `<span class="badge danger">${t.unreadCount}</span>` : ''}
+          </div>
+          <div class="owner-username" style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${t.lastFrom === 'staff' ? "Siz: " : ''}${escapeHtml(t.lastText)}</div>
+        </div>
+        <div style="font-size:var(--fs-xs); color:var(--text-secondary); flex-shrink:0;">${supportStaffMsgTime(t.lastAt)}</div>
+      </div>
+    `).join('');
+    listEl.querySelectorAll('[data-thread-customer]').forEach(el => {
+      el.addEventListener('click', () => {
+        if (supportStaffPollTimer) { clearInterval(supportStaffPollTimer); supportStaffPollTimer = null; }
+        renderSupportThreadScreen(profile, el.getAttribute('data-thread-customer'), () => renderSupportInboxScreen(profile, onBack));
+      });
+    });
+  }
+
+  function renderSupportThreadScreen(profile, customerId, onBack) {
+    ekran(`
+      <div class="panel" style="display:flex; flex-direction:column; height:calc(100vh - 32px);">
+        <div class="salom" style="font-size:20px;">Suhbat</div>
+        <button class="btn ikkinchi" id="supThreadBackBtn" style="margin-bottom:12px;">← Ro'yxatga</button>
+        <div id="supThreadMsgs" style="flex:1; overflow-y:auto; margin-bottom:10px;">
+          <div class="bosh">Yuklanmoqda...</div>
+        </div>
+        <div style="display:flex; gap:8px;">
+          <input type="text" id="supThreadInput" placeholder="Javob yozing..." style="margin-bottom:0; flex:1;">
+          <button type="button" class="btn" id="supThreadSendBtn" style="width:auto; padding:0 18px;">${icon('send', 'icon-sm')}</button>
+        </div>
+      </div>
+    `);
+    document.getElementById('supThreadBackBtn').addEventListener('click', () => {
+      if (supportStaffPollTimer) { clearInterval(supportStaffPollTimer); supportStaffPollTimer = null; }
+      onBack && onBack();
+    });
+
+    const msgsEl = document.getElementById('supThreadMsgs');
+    const scrollToBottom = () => { msgsEl.scrollTop = msgsEl.scrollHeight; };
+    const loadThread = async (isFirstLoad) => {
+      const res = await apiPost('/api/support-thread-staff', { customerId });
+      if (!document.getElementById('supThreadMsgs')) { if (supportStaffPollTimer) { clearInterval(supportStaffPollTimer); supportStaffPollTimer = null; } return; }
+      if (!res.ok) { msgsEl.innerHTML = `<div class="bosh">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`; return; }
+      msgsEl.innerHTML = customerSupportMessagesHtml(res.messages || []);
+      if (isFirstLoad) scrollToBottom();
+    };
+    loadThread(true);
+    supportStaffPollTimer = setInterval(() => loadThread(false), 4000);
+
+    const input = document.getElementById('supThreadInput');
+    const sendBtn = document.getElementById('supThreadSendBtn');
+    const send = async () => {
+      const text = input.value.trim();
+      if (!text) return;
+      sendBtn.disabled = true;
+      const res = await apiPost('/api/support-reply', { customerId, text });
+      sendBtn.disabled = false;
+      if (!res.ok) { alert(res.reason || 'Xabar yuborilmadi.'); return; }
+      input.value = '';
+      msgsEl.innerHTML = customerSupportMessagesHtml(res.messages || []);
+      scrollToBottom();
+    };
+    sendBtn.addEventListener('click', send);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
+  }
+
+  let adminSupportPollTimer = null;
+
+  function adminSupportMessagesHtml(messages) {
+    if (!messages.length) {
+      return `<div class="bosh" style="padding:24px 8px;">Hali xabar yo'q.</div>`;
+    }
+    return messages.map(m => `
+      <div class="support-msg ${m.from === 'admin' ? 'mine' : 'staff'}">
+        <div class="support-msg-bubble">${escapeHtml(m.text)}</div>
+        <div class="support-msg-time">${customerSupportMsgTime(m.at)}</div>
+      </div>
+    `).join('');
+  }
+
+  function renderAdminSupportInboxScreen(onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Chatlar</div>
+        <button class="btn ikkinchi" id="adminSupBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div id="adminSupInboxList"><div class="bosh">Yuklanmoqda...</div></div>
+      </div>
+    `);
+    document.getElementById('adminSupBackBtn').addEventListener('click', () => {
+      if (adminSupportPollTimer) { clearInterval(adminSupportPollTimer); adminSupportPollTimer = null; }
+      onBack && onBack();
+    });
+    loadAdminSupportInbox(onBack);
+    adminSupportPollTimer = setInterval(() => loadAdminSupportInbox(onBack, true), 5000);
+  }
+
+  async function loadAdminSupportInbox(onBack, isBackgroundRefresh) {
+    const listEl = document.getElementById('adminSupInboxList');
+    if (!listEl) { if (adminSupportPollTimer) { clearInterval(adminSupportPollTimer); adminSupportPollTimer = null; } return; }
+    const res = await apiPost('/api/admin-support-inbox');
+    if (res.networkError) { if (!isBackgroundRefresh) renderNetworkErrorInline(listEl, res.reason, () => loadAdminSupportInbox(onBack)); return; }
+    if (!res.ok) {
+      if (!isBackgroundRefresh) listEl.innerHTML = `<div class="bosh">${escapeHtml(res.reason || 'Yuklanmadi.')}</div>`;
+      return;
+    }
+    if (!res.threads.length) {
+      listEl.innerHTML = `<div class="bosh">Hozircha egalardan xabar yo'q.</div>`;
+      return;
+    }
+    listEl.innerHTML = res.threads.map(t => `
+      <div class="kartochka" data-thread-owner="${escapeHtml(t.ownerId)}" style="cursor:pointer; display:flex; align-items:center; gap:10px;">
+        <div style="flex:1; min-width:0;">
+          <div style="font-weight:700; display:flex; align-items:center; gap:6px;">
+            ${escapeHtml(t.ownerName)}
+            ${t.unreadCount > 0 ? `<span class="badge danger">${t.unreadCount}</span>` : ''}
+          </div>
+          <div class="owner-username" style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${t.lastFrom === 'admin' ? "Siz: " : ''}${escapeHtml(t.lastText)}</div>
+        </div>
+        <div style="font-size:var(--fs-xs); color:var(--text-secondary); flex-shrink:0;">${supportStaffMsgTime(t.lastAt)}</div>
+      </div>
+    `).join('');
+    listEl.querySelectorAll('[data-thread-owner]').forEach(el => {
+      el.addEventListener('click', () => {
+        if (adminSupportPollTimer) { clearInterval(adminSupportPollTimer); adminSupportPollTimer = null; }
+        renderAdminSupportThreadScreen(el.getAttribute('data-thread-owner'), () => renderAdminSupportInboxScreen(onBack));
+      });
+    });
+  }
+
+  function renderAdminSupportThreadScreen(ownerId, onBack) {
+    ekran(`
+      <div class="panel" style="display:flex; flex-direction:column; height:calc(100vh - 32px);">
+        <div class="salom" style="font-size:20px;">Suhbat</div>
+        <button class="btn ikkinchi" id="adminSupThreadBackBtn" style="margin-bottom:12px;">← Ro'yxatga</button>
+        <div id="adminSupThreadMsgs" style="flex:1; overflow-y:auto; margin-bottom:10px;">
+          <div class="bosh">Yuklanmoqda...</div>
+        </div>
+        <div style="display:flex; gap:8px;">
+          <input type="text" id="adminSupThreadInput" placeholder="Javob yozing..." style="margin-bottom:0; flex:1;">
+          <button type="button" class="btn" id="adminSupThreadSendBtn" style="width:auto; padding:0 18px;">${icon('send', 'icon-sm')}</button>
+        </div>
+      </div>
+    `);
+    document.getElementById('adminSupThreadBackBtn').addEventListener('click', () => {
+      if (adminSupportPollTimer) { clearInterval(adminSupportPollTimer); adminSupportPollTimer = null; }
+      onBack && onBack();
+    });
+
+    const msgsEl = document.getElementById('adminSupThreadMsgs');
+    const scrollToBottom = () => { msgsEl.scrollTop = msgsEl.scrollHeight; };
+    const loadThread = async (isFirstLoad) => {
+      const res = await apiPost('/api/admin-support-thread', { ownerId });
+      if (!document.getElementById('adminSupThreadMsgs')) { if (adminSupportPollTimer) { clearInterval(adminSupportPollTimer); adminSupportPollTimer = null; } return; }
+      if (!res.ok) { msgsEl.innerHTML = `<div class="bosh">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`; return; }
+      msgsEl.innerHTML = adminSupportMessagesHtml(res.messages || []);
+      if (isFirstLoad) scrollToBottom();
+    };
+    loadThread(true);
+    adminSupportPollTimer = setInterval(() => loadThread(false), 4000);
+
+    const input = document.getElementById('adminSupThreadInput');
+    const sendBtn = document.getElementById('adminSupThreadSendBtn');
+    const send = async () => {
+      const text = input.value.trim();
+      if (!text) return;
+      sendBtn.disabled = true;
+      const res = await apiPost('/api/admin-support-reply', { ownerId, text });
+      sendBtn.disabled = false;
+      if (!res.ok) { alert(res.reason || 'Xabar yuborilmadi.'); return; }
+      input.value = '';
+      msgsEl.innerHTML = adminSupportMessagesHtml(res.messages || []);
+      scrollToBottom();
+    };
+    sendBtn.addEventListener('click', send);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
+  }
+
+  let zReportState = { branchId: undefined };
+
+  function renderZReportScreen(profile, onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Kunlik Z-hisobot</div>
+        <button class="btn ikkinchi" id="zrBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        ${branchState.branches.length ? `
+        <div class="kartochka">
+          <h2>Joylashuv</h2>
+          <select id="zrBranchSelect">${cashflowLocationOptionsHtml(zReportState.branchId)}</select>
+          <div class="bosh" style="margin-top:6px;">"Bugungi kunni yopish" tanlangan joylashuv uchun alohida yopiladi.</div>
+        </div>` : ''}
+        <div class="kartochka">
+          <div class="bosh">Kunni yopib, bugungi savdo/xarajat/sof foydani rasmiy hisobot sifatida saqlaydi.</div>
+          <button class="btn" id="zrCreateBtn" style="margin-top:10px;">Bugungi kunni yopish</button>
+          <div class="xabar" id="zrMsg"></div>
+        </div>
+        ${profile && profile.isSuperAdmin ? `
+        <div class="kartochka" style="margin-top:10px; border-color:#d33;">
+          <h2 style="color:#d33;">${icon('trash', 'icon-xs')} Super admin</h2>
+          <div class="bosh">Barcha savdo, xarajat va Z-hisobotlarni butunlay o'chirib, hisobotlarni yangidan boshlaydi. Bu amalni qaytarib bo'lmaydi.</div>
+          <button class="btn xavfli" id="zrDeleteAllBtn" style="margin-top:10px; background:#d33;">Hammasini o'chirish</button>
+          <div class="xabar" id="zrDeleteAllMsg"></div>
+        </div>` : ''}
+        <div class="kartochka" style="margin-top:10px;">
+          <h2>${icon('download', 'icon-xs')} Zaxira nusxa</h2>
+          <div class="bosh">Butun bazani faylga yuklab olish yoki avvalgi faylni o'qib tiklash.</div>
+          <button class="btn ikkinchi" id="zrBackupBtn" style="margin-top:10px;">${icon('download', 'icon-xs')} DB zaxira (yuklash / tiklash)</button>
+        </div>
+        <div class="kartochka chart-card">
+          <h2>${icon('trending-up', 'icon-xs')} Sof foyda dinamikasi</h2>
+          <div id="zrChart"><div class="bosh">Yuklanmoqda...</div></div>
+        </div>
+        <div id="zrList"><div class="bosh">Yuklanmoqda...</div></div>
+      </div>
+    `);
+
+    document.getElementById('zrBackBtn').addEventListener('click', () => onBack && onBack());
+
+    const zrBranchSelectEl = document.getElementById('zrBranchSelect');
+    if (zrBranchSelectEl) {
+      zrBranchSelectEl.addEventListener('change', (e) => {
+        const v = e.target.value;
+        zReportState.branchId = v === '__all__' ? undefined : (v || null);
+        loadZReportList();
+      });
+    }
+
+    document.getElementById('zrCreateBtn').addEventListener('click', async () => {
+      const msgEl = document.getElementById('zrMsg');
+      setMsg(msgEl, 'Yopilmoqda...');
+      const res = await apiPost('/api/z-report-create', { branchId: zReportState.branchId || null });
+      if (res.ok) {
+        setMsg(msgEl, res.wasUpdate ? 'Bugungi hisobot yangilandi.' : 'Bugungi kun yopildi.', 'ok');
+        loadZReportList();
+      } else {
+        handleFeatureBlocked(res);
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+      }
+    });
+
+    const deleteAllBtn = document.getElementById('zrDeleteAllBtn');
+    if (deleteAllBtn) {
+      deleteAllBtn.addEventListener('click', async () => {
+        if (!confirm("DIQQAT: barcha savdo, xarajat va Z-hisobotlar butunlay, qaytarib bo'lmaydigan tarzda o'chiriladi. Davom etasizmi?")) return;
+        if (!confirm("Tasdiqlang: rostdan ham HAMMASINI o'chirasizmi?")) return;
+        const msgEl = document.getElementById('zrDeleteAllMsg');
+        setMsg(msgEl, 'O\'chirilmoqda...');
+        const res = await apiPost('/api/super-admin-reset-reports');
+        if (res.ok) {
+          setMsg(msgEl, 'Barcha hisobotlar o\'chirildi. Hammasi yangidan boshlandi.', 'ok');
+          loadZReportList();
+        } else {
+          setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+        }
+      });
+    }
+
+    const backupBtn = document.getElementById('zrBackupBtn');
+    if (backupBtn) {
+      backupBtn.addEventListener('click', () => renderBackupScreen(() => renderZReportScreen(profile, onBack)));
+    }
+
+    loadZReportList();
+  }
+
+  async function loadZReportList() {
+    const listEl = document.getElementById('zrList');
+    const chartEl = document.getElementById('zrChart');
+    if (!listEl) return;
+    const res = await apiPost('/api/z-report-list', { branchId: zReportState.branchId });
+    if (res.networkError) {
+      renderNetworkErrorInline(listEl, res.reason, loadZReportList);
+      if (chartEl) chartEl.innerHTML = '';
+      return;
+    }
+    if (!res.ok) {
+      listEl.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`;
+      return;
+    }
+    listEl.innerHTML = zReportListHtml(res.reports);
+    if (chartEl) {
+      const points = res.reports.slice(0, 14).slice().reverse().map(z => ({ label: shortDateLabel(z.date), value: z.net }));
+      chartEl.innerHTML = trendBarChartSvg(points);
+    }
+  }
+
+  function showAuditReport(audit) {
+    const overlay = document.createElement('div');
+    overlay.className = 'overlay';
+    const rows = audit.entries.map(e => `
+      <div style="display:flex; justify-content:space-between; font-size:13px; margin-bottom:6px;">
+        <span>${escapeHtml(e.name)}</span>
+        <span style="font-weight:700; color:${e.diff === 0 ? '#2fa84f' : (e.diff > 0 ? '#2fa84f' : '#d33')};">
+          ${e.diff > 0 ? '+' : ''}${e.diff} ${escapeHtml(e.unit)}
+        </span>
+      </div>
+    `).join('');
+    overlay.innerHTML = `
+      <div class="modal" style="max-width:380px;">
+        <h3>Audit natijasi</h3>
+        <p>Farqlar (haqiqiy − tizimdagi):</p>
+        <div>${rows}</div>
+        <div class="btn-row">
+          <button class="btn" id="auditReportOkBtn">Yopish</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+    document.getElementById('auditReportOkBtn').onclick = () => {
+      overlay.remove();
+      loadStockAndRender();
+      loadMovementsAndRender();
+    };
+  }
+
+  let recipeEditorMenuId = null;
+  let recipeEditorStock = [];
+  let recipeEditorBranchId = null;
+
+  async function loadMenuDirectStockOptions() {
+    const select = document.getElementById('menuDirectStockInput');
+    if (!select) return;
+    select.innerHTML = '<option value="">Yuklanmoqda...</option>';
+    const res = await apiPost('/api/stock-list', { branchId: currentStockBranchId });
+    if (!select.isConnected) return;
+    const stock = (res.ok && Array.isArray(res.stock)) ? res.stock : [];
+    if (!stock.length) {
+      select.innerHTML = '<option value="">Avval skladga mahsulot qo\'shing</option>';
+      return;
+    }
+    select.innerHTML = '<option value="">— Tanlang —</option>' +
+      stock.map(s => `<option value="${escapeHtml(s.id)}">${escapeHtml(s.name)} (${escapeHtml(STOCK_UNIT_LABELS[s.unit] || s.unit)})</option>`).join('');
+  }
+
+  async function openRecipeEditor(menuItem) {
+    recipeEditorMenuId = menuItem.id;
+    recipeEditorBranchId = currentStockBranchId;
+    const res = await apiPost('/api/stock-list', { branchId: recipeEditorBranchId });
+    recipeEditorStock = res.ok ? res.stock : [];
+    renderRecipeEditorOverlay(menuItem);
+  }
+
+  function renderRecipeEditorOverlay(menuItem) {
+    const existingMap = {};
+    (menuItem.recipe || []).forEach(r => { existingMap[r.stockId] = r.qty; });
+    const rowsHtml = recipeEditorStock.length
+      ? recipeEditorStock.map(s => `
+          <div class="recipe-row">
+            <div class="recipe-name">${escapeHtml(s.name)} <span class="recipe-unit">(${escapeHtml(s.unit)})</span></div>
+            <input type="text" inputmode="decimal" data-recipe-qty="${escapeHtml(s.id)}" placeholder="0" value="${existingMap[s.id] != null ? existingMap[s.id] : ''}">
+            ${unitConversionPair(s.unit) ? `<button type="button" class="row-action-btn brand" data-recipe-convert="${escapeHtml(s.id)}" data-recipe-unit="${escapeHtml(s.unit)}" title="kg/gramm, litr/ml hisoblagich">${icon('repeat', 'icon-xs')}</button>` : ''}
+          </div>
+        `).join('')
+      : `<div class="bosh">Avval skladga mahsulot qo'shing.</div>`;
+
+    const overlay = openOverlay(`
+      <div class="modal" style="max-width:380px; max-height:80vh; overflow:auto;">
+        <h3>Retsept: ${escapeHtml(menuItem.name)}</h3>
+        <p>Har bir taom uchun sarflanadigan miqdorni kiriting (bo'sh = ishlatilmaydi).</p>
+        <div>${rowsHtml}</div>
+        <div class="xabar" id="recipeMsg"></div>
+        <div class="btn-row">
+          <button class="btn ikkinchi" id="recipeCancelBtn">Bekor qilish</button>
+          <button class="btn" id="recipeSaveBtn">Saqlash</button>
+        </div>
+      </div>
+    `);
+
+    overlay.querySelectorAll('[data-recipe-convert]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.getAttribute('data-recipe-convert');
+        const unit = btn.getAttribute('data-recipe-unit');
+        openUnitConverter(unit, (value) => {
+          const inp = overlay.querySelector(`[data-recipe-qty="${id}"]`);
+          if (inp) inp.value = String(value);
+        });
+      });
+    });
+
+    document.getElementById('recipeCancelBtn').onclick = () => overlay.remove();
+    document.getElementById('recipeSaveBtn').onclick = async () => {
+      const recipe = [];
+      overlay.querySelectorAll('[data-recipe-qty]').forEach(inp => {
+        const val = inp.value.trim();
+        if (!val) return;
+        const num = Number(val);
+        if (Number.isFinite(num) && num > 0) {
+          recipe.push({ stockId: inp.getAttribute('data-recipe-qty'), qty: num });
+        }
+      });
+      const msgEl = document.getElementById('recipeMsg');
+      setMsg(msgEl, 'Saqlanmoqda...');
+      const res = await apiPost('/api/menu-set-recipe', { menuId: recipeEditorMenuId, recipe, branchId: recipeEditorBranchId });
+      if (res.ok) {
+        overlay.remove();
+        loadMenuAndRender();
+      } else {
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+      }
+    };
+  }
+
+  async function renderMenuItemEditOverlay(menuItem) {
+    let pendingImage = menuItem.imageUrl || '';
+    const isDirectInitially = !!menuItem.directStockId;
+    const overlayBranchId = currentStockBranchId;
+
+    const stockRes = await apiPost('/api/stock-list', { branchId: overlayBranchId });
+    const stockList = (stockRes.ok && Array.isArray(stockRes.stock)) ? stockRes.stock : [];
+    const stockOptionsHtml = stockList.length
+      ? stockList.map(s => `<option value="${escapeHtml(s.id)}" ${s.id === menuItem.directStockId ? 'selected' : ''}>${escapeHtml(s.name)} (${escapeHtml(STOCK_UNIT_LABELS[s.unit] || s.unit)})</option>`).join('')
+      : '';
+
+    const catRes = await apiPost('/api/category-list', { branchId: overlayBranchId });
+    const categoriesList = (catRes.ok && Array.isArray(catRes.categories)) ? catRes.categories : [];
+    let categoryOptionsHtml = '<option value="">— Bo\'lim tanlanmagan —</option>';
+    if (menuItem.category && !categoriesList.some(c => c.name === menuItem.category)) {
+      categoryOptionsHtml += `<option value="${escapeHtml(menuItem.category)}" selected>${escapeHtml(menuItem.category)} (ro'yxatda yo'q)</option>`;
+    }
+    categoryOptionsHtml += categoriesList.map(c => `<option value="${escapeHtml(c.name)}" ${c.name === (menuItem.category || '') ? 'selected' : ''}>${escapeHtml(c.name)}</option>`).join('');
+    const overlay = openOverlay(`
+      <div class="modal" style="max-width:380px; max-height:85vh; overflow:auto;">
+        <h3>Taomni tahrirlash</h3>
+        <input type="text" id="editMenuNameInput" placeholder="Taom nomi" value="${escapeHtml(menuItem.name || '')}">
+        <input type="text" id="editMenuPriceInput" placeholder="Narxi (so'm) — bitta narx bo'lsa" inputmode="numeric" value="${escapeHtml(String(menuItem.price || ''))}">
+        <label class="field-label" style="margin-top:10px;">Bir nechta narx (masalan: Kichik / Katta) — ixtiyoriy</label>
+        <div class="staff-hint">Bo'lsa, yuqoridagi yakka narx o'rniga shu variantlar ishlatiladi va mijoz tanlab buyurtma beradi.</div>
+        <div id="editMenuPriceOptionsWrap">${(Array.isArray(menuItem.prices) ? menuItem.prices : []).map(p => priceOptionRowHtml(p.label, p.price)).join('')}</div>
+        <button type="button" class="row-action-btn" id="addPriceOptionEditBtn" style="margin-top:6px;">+ Narx varianti qo'shish</button>
+        <label class="field-label">Bo'lim (ixtiyoriy)</label>
+        <select id="editMenuCategoryInput">${categoryOptionsHtml}</select>
+        <textarea id="editMenuDescriptionInput" placeholder="Tavsif (ixtiyoriy)">${escapeHtml(menuItem.description || '')}</textarea>
+        <div class="staff-hint" style="margin-top:8px;">Rasm (galereyadan yangisini tanlash ixtiyoriy):</div>
+        <img id="editMenuImagePreview" src="${escapeHtml(pendingImage)}" class="logo-preview" style="${pendingImage ? '' : 'display:none;'} width:120px; height:120px; display:block;">
+        <input type="file" id="editMenuImageFileInput" accept="image/*">
+
+        <label class="field-label" style="margin-top:10px;">Turi</label>
+        <select id="editMenuTypeInput">
+          <option value="recipe" ${isDirectInitially ? '' : 'selected'}>Tayyorlanadigan (retsept)</option>
+          <option value="direct" ${isDirectInitially ? 'selected' : ''}>To'g'ridan skladdan (masalan: shishada suv)</option>
+        </select>
+        <div id="editMenuDirectStockWrap" class="${isDirectInitially ? '' : 'hidden'}" style="margin-top:8px;">
+          <label class="field-label">Sklad mahsuloti</label>
+          <select id="editMenuDirectStockInput">${stockOptionsHtml || '<option value="">Avval skladga mahsulot qo\'shing</option>'}</select>
+        </div>
+
+        <div class="xabar" id="editMenuMsg"></div>
+        <div class="btn-row">
+          <button class="btn ikkinchi" id="editMenuCancelBtn">Bekor qilish</button>
+          <button class="btn" id="editMenuSaveBtn">Saqlash</button>
+        </div>
+      </div>
+    `);
+
+    document.getElementById('editMenuCancelBtn').onclick = () => overlay.remove();
+
+    attachPriceOptionsHandlers('editMenuPriceOptionsWrap', 'addPriceOptionEditBtn');
+
+    document.getElementById('editMenuTypeInput').addEventListener('change', (e) => {
+      document.getElementById('editMenuDirectStockWrap').classList.toggle('hidden', e.target.value !== 'direct');
+    });
+
+    document.getElementById('editMenuImageFileInput').addEventListener('change', async (e) => {
+      const file = e.target.files && e.target.files[0];
+      const msgEl = document.getElementById('editMenuMsg');
+      if (!file) return;
+      try {
+        const dataUrl = await readImageFileAsCompressedDataUrl(file);
+        pendingImage = dataUrl || '';
+        const preview = document.getElementById('editMenuImagePreview');
+        preview.src = pendingImage;
+        preview.style.display = pendingImage ? 'block' : 'none';
+      } catch (err) {
+        setMsg(msgEl, err.message || 'Rasmni yuklab bo\'lmadi.', 'err');
+        e.target.value = '';
+      }
+    });
+
+    document.getElementById('editMenuSaveBtn').onclick = async () => {
+      const name = document.getElementById('editMenuNameInput').value.trim();
+      const price = document.getElementById('editMenuPriceInput').value.trim();
+      const category = document.getElementById('editMenuCategoryInput').value.trim();
+      const description = document.getElementById('editMenuDescriptionInput').value.trim();
+      const menuType = document.getElementById('editMenuTypeInput').value;
+      const directStockId = menuType === 'direct' ? document.getElementById('editMenuDirectStockInput').value : '';
+      const msgEl = document.getElementById('editMenuMsg');
+      const priceOptions = collectPriceOptions('editMenuPriceOptionsWrap');
+      if (priceOptions === null) {
+        setMsg(msgEl, 'Narx variantlarini to\'g\'ri kiriting (nomi va narxi).', 'err');
+        return;
+      }
+      if (priceOptions.length === 1) {
+        setMsg(msgEl, 'Kamida 2 ta narx variantini kiriting yoki bittasini o\'chirib, yakka narxdan foydalaning.', 'err');
+        return;
+      }
+      if (!priceOptions.length && (!name || !price || !/^\d+$/.test(price) || parseInt(price, 10) <= 0)) {
+        setMsg(msgEl, 'Taom nomi va to\'g\'ri narx kiriting.', 'err');
+        return;
+      }
+      if (!name) {
+        setMsg(msgEl, 'Taom nomini kiriting.', 'err');
+        return;
+      }
+      setMsg(msgEl, 'Saqlanmoqda...');
+      const res = await apiPost('/api/menu-update', {
+        id: menuItem.id, name, price, prices: priceOptions, category, description, imageUrl: pendingImage, directStockId, branchId: overlayBranchId
+      });
+      if (res.ok) {
+        overlay.remove();
+        loadMenuAndRender();
+      } else {
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+      }
+    };
+  }
+
+  async function loadOwnProfileAndRender() {
+    const res = await apiPost('/api/my-profile');
+    if (res.networkError) { renderNetworkErrorScreen(res.reason, loadOwnProfileAndRender); return; }
+    if (res.ok && res.profile) {
+      applyBrandColor(res.profile.brandColor);
+      cashierState.tab = 'yaratish';
+      renderCashierScreen(res.profile.name, () => renderOwnerHomeScreen(res.profile));
+    }
+    else { resetBrandColor(); renderProfileForm(res.ok ? res.profile : null); }
+  }
+
+  async function loadOwnersAndRender() {
+    resetBrandColor();
+    const res = await apiPost('/api/owners');
+    if (res.networkError) { renderNetworkErrorScreen(res.reason, loadOwnersAndRender); return; }
+    renderAdminPanel(res.ok ? res.owners : [], res.ok ? res.revenue : null);
+  }
+
+  let customerState = {
+    ownerId: null,
+    restaurant: null,
+    // 3-bosqich: mijoz tanlagan filial (null — markaziy/asosiy filial).
+    branchId: null,
+    branches: [],
+    menu: [],
+    categories: [],
+    promotions: [],
+    banners: [],
+    favorites: [],
+    addresses: [],
+    bonusPoints: 0,
+    bonusEnabled: false,
+    personRegistered: false,
+    cart: {},
+    orderType: 'olib_ketish',
+    paymentType: 'naqd',
+    location: null,
+    addressNote: '',
+    extraPhone: '',
+    comment: '',
+    tab: 'menyu',
+    category: 'hammasi',
+    promoId: '',
+    usePoints: false,
+    cardOnlyRestricted: false,
+    lastOrderRequestId: null,
+    searchQuery: '',
+    sortBy: 'default',
+    notifUnseenCount: 0,
+    aiRecommendations: null
+  };
+
+  function customerNotifSeenKey() {
+    return `kitchenOsCustNotifSeen_${customerState.ownerId}`;
+  }
+
+  // 3-bosqich: mijoz oldin tanlagan filialni eslab qolamiz (qurilma bo'yicha),
+  // shunda har safar qayta so'ralmaydi. '__central__' — markaziy/asosiy filial.
+  function customerBranchStorageKey() {
+    return `kitchenOsCustBranch_${customerState.ownerId}`;
+  }
+  function getStoredCustomerBranch() {
+    try { return localStorage.getItem(customerBranchStorageKey()); } catch (e) { return null; }
+  }
+  function setStoredCustomerBranch(branchId) {
+    try { localStorage.setItem(customerBranchStorageKey(), branchId || '__central__'); } catch (e) {}
+  }
+  function customerCurrentBranchLabel() {
+    if (!customerState.branchId) {
+      const r = customerState.restaurant || {};
+      return r.centralBranchName || 'Asosiy filial';
+    }
+    const b = (customerState.branches || []).find(x => String(x.id) === String(customerState.branchId));
+    return b ? b.name : 'Filial';
+  }
+  function getCustomerNotifSeenTime() {
+    try { return localStorage.getItem(customerNotifSeenKey()) || null; } catch (e) { return null; }
+  }
+  function setCustomerNotifSeenNow() {
+    try { localStorage.setItem(customerNotifSeenKey(), new Date().toISOString()); } catch (e) {  }
+  }
+  function updateCustomerNotifBellBadge() {
+    const btn = document.getElementById('custNotifBellBtn');
+    if (!btn) return;
+    const existing = btn.querySelector('.cust-notif-bell-badge');
+    if (existing) existing.remove();
+    if (customerState.notifUnseenCount > 0) {
+      const span = document.createElement('span');
+      span.className = 'cust-notif-bell-badge';
+      span.textContent = customerState.notifUnseenCount > 9 ? '9+' : String(customerState.notifUnseenCount);
+      btn.appendChild(span);
+    }
+  }
+  async function refreshCustomerNotifBadge() {
+    if (!customerState.ownerId) return;
+    const res = await apiPost('/api/customer-notifications', { ownerId: customerState.ownerId });
+    if (!res || !res.ok) return;
+    const seen = getCustomerNotifSeenTime();
+    customerState.notifUnseenCount = seen
+      ? res.notifications.filter(n => new Date(n.time) > new Date(seen)).length
+      : res.notifications.length;
+    updateCustomerNotifBellBadge();
+  }
+
+  function customerCartTotal() {
+    return Object.entries(customerState.cart).reduce((sum, [key, qty]) => sum + (qty || 0) * menuItemPriceForCartKey(customerState.menu, key), 0);
+  }
+
+  function customerCartQty() {
+    return Object.values(customerState.cart).reduce((sum, q) => sum + (q || 0), 0);
+  }
+
+  function customerTabRowHtml() {
+    return `
+      <div class="tab-row">
+        <div class="tab-opt ${customerState.tab === 'menyu' ? 'selected' : ''}" data-customer-tab="menyu">Menyu</div>
+        <div class="tab-opt ${customerState.tab === 'sevimli' ? 'selected' : ''}" data-customer-tab="sevimli">Sevimlilar</div>
+        <div class="tab-opt ${customerState.tab === 'tarix' ? 'selected' : ''}" data-customer-tab="tarix">Buyurtmalarim</div>
+      </div>
+    `;
+  }
+
+  function customerHeaderHtml() {
+    const r = customerState.restaurant || {};
+    return `
+      <div class="profile-view" style="margin-bottom:12px;">
+        ${r.logoUrl ? `<img class="logo-preview" src="${escapeHtml(r.logoUrl)}" onerror="this.style.display='none'">` : ''}
+        <div class="info">
+          <div class="salom" style="font-size:20px; margin-bottom:2px; display:flex; align-items:center; gap:8px; min-width:0;">
+            <span style="min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(r.name || 'Oshxona')}</span>
+            <button type="button" id="custSwitchRestBtn" title="Oshxonadan chiqish" aria-label="Oshxonadan chiqish" style="flex-shrink:0; display:flex; align-items:center; gap:4px; background:none; border:1px solid var(--border-color); border-radius:var(--radius-pill); padding:3px 10px; font-size:var(--fs-xs); font-weight:600; color:var(--text-secondary); cursor:pointer;">
+              ${icon('x', 'icon-xs')}<span>Chiqish</span>
+            </button>
+          </div>
+          ${r.address ? `<div class="profile-row" style="margin-top:0;">${escapeHtml(r.address)}</div>` : ''}
+          ${(customerState.branches && customerState.branches.length > 0) ? `
+            <button type="button" id="custBranchSwitchBtn" title="Filialni almashtirish" aria-label="Filialni almashtirish" style="margin-top:6px; display:inline-flex; align-items:center; gap:4px; background:none; border:1px solid var(--border-color); border-radius:var(--radius-pill); padding:3px 10px; font-size:var(--fs-xs); font-weight:600; color:var(--text-secondary); cursor:pointer;">
+              ${icon('pin', 'icon-xs')}<span>${escapeHtml(customerCurrentBranchLabel())}</span>
+            </button>
+          ` : ''}
+          ${customerState.bonusEnabled ? `<div class="badge paid" style="margin-top:6px;">${icon('star', 'icon-xs')} Bonus: ${customerState.bonusPoints} ball</div>` : ''}
+        </div>
+        <button type="button" class="cust-notif-bell-btn" id="custAddrBookBtn" title="Manzillarim" aria-label="Manzillarim" style="margin-right:6px;">
+          ${icon('pin', 'icon-sm')}
+        </button>
+        <button type="button" class="cust-notif-bell-btn" id="custSupportBtn" title="Yordam" aria-label="Yordam" style="margin-right:6px;">
+          ${icon('message-circle', 'icon-sm')}
+        </button>
+        <button type="button" class="cust-notif-bell-btn" id="custNotifBellBtn" title="Bildirishnomalar" aria-label="Bildirishnomalar">
+          ${icon('bell', 'icon-sm')}
+          ${customerState.notifUnseenCount > 0 ? `<span class="cust-notif-bell-badge">${customerState.notifUnseenCount > 9 ? '9+' : customerState.notifUnseenCount}</span>` : ''}
+        </button>
+      </div>
+    `;
+  }
+
+  function customerVisibleMenu() {
+    let items = customerState.menu.slice();
+    const q = (customerState.searchQuery || '').trim().toLowerCase();
+    if (q) {
+      items = items.filter(m =>
+        (m.name || '').toLowerCase().includes(q) ||
+        (m.description || '').toLowerCase().includes(q)
+      );
+    }
+    if (customerState.sortBy === 'price_asc') items.sort((a, b) => a.price - b.price);
+    else if (customerState.sortBy === 'price_desc') items.sort((a, b) => b.price - a.price);
+    else if (customerState.sortBy === 'name_asc') items.sort((a, b) => (a.name || '').localeCompare(b.name || '', 'uz'));
+    return items;
+  }
+
+  function customerSearchSortBarHtml() {
+    return `
+      <div class="cust-search-row">
+        <div class="admin-search-wrap">
+          ${icon('search', 'icon-xs icon-muted admin-search-icon')}
+          <input type="text" id="cMenuSearchInput" placeholder="Taom qidirish..." value="${escapeHtml(customerState.searchQuery)}" autocomplete="off">
+        </div>
+        <select id="cMenuSortSelect" class="cust-sort-select">
+          <option value="default" ${customerState.sortBy === 'default' ? 'selected' : ''}>Tartib</option>
+          <option value="price_asc" ${customerState.sortBy === 'price_asc' ? 'selected' : ''}>Arzon → Qimmat</option>
+          <option value="price_desc" ${customerState.sortBy === 'price_desc' ? 'selected' : ''}>Qimmat → Arzon</option>
+          <option value="name_asc" ${customerState.sortBy === 'name_asc' ? 'selected' : ''}>Nomi (A-Ya)</option>
+        </select>
+      </div>
+    `;
+  }
+
+  function customerCategoriesHtml() {
+    if ((customerState.searchQuery || '').trim()) return '';
+    return sectionedMenuTabsHtml(customerVisibleMenu(), {
+      tabRowId: 'customerCatRow', sectionIdPrefix: 'menu-section-cust', listElId: 'customerMenuList', categories: customerState.categories
+    });
+  }
+
+  function customerItemCardHtml(m) {
+    const hasVariants = Array.isArray(m.prices) && m.prices.length > 0;
+    const qty = customerState.cart[m.id] || 0;
+    const isFav = customerState.favorites.includes(m.id);
+
+    if (m.outOfStock) {
+      return `
+        <div class="catalog-item" style="opacity:0.55;">
+          <div class="catalog-img-wrap">
+            ${m.imageUrl ? `<img class="catalog-img" src="${escapeHtml(m.imageUrl)}" onerror="this.style.display='none'">` : `<div class="catalog-img-empty"></div>`}
+          </div>
+          <div class="catalog-body">
+            <div class="m-name">${escapeHtml(m.name)} <span class="badge warning">Tugagan</span></div>
+            ${m.description ? `<div class="catalog-desc">${escapeHtml(m.description)}</div>` : ''}
+            <div class="catalog-bottom-row">
+              <div class="m-price">${menuPriceFromLabel(m)}</div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    if (hasVariants) {
+      return `
+        <div class="catalog-item">
+          <div class="catalog-img-wrap">
+            ${m.imageUrl ? `<img class="catalog-img" src="${escapeHtml(m.imageUrl)}" onerror="this.style.display='none'">` : `<div class="catalog-img-empty"></div>`}
+            <button class="fav-btn" data-fav-id="${escapeHtml(m.id)}">${icon('heart', isFav ? 'icon-danger icon-filled' : 'icon-muted')}</button>
+          </div>
+          <div class="catalog-body">
+            <div class="m-name">${escapeHtml(m.name)}</div>
+            ${m.description ? `<div class="catalog-desc">${escapeHtml(m.description)}</div>` : ''}
+            <div class="price-variant-list">
+              ${m.prices.map((p, idx) => {
+                const key = cartKeyFor(m.id, p.id);
+                const vQty = customerState.cart[key] || 0;
+                return `
+                  <div class="price-variant-row">
+                    <span class="price-variant-label">${escapeHtml(variantLabel(p, idx))} — ${fmtNum(p.price)} so'm</span>
+                    ${vQty > 0 ? `
+                      <div class="qty-controls">
+                        <button data-cqty-minus="${escapeHtml(key)}">-</button>
+                        <span class="qty-val">${vQty}</span>
+                        <button data-cqty-plus="${escapeHtml(key)}">+</button>
+                      </div>
+                    ` : `<button type="button" class="qty-add-btn" data-cqty-plus="${escapeHtml(key)}">+</button>`}
+                  </div>
+                `;
+              }).join('')}
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
+    return `
+      <div class="catalog-item">
+        <div class="catalog-img-wrap">
+          ${m.imageUrl ? `<img class="catalog-img" src="${escapeHtml(m.imageUrl)}" onerror="this.style.display='none'">` : `<div class="catalog-img-empty"></div>`}
+          <button class="fav-btn" data-fav-id="${escapeHtml(m.id)}">${icon('heart', isFav ? 'icon-danger icon-filled' : 'icon-muted')}</button>
+        </div>
+        <div class="catalog-body">
+          <div class="m-name">${escapeHtml(m.name)}</div>
+          ${m.description ? `<div class="catalog-desc">${escapeHtml(m.description)}</div>` : ''}
+          <div class="catalog-bottom-row">
+            <div class="m-price">${fmtNum(m.price)} so'm</div>
+            ${qty > 0 ? `
+              <div class="qty-controls">
+                <button data-cqty-minus="${escapeHtml(m.id)}">-</button>
+                <span class="qty-val">${qty}</span>
+                <button data-cqty-plus="${escapeHtml(m.id)}">+</button>
+              </div>
+            ` : `
+              <button type="button" class="qty-add-btn" data-cqty-plus="${escapeHtml(m.id)}">+</button>
+            `}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function customerMenuListHtml() {
+    const items = customerVisibleMenu();
+    const q = (customerState.searchQuery || '').trim();
+    if (q) {
+      return `<div class="catalog-grid">${
+        items.length ? items.map(customerItemCardHtml).join('')
+          : `<div class="bosh">"${escapeHtml(q)}" bo'yicha hech narsa topilmadi.</div>`
+      }</div>`;
+    }
+    return renderSectionedMenu(items, {
+      sectionIdPrefix: 'menu-section-cust',
+      itemsWrapperClass: 'catalog-grid',
+      renderItem: customerItemCardHtml,
+      emptyText: "Menyu hali bo'sh.",
+      categories: customerState.categories
+    });
+  }
+
+  function customerAdBannerHtml() {
+    if (!customerState.banners || !customerState.banners.length) return '';
+    return `
+      <div class="ad-banner-row">
+        ${customerState.banners.map(b => `
+          <div class="ad-banner-card" data-ad-banner-id="${escapeHtml(b.id)}" ${b.link ? 'style="cursor:pointer;"' : ''}>
+            <img src="${escapeHtml(b.imageUrl)}" alt="${escapeHtml(b.title || '')}" onerror="this.closest('.ad-banner-card').style.display='none'">
+            ${b.title ? `<div class="ad-banner-title">${escapeHtml(b.title)}</div>` : ''}
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  function attachCustomerAdBannerHandlers() {
+    document.querySelectorAll('[data-ad-banner-id]').forEach(el => {
+      const banner = (customerState.banners || []).find(b => b.id === el.getAttribute('data-ad-banner-id'));
+      if (banner && banner.link) {
+        el.addEventListener('click', () => openExternalLink(banner.link));
+      }
+    });
+  }
+
+  function customerPromoBannerHtml() {
+    if (!customerState.promotions.length) return '';
+    return customerState.promotions.map(p => `
+      <div class="promo-banner ${customerState.promoId === p.id ? 'selected' : ''}" data-promo-id="${escapeHtml(p.id)}">
+        <div style="font-weight:700;">🎁 ${escapeHtml(p.title)} — ${p.discountPercent}% chegirma</div>
+        ${p.description ? `<div style="font-size:12px; opacity:0.8; margin-top:2px;">${escapeHtml(p.description)}</div>` : ''}
+        ${p.minTotal ? `<div style="font-size:12px; opacity:0.7; margin-top:2px;">Minimal buyurtma: ${escapeHtml(String(p.minTotal))} so'm</div>` : ''}
+      </div>
+    `).join('');
+  }
+
+  function attachCustomerCatalogHandlers() {
+    const listEl = document.getElementById('customerMenuList');
+    if (!listEl) return;
+    listEl.querySelectorAll('[data-cqty-plus]').forEach(btn => btn.onclick = () => {
+      const id = btn.getAttribute('data-cqty-plus');
+      customerState.cart[id] = (customerState.cart[id] || 0) + 1;
+      listEl.innerHTML = customerState.tab === 'sevimli'
+        ? customerState.menu.filter(m => customerState.favorites.includes(m.id)).map(customerItemCardHtml).join('')
+        : customerMenuListHtml();
+      attachCustomerCatalogHandlers();
+      if (customerState.tab !== 'sevimli') attachSectionedMenuScrollSpy('customerCatRow', 'customerMenuList');
+      updateCustomerCartFab();
+    });
+    listEl.querySelectorAll('[data-cqty-minus]').forEach(btn => btn.onclick = () => {
+      const id = btn.getAttribute('data-cqty-minus');
+      customerState.cart[id] = Math.max(0, (customerState.cart[id] || 0) - 1);
+      listEl.innerHTML = customerState.tab === 'sevimli'
+        ? customerState.menu.filter(m => customerState.favorites.includes(m.id)).map(customerItemCardHtml).join('')
+        : customerMenuListHtml();
+      attachCustomerCatalogHandlers();
+      if (customerState.tab !== 'sevimli') attachSectionedMenuScrollSpy('customerCatRow', 'customerMenuList');
+      updateCustomerCartFab();
+    });
+    listEl.querySelectorAll('[data-fav-id]').forEach(btn => btn.onclick = async () => {
+      const id = btn.getAttribute('data-fav-id');
+      btn.disabled = true;
+      const res = await apiPost('/api/customer-favorite-toggle', { ownerId: customerState.ownerId, itemId: id });
+      if (res.ok) customerState.favorites = res.favorites;
+      else if (handleFeatureBlocked(res)) { btn.disabled = false; return; }
+      if (customerState.tab === 'sevimli') renderCustomerFavoritesTab();
+      else {
+        listEl.innerHTML = customerMenuListHtml();
+        attachCustomerCatalogHandlers();
+        attachSectionedMenuScrollSpy('customerCatRow', 'customerMenuList');
+      }
+    });
+  }
+
+  function cartFabBarHtml() {
+    const qty = customerCartQty();
+    return `
+      <div class="cart-fab-bar ${qty ? '' : 'hidden'}" id="cCartFab">
+        <div class="cart-fab-info">
+          <span class="cart-fab-count" id="cCartFabCount">${qty} ta mahsulot</span>
+          <span class="cart-fab-total" id="cCartFabTotal">${fmtNum(customerCartTotal())} so'm</span>
+        </div>
+        <button type="button" class="btn" id="cOpenCheckoutBtn">Buyurtma berish</button>
+      </div>
+    `;
+  }
+
+  function attachCartFabHandler() {
+    const btn = document.getElementById('cOpenCheckoutBtn');
+    if (btn) btn.onclick = openCustomerCheckoutModal;
+  }
+
+  function updateCustomerCartFab() {
+    const qty = customerCartQty();
+    const bar = document.getElementById('cCartFab');
+    if (bar) bar.classList.toggle('hidden', !qty);
+    const panelEl = document.querySelector('.panel');
+    if (panelEl) panelEl.classList.toggle('has-cart-fab', !!qty);
+    const countEl = document.getElementById('cCartFabCount');
+    if (countEl) countEl.textContent = qty + ' ta mahsulot';
+    const totalEl = document.getElementById('cCartFabTotal');
+    if (totalEl) totalEl.textContent = fmtNum(customerCartTotal()) + " so'm";
+
+    const modalTotalEl = document.getElementById('cCartTotalVal');
+    if (modalTotalEl) modalTotalEl.textContent = fmtNum(customerCartTotal()) + " so'm";
+  }
+
+  function customerAiRecommendationsHtml() {
+    const reco = customerState.aiRecommendations;
+    if (!reco || (!reco.favorites.length && !reco.similar.length)) return '';
+    const block = (title, items) => !items.length ? '' : `
+      <div class="ai-reco-block">
+        <div class="ai-reco-title">🤖 ${escapeHtml(title)}</div>
+        <div class="ai-reco-row">${items.map(customerItemCardHtml).join('')}</div>
+      </div>
+    `;
+    return `
+      <div class="ai-reco-wrap" id="aiRecoSection">
+        ${block('Sizga tavsiya — doim yoqtiradiganlaringiz', reco.favorites)}
+        ${block('Bular ham sizga yoqishi mumkin', reco.similar)}
+      </div>
+    `;
+  }
+
+  function attachAiRecoHandlers() {
+    const wrap = document.getElementById('aiRecoSection');
+    if (!wrap) return;
+    wrap.querySelectorAll('[data-cqty-plus]').forEach(btn => btn.onclick = () => {
+      const id = btn.getAttribute('data-cqty-plus');
+      customerState.cart[id] = (customerState.cart[id] || 0) + 1;
+      renderCustomerMenuTab();
+    });
+    wrap.querySelectorAll('[data-cqty-minus]').forEach(btn => btn.onclick = () => {
+      const id = btn.getAttribute('data-cqty-minus');
+      customerState.cart[id] = Math.max(0, (customerState.cart[id] || 0) - 1);
+      renderCustomerMenuTab();
+    });
+    wrap.querySelectorAll('[data-fav-id]').forEach(btn => btn.onclick = async () => {
+      const id = btn.getAttribute('data-fav-id');
+      btn.disabled = true;
+      const res = await apiPost('/api/customer-favorite-toggle', { ownerId: customerState.ownerId, itemId: id });
+      if (res.ok) customerState.favorites = res.favorites;
+      else if (handleFeatureBlocked(res)) { btn.disabled = false; return; }
+      renderCustomerMenuTab();
+    });
+  }
+
+  function renderCustomerMenuTab() {
+    ekran(`
+      <div class="panel ${customerCartQty() ? 'has-cart-fab' : ''}">
+        ${customerHeaderHtml()}
+        ${customerAdBannerHtml()}
+        ${customerTabRowHtml()}
+        ${customerAiRecommendationsHtml()}
+        ${customerPromoBannerHtml()}
+        ${customerSearchSortBarHtml()}
+        <div id="customerCatRowWrap">${customerCategoriesHtml()}</div>
+        <div id="customerMenuList" style="margin-top:8px;">${customerMenuListHtml()}</div>
+      </div>
+      ${cartFabBarHtml()}
+    `);
+
+    attachCustomerCatalogHandlers();
+    attachCustomerTabHandlers();
+    attachCartFabHandler();
+    attachCustomerSearchSortHandlers();
+    attachCustomerAdBannerHandlers();
+    attachAiRecoHandlers();
+    if (!(customerState.searchQuery || '').trim()) {
+      attachSectionedMenuTabHandlers('customerCatRow');
+      attachSectionedMenuScrollSpy('customerCatRow', 'customerMenuList');
+    }
+
+    document.querySelectorAll('[data-promo-id]').forEach(el => {
+      el.addEventListener('click', () => {
+        const id = el.getAttribute('data-promo-id');
+        customerState.promoId = customerState.promoId === id ? '' : id;
+        renderCustomerMenuTab();
+      });
+    });
+  }
+
+  function attachCustomerSearchSortHandlers() {
+    const searchInput = document.getElementById('cMenuSearchInput');
+    if (searchInput) {
+      searchInput.addEventListener('input', () => {
+        customerState.searchQuery = searchInput.value;
+        updateCustomerMenuListAndTabs();
+      });
+    }
+    const sortSelect = document.getElementById('cMenuSortSelect');
+    if (sortSelect) {
+      sortSelect.addEventListener('change', () => {
+        customerState.sortBy = sortSelect.value;
+        updateCustomerMenuListAndTabs();
+      });
+    }
+  }
+
+  function updateCustomerMenuListAndTabs() {
+    const tabWrap = document.getElementById('customerCatRowWrap');
+    if (tabWrap) tabWrap.innerHTML = customerCategoriesHtml();
+    const listEl = document.getElementById('customerMenuList');
+    if (listEl) listEl.innerHTML = customerMenuListHtml();
+    attachCustomerCatalogHandlers();
+    if (!(customerState.searchQuery || '').trim()) {
+      attachSectionedMenuTabHandlers('customerCatRow');
+      attachSectionedMenuScrollSpy('customerCatRow', 'customerMenuList');
+    } else {
+      disconnectSectionedMenuObserver('customerCatRow');
+    }
+  }
+
+  function customerPaymentCardBoxHtml() {
+    const card = (customerState.restaurant && customerState.restaurant.paymentCard) || {};
+    if (!card.cardNumber) {
+      return `<div class="xabar err" style="margin-bottom:10px;">Oshxona hali to'lov kartasini kiritmagan. Buyurtmani yuborib, kassaga murojaat qiling.</div>`;
+    }
+    return `
+      <div class="link-box" style="margin-bottom:10px;">
+        <span id="cPayCardNumberText">${escapeHtml(card.cardNumber)}</span>
+        <button id="cPayCardCopyBtn" type="button">${icon('clipboard', 'icon-xs')}<span>Nusxalash</span></button>
+      </div>
+      ${card.cardHolder ? `<div class="bosh" style="margin-top:-6px; margin-bottom:10px;">Egasi: ${escapeHtml(card.cardHolder)}</div>` : ''}
+    `;
+  }
+
+  function customerCheckoutModalBodyHtml() {
+    return `
+      <h3>Buyurtmani rasmiylashtirish</h3>
+      ${(customerState.branches && customerState.branches.length > 0) ? `
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; background:var(--bg-secondary); border:1px solid var(--border-color); border-radius:var(--radius-md); padding:8px 12px; margin-bottom:12px;">
+          <div style="min-width:0;">
+            <div style="font-size:var(--fs-xs); color:var(--text-secondary); margin-bottom:2px;">Buyurtma filiali</div>
+            <div style="font-weight:700; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${icon('pin', 'icon-xs')} ${escapeHtml(customerCurrentBranchLabel())}</div>
+          </div>
+          <button type="button" id="cCheckoutBranchChangeBtn" style="flex-shrink:0; background:none; border:1px solid var(--border-color); border-radius:var(--radius-pill); padding:4px 12px; font-size:var(--fs-xs); font-weight:600; color:var(--text-secondary); cursor:pointer;">O'zgartirish</button>
+        </div>
+      ` : ''}
+      <div class="type-row" id="cOrderTypeRow">
+        ${Object.entries(CUSTOMER_ORDER_TYPE_LABELS).map(([k, label]) => `
+          <div class="type-opt ${customerState.orderType === k ? 'selected' : ''}" data-corder-type="${k}">${label}</div>
+        `).join('')}
+      </div>
+      <div id="cDeliveryWrap" class="${customerState.orderType === 'dostavka' ? '' : 'hidden'}">
+        ${customerState.addresses.length ? `
+          <div class="cust-addr-chip-row" id="cAddrChipRow">
+            ${customerState.addresses.map(a => `<div class="cust-addr-chip" data-addr-chip="${escapeHtml(a.id)}">${icon('pin', 'icon-xs')} ${escapeHtml(a.label)}</div>`).join('')}
+          </div>
+        ` : ''}
+        <textarea id="cAddressNoteInput" placeholder="Manzilni tushuntiring (orientir, qavat, kod va h.k.) - kuryer oson topishi uchun" rows="2">${escapeHtml(customerState.addressNote)}</textarea>
+        <button type="button" class="btn ikkinchi" id="cLocationBtn" style="width:100%; margin-bottom:6px; margin-top:6px;">
+          ${customerState.location ? icon('check-circle', 'icon-xs icon-success') + ' Joylashuv aniqlandi (qayta aniqlash)' : icon('pin', 'icon-xs') + ' Joylashuvni aniqlash'}
+        </button>
+        <div id="cLocationStatus" class="xabar" style="margin-bottom:6px;"></div>
+        <input type="tel" id="cExtraPhoneInput" class="phone-input-lg" placeholder="Qo'shimcha tel. raqam (majburiy)" value="${escapeHtml(customerState.extraPhone)}" inputmode="tel">
+      </div>
+      <div class="type-row" id="cPaymentTypeRow">
+        ${visiblePaymentTypeEntries(customerState.orderType).map(([k, label]) => `
+          <div class="type-opt ${customerState.paymentType === k ? 'selected' : ''}" data-cpayment-type="${k}">${label}</div>
+        `).join('')}
+      </div>
+      ${customerState.paymentType === 'karta' ? customerPaymentCardBoxHtml() : ''}
+      ${customerState.orderType === 'dostavka' && customerState.cardOnlyRestricted ? `
+        <div class="xabar err" style="margin-bottom:10px;">Avvalgi buyurtma(lar)ingizda kuryer sizga bog'lana olmagani sababli, hozircha faqat Karta orqali oldindan to'lov mavjud.</div>
+      ` : ''}
+      ${customerState.bonusEnabled && customerState.bonusPoints > 0 ? `
+        <label style="display:flex; align-items:center; gap:8px; font-size:var(--fs-body); margin-bottom:10px;">
+          <input type="checkbox" id="cUsePoints" ${customerState.usePoints ? 'checked' : ''}>
+          Bonus ballaridan foydalanish (${customerState.bonusPoints} ball mavjud)
+        </label>
+      ` : ''}
+      <textarea id="cCommentInput" placeholder="Izoh (ixtiyoriy) — masalan: kam achchiq, piyozsiz, ko'proq sous..." rows="2">${escapeHtml(customerState.comment || '')}</textarea>
+      <div class="cart-total"><span>Jami:</span><span id="cCartTotalVal">${fmtNum(customerCartTotal())} so'm</span></div>
+      <div class="xabar" id="cOrderMsg"></div>
+      <div class="btn-row">
+        <button type="button" class="btn ikkinchi" id="cCloseCheckoutBtn">Bekor qilish</button>
+        <button type="button" class="btn" id="cSendOrderBtn">Buyurtma berish</button>
+      </div>
+    `;
+  }
+
+  let customerSupportPollTimer = null;
+
+  function customerSupportMsgTime(iso) {
+    return new Date(iso).toLocaleTimeString('uz-UZ', { hour: '2-digit', minute: '2-digit' });
+  }
+
+  function customerSupportMessagesHtml(messages) {
+    if (!messages.length) {
+      return `<div class="bosh" style="padding:24px 8px;">Hali xabar yo'q. Savolingiz yoki muammoingiz bo'lsa, pastdan yozing — oshxona tez orada javob beradi.</div>`;
+    }
+    return messages.map(m => `
+      <div class="support-msg ${m.from === 'customer' ? 'mine' : 'staff'}">
+        <div class="support-msg-bubble">${escapeHtml(m.text)}</div>
+        <div class="support-msg-time">${customerSupportMsgTime(m.at)}</div>
+      </div>
+    `).join('');
+  }
+
+  function openCustomerSupportChat() {
+    const overlay = openOverlay(`
+      <div class="modal" style="max-width:380px; max-height:85vh; display:flex; flex-direction:column; padding:0; overflow:hidden;">
+        <div style="padding:16px 16px 10px; border-bottom:1px solid var(--border-color); display:flex; align-items:center; gap:8px;">
+          ${icon('message-circle', 'icon-sm')}
+          <div style="font-weight:700; flex:1;">Tezkor yordam</div>
+          <button type="button" id="custSupportCloseBtn" style="background:none; border:none; cursor:pointer; padding:4px; display:flex;">${icon('x', 'icon-sm')}</button>
+        </div>
+        <div id="custSupportMsgs" style="flex:1; overflow-y:auto; padding:14px 16px; min-height:200px; max-height:50vh;">
+          <div class="bosh">Yuklanmoqda...</div>
+        </div>
+        <div style="display:flex; gap:8px; padding:12px 16px; border-top:1px solid var(--border-color);">
+          <input type="text" id="custSupportInput" placeholder="Xabar yozing..." style="margin-bottom:0; flex:1;">
+          <button type="button" class="btn" id="custSupportSendBtn" style="width:auto; padding:0 18px;">${icon('send', 'icon-sm')}</button>
+        </div>
+      </div>
+    `);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeCustomerSupportChat(overlay); });
+    overlay.querySelector('#custSupportCloseBtn').addEventListener('click', () => closeCustomerSupportChat(overlay));
+
+    const msgsEl = overlay.querySelector('#custSupportMsgs');
+    const scrollToBottom = () => { msgsEl.scrollTop = msgsEl.scrollHeight; };
+
+    const loadThread = async (isFirstLoad) => {
+      const res = await apiPost('/api/support-thread', { ownerId: customerState.ownerId });
+      if (handleFeatureBlocked(res)) { closeCustomerSupportChat(overlay); return; }
+      if (!res.ok) { msgsEl.innerHTML = `<div class="bosh">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`; return; }
+      msgsEl.innerHTML = customerSupportMessagesHtml(res.messages || []);
+      if (isFirstLoad) scrollToBottom();
+    };
+
+    loadThread(true);
+    customerSupportPollTimer = setInterval(() => loadThread(false), 4000);
+
+    const input = overlay.querySelector('#custSupportInput');
+    const sendBtn = overlay.querySelector('#custSupportSendBtn');
+    const send = async () => {
+      const text = input.value.trim();
+      if (!text) return;
+      sendBtn.disabled = true;
+      const res = await apiPost('/api/support-send', { ownerId: customerState.ownerId, text });
+      sendBtn.disabled = false;
+      if (handleFeatureBlocked(res)) { closeCustomerSupportChat(overlay); return; }
+      if (!res.ok) { alert(res.reason || 'Xabar yuborilmadi.'); return; }
+      input.value = '';
+      msgsEl.innerHTML = customerSupportMessagesHtml(res.messages || []);
+      scrollToBottom();
+    };
+    sendBtn.addEventListener('click', send);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
+  }
+
+  function closeCustomerSupportChat(overlay) {
+    if (customerSupportPollTimer) { clearInterval(customerSupportPollTimer); customerSupportPollTimer = null; }
+    overlay.remove();
+  }
+
+  let ownerAdminSupportPollTimer = null;
+
+  function ownerAdminSupportMessagesHtml(messages) {
+    if (!messages.length) {
+      return `<div class="bosh" style="padding:24px 8px;">Hali xabar yo'q. Savolingiz yoki muammoingiz bo'lsa, pastdan yozing — admin tez orada javob beradi.</div>`;
+    }
+    return messages.map(m => `
+      <div class="support-msg ${m.from === 'owner' ? 'mine' : 'staff'}">
+        <div class="support-msg-bubble">${escapeHtml(m.text)}</div>
+        <div class="support-msg-time">${customerSupportMsgTime(m.at)}</div>
+      </div>
+    `).join('');
+  }
+
+  function openOwnerAdminSupportChat() {
+    const overlay = openOverlay(`
+      <div class="modal" style="max-width:380px; max-height:85vh; display:flex; flex-direction:column; padding:0; overflow:hidden;">
+        <div style="padding:16px 16px 10px; border-bottom:1px solid var(--border-color); display:flex; align-items:center; gap:8px;">
+          ${icon('send', 'icon-sm')}
+          <div style="font-weight:700; flex:1;">Admin bilan bog'lanish</div>
+          <button type="button" id="ownerAdminSupportCloseBtn" style="background:none; border:none; cursor:pointer; padding:4px; display:flex;">${icon('x', 'icon-sm')}</button>
+        </div>
+        <div id="ownerAdminSupportMsgs" style="flex:1; overflow-y:auto; padding:14px 16px; min-height:200px; max-height:50vh;">
+          <div class="bosh">Yuklanmoqda...</div>
+        </div>
+        <div style="display:flex; gap:8px; padding:12px 16px; border-top:1px solid var(--border-color);">
+          <input type="text" id="ownerAdminSupportInput" placeholder="Xabar yozing..." style="margin-bottom:0; flex:1;">
+          <button type="button" class="btn" id="ownerAdminSupportSendBtn" style="width:auto; padding:0 18px;">${icon('send', 'icon-sm')}</button>
+        </div>
+      </div>
+    `);
+    const close = () => closeOwnerAdminSupportChat(overlay);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    overlay.querySelector('#ownerAdminSupportCloseBtn').addEventListener('click', close);
+
+    const msgsEl = overlay.querySelector('#ownerAdminSupportMsgs');
+    const scrollToBottom = () => { msgsEl.scrollTop = msgsEl.scrollHeight; };
+
+    const loadThread = async (isFirstLoad) => {
+      const res = await apiPost('/api/owner-admin-support-thread');
+      if (!document.body.contains(overlay)) return;
+      if (!res.ok) { msgsEl.innerHTML = `<div class="bosh">${escapeHtml(res.reason || 'Xatolik yuz berdi.')}</div>`; return; }
+      msgsEl.innerHTML = ownerAdminSupportMessagesHtml(res.messages || []);
+      if (isFirstLoad) scrollToBottom();
+    };
+
+    loadThread(true);
+    ownerAdminSupportPollTimer = setInterval(() => loadThread(false), 4000);
+
+    const input = overlay.querySelector('#ownerAdminSupportInput');
+    const sendBtn = overlay.querySelector('#ownerAdminSupportSendBtn');
+    const send = async () => {
+      const text = input.value.trim();
+      if (!text) return;
+      sendBtn.disabled = true;
+      const res = await apiPost('/api/owner-admin-support-send', { text });
+      sendBtn.disabled = false;
+      if (!res.ok) { alert(res.reason || 'Xabar yuborilmadi.'); return; }
+      input.value = '';
+      msgsEl.innerHTML = ownerAdminSupportMessagesHtml(res.messages || []);
+      scrollToBottom();
+    };
+    sendBtn.addEventListener('click', send);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
+  }
+
+  function closeOwnerAdminSupportChat(overlay) {
+    if (ownerAdminSupportPollTimer) { clearInterval(ownerAdminSupportPollTimer); ownerAdminSupportPollTimer = null; }
+    overlay.remove();
+  }
+
+  function openCustomerCheckoutModal() {
+    if (!customerCartQty()) return;
+    if (!customerState.personRegistered) {
+      renderPersonRegistrationScreen(() => {
+        customerState.personRegistered = true;
+        renderCustomerMenuTab();
+        openCustomerCheckoutModal();
+      });
+      return;
+    }
+    const fabBar = document.getElementById('cCartFab');
+    if (fabBar) fabBar.classList.add('hidden');
+    const overlay = openOverlay(`<div class="modal" style="max-width:380px; max-height:85vh; overflow:auto;"></div>`);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) { overlay.remove(); updateCustomerCartFab(); } });
+    renderCheckoutModalBody(overlay);
+  }
+
+  function renderCheckoutModalBody(overlay) {
+    const modalEl = overlay.querySelector('.modal');
+    modalEl.innerHTML = customerCheckoutModalBodyHtml();
+    wireCheckoutModal(overlay);
+  }
+
+  function wireCheckoutModal(overlay) {
+    const modalEl = overlay.querySelector('.modal');
+
+    modalEl.querySelector('#cCloseCheckoutBtn').addEventListener('click', () => { overlay.remove(); updateCustomerCartFab(); });
+
+    const checkoutBranchChangeBtn = modalEl.querySelector('#cCheckoutBranchChangeBtn');
+    if (checkoutBranchChangeBtn) {
+      checkoutBranchChangeBtn.addEventListener('click', () => {
+        if (!confirm('Filialni almashtirsangiz, savatchangizdagi mahsulotlar yo\'qoladi. Davom etasizmi?')) return;
+        stopCustomerHistoryPolling();
+        customerState.cart = {};
+        overlay.remove();
+        renderCustomerBranchPicker(customerState.ownerId);
+      });
+    }
+
+    modalEl.querySelector('#cOrderTypeRow').addEventListener('click', (e) => {
+      const t = e.target.getAttribute('data-corder-type');
+      if (!t) return;
+      customerState.orderType = t;
+      ensureValidPaymentType(customerState);
+      renderCheckoutModalBody(overlay);
+    });
+    modalEl.querySelector('#cPaymentTypeRow').addEventListener('click', (e) => {
+      const t = e.target.getAttribute('data-cpayment-type');
+      if (!t) return;
+      customerState.paymentType = t;
+      renderCheckoutModalBody(overlay);
+    });
+    const payCopyBtn = modalEl.querySelector('#cPayCardCopyBtn');
+    if (payCopyBtn) payCopyBtn.addEventListener('click', () => {
+      const card = (customerState.restaurant && customerState.restaurant.paymentCard) || {};
+      const rawNumber = (card.cardNumber || '').replace(/\s+/g, '');
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(rawNumber).then(() => {
+          payCopyBtn.innerHTML = `${icon('check-circle', 'icon-xs')}<span>Nusxalandi</span>`;
+        }).catch(() => alert('Nusxalab bo\'lmadi, raqamni qo\'lda ko\'chiring.'));
+      } else {
+        alert('Nusxalab bo\'lmadi, raqamni qo\'lda ko\'chiring.');
+      }
+    });
+    const locationBtn = modalEl.querySelector('#cLocationBtn');
+    const locationStatusEl = modalEl.querySelector('#cLocationStatus');
+    if (locationBtn) locationBtn.addEventListener('click', () => {
+      if (!navigator.geolocation) {
+        setMsg(locationStatusEl, 'Bu qurilma/brauzer joylashuvni aniqlay olmaydi. Joylashuv (GPS) sozlamalarini tekshiring yoki manzilni pastga yozib qoldiring.', 'err');
+        return;
+      }
+      setMsg(locationStatusEl, 'Aniqlanmoqda...');
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          customerState.location = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+          locationStatusEl.innerHTML = `${icon('check-circle', 'icon-xs icon-success')} Joylashuv aniqlandi.`;
+          locationStatusEl.className = 'xabar ok';
+          locationBtn.innerHTML = `${icon('check-circle', 'icon-xs icon-success')} Joylashuv aniqlandi (qayta aniqlash)`;
+        },
+        (geoErr) => {
+          let hint = 'Iltimos, telefoningizda joylashuv (GPS/geolokatsiya) yoqilganini va brauzerga ruxsat berilganini tekshiring, so\'ng qayta urinib ko\'ring — yoki manzilni pastga yozib qoldiring.';
+          if (geoErr && geoErr.code === 3) {
+            hint = 'Joylashuvni aniqlash vaqti tugadi. Telefoningizda joylashuv (GPS) yoqilganini tekshirib, qayta urinib ko\'ring — yoki manzilni pastga yozib qoldiring.';
+          }
+          locationStatusEl.innerHTML = `${icon('x-circle', 'icon-xs icon-danger')} Joylashuvni aniqlab bo'lmadi. ${hint}`;
+          locationStatusEl.className = 'xabar err';
+        },
+        { enableHighAccuracy: true, timeout: 10000 }
+      );
+    });
+    const addressNoteInput = modalEl.querySelector('#cAddressNoteInput');
+    if (addressNoteInput) addressNoteInput.addEventListener('input', (e) => { customerState.addressNote = e.target.value; });
+
+    const addrChipRow = modalEl.querySelector('#cAddrChipRow');
+    if (addrChipRow) {
+      addrChipRow.addEventListener('click', (e) => {
+        const chip = e.target.closest('[data-addr-chip]');
+        if (!chip) return;
+        const id = chip.getAttribute('data-addr-chip');
+        const addr = customerState.addresses.find(a => a.id === id);
+        if (!addr) return;
+        customerState.location = addr.location || null;
+        customerState.addressNote = addr.addressNote || '';
+        if (addr.extraPhone) customerState.extraPhone = addr.extraPhone;
+        renderCheckoutModalBody(overlay);
+      });
+    }
+
+    const extraPhoneInput = modalEl.querySelector('#cExtraPhoneInput');
+    if (extraPhoneInput) extraPhoneInput.addEventListener('input', (e) => { customerState.extraPhone = e.target.value; });
+
+    const pointsCheckbox = modalEl.querySelector('#cUsePoints');
+    if (pointsCheckbox) pointsCheckbox.addEventListener('change', (e) => { customerState.usePoints = e.target.checked; });
+
+    const commentInput = modalEl.querySelector('#cCommentInput');
+    if (commentInput) commentInput.addEventListener('input', (e) => { customerState.comment = e.target.value; });
+
+    modalEl.querySelector('#cSendOrderBtn').addEventListener('click', () => sendCustomerOrder(overlay));
+  }
+
+  function attachCustomerTabHandlers() {
+    const tabRow = document.querySelector('.tab-row');
+    if (tabRow) {
+      tabRow.addEventListener('click', (e) => {
+        const t = e.target.getAttribute('data-customer-tab');
+        if (!t || t === customerState.tab) return;
+        customerState.tab = t;
+        disconnectSectionedMenuObserver('customerCatRow');
+        if (t !== 'tarix') stopCustomerHistoryPolling();
+        if (t === 'sevimli') renderCustomerFavoritesTab();
+        else if (t === 'tarix') renderCustomerHistoryTab();
+        else renderCustomerMenuTab();
+      });
+    }
+    const bellBtn = document.getElementById('custNotifBellBtn');
+    if (bellBtn) {
+      bellBtn.addEventListener('click', () => {
+        stopCustomerHistoryPolling();
+        renderCustomerNotificationsScreen(() => {
+          if (customerState.tab === 'sevimli') renderCustomerFavoritesTab();
+          else if (customerState.tab === 'tarix') renderCustomerHistoryTab();
+          else renderCustomerMenuTab();
+        });
+      });
+    }
+    const switchRestBtn = document.getElementById('custSwitchRestBtn');
+    if (switchRestBtn) {
+      switchRestBtn.addEventListener('click', () => {
+        if (customerCartQty() && !confirm('Savatchangizdagi mahsulotlar yo\'qoladi. Boshqa oshxonaga o\'tasizmi?')) return;
+        stopCustomerHistoryPolling();
+        customerState.cart = {};
+        renderCustomerEntry();
+      });
+    }
+    const branchSwitchBtn = document.getElementById('custBranchSwitchBtn');
+    if (branchSwitchBtn) {
+      branchSwitchBtn.addEventListener('click', () => {
+        if (customerCartQty() && !confirm('Filialni almashtirsangiz, savatchangizdagi mahsulotlar yo\'qoladi. Davom etasizmi?')) return;
+        stopCustomerHistoryPolling();
+        customerState.cart = {};
+        renderCustomerBranchPicker(customerState.ownerId);
+      });
+    }
+    const addrBookBtn = document.getElementById('custAddrBookBtn');
+    if (addrBookBtn) {
+      addrBookBtn.addEventListener('click', () => {
+        stopCustomerHistoryPolling();
+        renderCustomerAddressesScreen(() => {
+          if (customerState.tab === 'sevimli') renderCustomerFavoritesTab();
+          else if (customerState.tab === 'tarix') renderCustomerHistoryTab();
+          else renderCustomerMenuTab();
+        });
+      });
+    }
+    const supportBtn = document.getElementById('custSupportBtn');
+    if (supportBtn) {
+      supportBtn.addEventListener('click', () => openCustomerSupportChat());
+    }
+  }
+
+  function customerAddressItemHtml(a) {
+    const parts = [];
+    if (a.location) parts.push(`${icon('pin', 'icon-xs icon-muted')} Joylashuv aniqlangan`);
+    if (a.addressNote) parts.push(escapeHtml(a.addressNote));
+    if (a.extraPhone) parts.push(`${icon('send', 'icon-xs icon-muted')} ${escapeHtml(a.extraPhone)}`);
+    return `
+      <div class="owner-item" data-addr-id="${escapeHtml(a.id)}">
+        <div class="owner-item-heading">
+          <div class="owner-item-top"><span class="owner-id">${escapeHtml(a.label)}</span></div>
+          <div class="owner-username">${parts.join(' · ') || 'Manzil ma\'lumoti yo\'q'}</div>
+        </div>
+        <button type="button" class="owner-remove-btn" data-addr-remove="${escapeHtml(a.id)}" title="O'chirish" aria-label="O'chirish">${icon('trash', 'icon-xs')}</button>
+      </div>
+    `;
+  }
+
+  function renderCustomerAddressesScreen(onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Manzillarim</div>
+        <button class="btn ikkinchi" id="custAddrBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="kartochka" id="custAddrList"><div class="bosh">Yuklanmoqda...</div></div>
+        <button type="button" class="btn" id="custAddrAddBtn" style="margin-top:12px;">${icon('plus', 'icon-xs')} Yangi manzil qo'shish</button>
+      </div>
+    `);
+    document.getElementById('custAddrBackBtn').addEventListener('click', () => onBack && onBack());
+    document.getElementById('custAddrAddBtn').addEventListener('click', () => renderCustomerAddressFormScreen(null, () => renderCustomerAddressesScreen(onBack)));
+    loadCustomerAddressList(onBack);
+  }
+
+  async function loadCustomerAddressList(onBack) {
+    const el = document.getElementById('custAddrList');
+    if (!el) return;
+    const res = await apiPost('/api/customer-address-list', { ownerId: customerState.ownerId });
+    const el2 = document.getElementById('custAddrList');
+    if (!el2) return;
+    if (res.networkError) { renderNetworkErrorInline(el2, res.reason, () => loadCustomerAddressList(onBack)); return; }
+    if (!res.ok) { el2.innerHTML = `<div class="bosh">Manzillar yuklanmadi.</div>`; return; }
+    customerState.addresses = res.addresses || [];
+    el2.innerHTML = customerState.addresses.length
+      ? customerState.addresses.map(customerAddressItemHtml).join('')
+      : `<div class="bosh">Hali saqlangan manzil yo'q.</div>`;
+    el2.querySelectorAll('[data-addr-remove]').forEach(btn => {
+      btn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        btn.disabled = true;
+        const id = btn.getAttribute('data-addr-remove');
+        const res2 = await apiPost('/api/customer-address-remove', { ownerId: customerState.ownerId, addressId: id });
+        if (res2.ok) { customerState.addresses = res2.addresses || []; loadCustomerAddressList(onBack); }
+        else btn.disabled = false;
+      });
+    });
+    el2.querySelectorAll('[data-addr-id]').forEach(row => {
+      row.addEventListener('click', () => {
+        const id = row.getAttribute('data-addr-id');
+        const addr = customerState.addresses.find(a => a.id === id);
+        if (addr) renderCustomerAddressFormScreen(addr, () => renderCustomerAddressesScreen(onBack));
+      });
+    });
+  }
+
+  function renderCustomerAddressFormScreen(existing, onDone) {
+    const formLoc = { current: existing ? existing.location : null };
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">${existing ? 'Manzilni tahrirlash' : 'Yangi manzil'}</div>
+        <button class="btn ikkinchi" id="custAddrFormBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <input type="text" id="custAddrLabelInput" placeholder="Nomi (masalan: Uy, Ish)" value="${escapeHtml(existing ? existing.label : '')}" style="margin-bottom:8px;">
+        <textarea id="custAddrNoteInput" placeholder="Manzilni tushuntiring (orientir, qavat, kod va h.k.)" rows="2" style="margin-bottom:8px;">${escapeHtml(existing ? (existing.addressNote || '') : '')}</textarea>
+        <button type="button" class="btn ikkinchi" id="custAddrLocBtn" style="width:100%; margin-bottom:6px;">
+          ${formLoc.current ? icon('check-circle', 'icon-xs icon-success') + ' Joylashuv aniqlandi (qayta aniqlash)' : icon('pin', 'icon-xs') + ' Joylashuvni aniqlash'}
+        </button>
+        <div id="custAddrLocStatus" class="xabar" style="margin-bottom:6px;"></div>
+        <input type="tel" id="custAddrPhoneInput" class="phone-input-lg" placeholder="Qo'shimcha tel. raqam" value="${escapeHtml(existing ? (existing.extraPhone || '') : '')}" inputmode="tel" style="margin-bottom:8px;">
+        <div class="xabar" id="custAddrFormMsg"></div>
+        <div class="btn-row">
+          <button type="button" class="btn" id="custAddrSaveBtn">Saqlash</button>
+        </div>
+      </div>
+    `);
+    document.getElementById('custAddrFormBackBtn').addEventListener('click', () => onDone && onDone());
+    const locBtn = document.getElementById('custAddrLocBtn');
+    const locStatusEl = document.getElementById('custAddrLocStatus');
+    locBtn.addEventListener('click', () => {
+      if (!navigator.geolocation) {
+        setMsg(locStatusEl, 'Bu qurilma/brauzer joylashuvni aniqlay olmaydi. Manzilni pastga yozib qoldiring.', 'err');
+        return;
+      }
+      setMsg(locStatusEl, 'Aniqlanmoqda...');
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          formLoc.current = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+          locStatusEl.innerHTML = `${icon('check-circle', 'icon-xs icon-success')} Joylashuv aniqlandi.`;
+          locStatusEl.className = 'xabar ok';
+          locBtn.innerHTML = `${icon('check-circle', 'icon-xs icon-success')} Joylashuv aniqlandi (qayta aniqlash)`;
+        },
+        () => {
+          setMsg(locStatusEl, 'Joylashuvni aniqlab bo\'lmadi. Manzilni pastga yozib qoldiring.', 'err');
+        },
+        { enableHighAccuracy: true, timeout: 10000 }
+      );
+    });
+    document.getElementById('custAddrSaveBtn').addEventListener('click', async () => {
+      const msgEl = document.getElementById('custAddrFormMsg');
+      const label = document.getElementById('custAddrLabelInput').value;
+      const addressNote = document.getElementById('custAddrNoteInput').value;
+      const extraPhone = document.getElementById('custAddrPhoneInput').value;
+      if (!label.trim()) {
+        setMsg(msgEl, 'Manzil nomini kiriting (masalan: Uy, Ish).', 'err');
+        return;
+      }
+      if (!formLoc.current && !addressNote.trim()) {
+        setMsg(msgEl, 'Joylashuvni aniqlang yoki manzilni yozib qoldiring.', 'err');
+        return;
+      }
+      setMsg(msgEl, 'Saqlanmoqda...');
+      const res = await apiPost('/api/customer-address-save', {
+        ownerId: customerState.ownerId,
+        addressId: existing ? existing.id : null,
+        label, addressNote, extraPhone,
+        location: formLoc.current
+      });
+      if (res.ok) {
+        customerState.addresses = res.addresses || [];
+        onDone && onDone();
+      } else {
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+      }
+    });
+  }
+
+  function customerNotifItemHtml(n) {
+    return `
+      <div class="cust-notif-item">
+        <span class="cust-notif-icon ${n.type === 'promo' ? 'promo' : 'order'}">${icon(n.icon || 'bell', 'icon-xs')}</span>
+        <div class="cust-notif-body">
+          <div class="cust-notif-title">${escapeHtml(n.title)}</div>
+          ${n.text ? `<div class="cust-notif-text">${escapeHtml(n.text)}</div>` : ''}
+          <div class="cust-notif-time">${timeAgo(n.time)}</div>
+        </div>
+      </div>
+    `;
+  }
+
+  function customerNotifListHtml(notifications) {
+    return (notifications && notifications.length)
+      ? notifications.map(customerNotifItemHtml).join('')
+      : `<div class="bosh">Hozircha bildirishnoma yo'q.</div>`;
+  }
+
+  function renderCustomerNotificationsScreen(onBack) {
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Bildirishnomalar</div>
+        <button class="btn ikkinchi" id="custNotifBackBtn" style="margin-bottom:12px;">← Orqaga</button>
+        <div class="kartochka" id="custNotifList"><div class="bosh">Yuklanmoqda...</div></div>
+      </div>
+    `);
+    document.getElementById('custNotifBackBtn').addEventListener('click', () => {
+
+      customerState.notifUnseenCount = 0;
+      onBack && onBack();
+    });
+    loadCustomerNotifList();
+  }
+
+  async function loadCustomerNotifList() {
+    const el = document.getElementById('custNotifList');
+    if (!el) return;
+    const res = await apiPost('/api/customer-notifications', { ownerId: customerState.ownerId });
+    const el2 = document.getElementById('custNotifList');
+    if (!el2) return;
+    if (res.networkError) { renderNetworkErrorInline(el2, res.reason, () => loadCustomerNotifList()); return; }
+    if (!res.ok) {
+      el2.innerHTML = `<div class="bosh">Bildirishnomalar yuklanmadi.</div>`;
+      return;
+    }
+    el2.innerHTML = customerNotifListHtml(res.notifications);
+    setCustomerNotifSeenNow();
+    customerState.notifUnseenCount = 0;
+  }
+
+  function renderCustomerFavoritesTab() {
+    const favItems = customerState.menu.filter(m => customerState.favorites.includes(m.id));
+    ekran(`
+      <div class="panel ${customerCartQty() ? 'has-cart-fab' : ''}">
+        ${customerHeaderHtml()}
+        ${customerTabRowHtml()}
+        <div id="customerMenuList" class="catalog-grid" style="margin-top:10px;">
+          ${favItems.length ? favItems.map(customerItemCardHtml).join('') : `<div class="bosh">Hali sevimli taomlar yo'q. Menyuda ${icon('heart', 'icon-xs icon-muted')} tugmasini bosing.</div>`}
+        </div>
+      </div>
+      ${cartFabBarHtml()}
+    `);
+    attachCustomerCatalogHandlers();
+    attachCustomerTabHandlers();
+    attachCartFabHandler();
+  }
+
+  function customerOrderTrackHtml(o) {
+    if (o.status === 'bekor_qilindi') return '';
+    const isDelivery = o.orderType === 'dostavka';
+    const steps = [
+      { key: 'tayyorlanmoqda', label: 'Tayyorlanmoqda' },
+      { key: 'tayyor', label: isDelivery ? "Tayyor bo'ldi" : 'Tayyor' }
+    ];
+    if (isDelivery) steps.push({ key: 'yetkazildi', label: 'Yetkazildi' });
+    else steps.push({ key: 'oldim', label: 'Oldim' });
+
+    let activeIdx = -1;
+    if (o.status === 'tayyorlanmoqda') activeIdx = 0;
+    else if (o.status === 'tayyor') {
+      if (isDelivery) activeIdx = o.deliveredAt ? 2 : 1;
+      else activeIdx = o.customerReceivedAt ? 2 : 1;
+    }
+
+    return `
+      <div class="order-track" data-order-track="${escapeHtml(o.id)}">
+        ${steps.map((s, i) => `
+          <div class="order-track-step ${i < activeIdx ? 'done' : ''} ${i === activeIdx ? 'active' : ''}">
+            <div class="order-track-dot"></div>
+            <div class="order-track-label">${escapeHtml(s.label)}</div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+  }
+
+  function customerOrderHistoryCardHtml(o) {
+    const itemsText = o.items.map(it => `${escapeHtml(it.name)} x${it.qty}`).join(', ');
+    return `
+      <div class="order-card" data-order-card-id="${escapeHtml(o.id)}">
+        <div class="order-top">
+          <div>
+            <div class="order-type">${ORDER_TYPE_LABELS[o.orderType] || o.orderType}</div>
+            <div class="order-time">${timeAgo(o.createdAt)}</div>
+          </div>
+          <span class="status-badge ${o.status}">${o.status === 'tayyor' && o.deliveredAt ? 'Yetkazildi' : (o.status === 'tayyor' && o.customerReceivedAt ? (o.customerReceivedAuto ? 'Avtomatik yopilgan' : 'Oldingiz') : (ORDER_STATUS_LABELS[o.status] || o.status))}</span>
+        </div>
+        ${customerOrderTrackHtml(o)}
+        <div class="order-items">${itemsText}</div>
+        <div class="order-bottom">
+          <div class="order-total">${fmtNum(o.total)} so'm${o.discountAmount ? ` <span style="opacity:0.6; font-weight:400;">(-${fmtNum(o.discountAmount)})</span>` : ''}</div>
+          ${o.pointsEarned ? `<span style="font-size:12px; color:#2fa84f;">+${o.pointsEarned} ball</span>` : ''}
+        </div>
+        ${o.orderType !== 'dostavka' && o.status === 'tayyor' && !o.customerReceivedAt ? `<button type="button" class="order-received-btn" data-received-id="${escapeHtml(o.id)}">${icon('check-circle', 'icon-xs')} Oldim</button>` : ''}
+        <button type="button" class="order-reorder-btn" data-reorder-id="${escapeHtml(o.id)}">${icon('repeat', 'icon-xs')} Yana buyurtma berish</button>
+      </div>
+    `;
+  }
+
+  let customerHistoryPollTimer = null;
+  let lastCustomerHistorySnapshot = null;
+  let knownCustomerOrderStates = null;
+
+  function stopCustomerHistoryPolling() {
+    if (customerHistoryPollTimer) { clearInterval(customerHistoryPollTimer); customerHistoryPollTimer = null; }
+    lastCustomerHistorySnapshot = null;
+    knownCustomerOrderStates = null;
+  }
+
+  function attachCustomerHistoryHandlers(listEl, orders) {
+    listEl.querySelectorAll('[data-received-id]').forEach(btn => btn.addEventListener('click', async () => {
+      const orderId = btn.getAttribute('data-received-id');
+      btn.disabled = true;
+      const res = await apiPost('/api/customer-confirm-received', { ownerId: customerState.ownerId, orderId });
+      if (!res.ok) {
+        btn.disabled = false;
+        const alertFn = (tg && tg.showAlert) ? (msg) => tg.showAlert(msg) : (msg) => alert(msg);
+        alertFn(res.reason || 'Amalni bajarib bo\'lmadi.');
+        return;
+      }
+      if (tg && tg.HapticFeedback && tg.HapticFeedback.notificationOccurred) {
+        try { tg.HapticFeedback.notificationOccurred('success'); } catch (e) {}
+      }
+      refreshCustomerHistoryList();
+    }));
+
+    listEl.querySelectorAll('[data-reorder-id]').forEach(btn => btn.addEventListener('click', () => {
+      const orderId = btn.getAttribute('data-reorder-id');
+      const order = orders.find(o => o.id === orderId);
+      if (!order) return;
+      btn.disabled = true;
+      const newCart = {};
+      let skipped = 0;
+      order.items.forEach(it => {
+        if (it.isCombo) { skipped++; return; }
+        const menuItem = customerState.menu.find(m => m.id === it.id && !m.outOfStock);
+        if (!menuItem) { skipped++; return; }
+        if (it.priceId) {
+          const stillHasVariant = Array.isArray(menuItem.prices) && menuItem.prices.some(p => p.id === it.priceId);
+          if (!stillHasVariant) { skipped++; return; }
+          const key = cartKeyFor(it.id, it.priceId);
+          newCart[key] = (newCart[key] || 0) + it.qty;
+        } else {
+          newCart[it.id] = (newCart[it.id] || 0) + it.qty;
+        }
+      });
+      if (!Object.keys(newCart).length) {
+        btn.disabled = false;
+        const alertFn = (tg && tg.showAlert) ? (msg) => tg.showAlert(msg) : (msg) => alert(msg);
+        alertFn("Afsuski, bu buyurtmadagi taomlar hozir menyuda mavjud emas.");
+        return;
+      }
+      customerState.cart = newCart;
+      customerState.tab = 'menyu';
+      customerState.searchQuery = '';
+      stopCustomerHistoryPolling();
+      renderCustomerMenuTab();
+      if (skipped > 0) {
+        const alertFn = (tg && tg.showAlert) ? (msg) => tg.showAlert(msg) : (msg) => alert(msg);
+        alertFn(`Savatga qo'shildi. ${skipped} ta taom hozir mavjud emasligi sababli o'tkazib yuborildi.`);
+      }
+    }));
+  }
+
+  async function refreshCustomerHistoryList() {
+    const listEl = document.getElementById('customerHistoryList');
+    if (!listEl) { stopCustomerHistoryPolling(); return; }
+    const res = await apiPost('/api/customer-orders-history', { ownerId: customerState.ownerId });
+    const listEl2 = document.getElementById('customerHistoryList');
+    if (!listEl2) return;
+    if (!res.ok) {
+      if (lastCustomerHistorySnapshot === null) {
+        listEl2.innerHTML = `<div class="bosh">Yuklab bo'lmadi.</div>`;
+      }
+      return;
+    }
+    const orders = res.orders || [];
+
+    const snapshot = JSON.stringify(orders);
+    if (snapshot === lastCustomerHistorySnapshot) return;
+
+    const newStates = new Map(orders.map(o => [o.id, `${o.status}|${o.deliveredAt || ''}`]));
+    const changedIds = [];
+    if (knownCustomerOrderStates) {
+      newStates.forEach((state, id) => {
+        if (knownCustomerOrderStates.get(id) && knownCustomerOrderStates.get(id) !== state) changedIds.push(id);
+      });
+    }
+    lastCustomerHistorySnapshot = snapshot;
+    knownCustomerOrderStates = newStates;
+
+    listEl2.innerHTML = orders.length ? orders.map(customerOrderHistoryCardHtml).join('') : `<div class="bosh">Hali buyurtmalar yo'q.</div>`;
+    attachCustomerHistoryHandlers(listEl2, orders);
+
+    if (changedIds.length) {
+      if (tg && tg.HapticFeedback && tg.HapticFeedback.notificationOccurred) {
+        try { tg.HapticFeedback.notificationOccurred('success'); } catch (e) {}
+      }
+      changedIds.forEach(id => {
+        const card = listEl2.querySelector(`[data-order-card-id="${CSS && CSS.escape ? CSS.escape(id) : id}"]`);
+        if (card) card.classList.add('order-track-flash');
+      });
+    }
+  }
+
+  function startCustomerHistoryPolling() {
+    stopCustomerHistoryPolling();
+    refreshCustomerHistoryList();
+    customerHistoryPollTimer = setInterval(refreshCustomerHistoryList, 5000);
+  }
+
+  async function renderCustomerHistoryTab() {
+    ekran(`
+      <div class="panel">
+        ${customerHeaderHtml()}
+        ${customerTabRowHtml()}
+        <div id="customerHistoryList"><div class="bosh">Yuklanmoqda...</div></div>
+      </div>
+    `);
+    attachCustomerTabHandlers();
+    startCustomerHistoryPolling();
+  }
+
+  async function sendCustomerOrder(overlay) {
+    const msgEl = document.getElementById('cOrderMsg');
+    const sendBtn = overlay ? overlay.querySelector('#cSendOrderBtn') : document.getElementById('cSendOrderBtn');
+    const items = Object.entries(customerState.cart)
+      .filter(([, qty]) => qty > 0)
+      .map(([key, qty]) => {
+        const { itemId, priceId } = cartKeyParts(key);
+        return priceId ? { id: itemId, qty, priceId } : { id: itemId, qty };
+      });
+
+    if (!items.length) {
+      setMsg(msgEl, 'Savat bo\'sh. Kamida bitta taom tanlang.', 'err');
+      return;
+    }
+    if (customerState.orderType === 'dostavka' && !customerState.location) {
+      setMsg(msgEl, 'Dostavka uchun joylashuvingizni (location) aniqlashingiz shart.', 'err');
+      return;
+    }
+    if (customerState.orderType === 'dostavka' && !isUzPhone(customerState.extraPhone)) {
+      setMsg(msgEl, 'Telefon raqamini O\'zbekiston formatida kiriting (masalan: +998901234567).', 'err');
+      return;
+    }
+
+    if (sendBtn) sendBtn.disabled = true;
+
+    if (!customerState.lastOrderRequestId) {
+      customerState.lastOrderRequestId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    }
+
+    setMsg(msgEl, 'Yuborilmoqda...');
+    const res = await apiPost('/api/customer-order', {
+      ownerId: customerState.ownerId,
+      branchId: customerState.branchId || null,
+      items,
+      orderType: customerState.orderType,
+      paymentType: customerState.paymentType,
+      promoId: customerState.promoId || null,
+      usePoints: customerState.usePoints ? customerState.bonusPoints : 0,
+      location: customerState.orderType === 'dostavka' ? customerState.location : null,
+      addressNote: customerState.orderType === 'dostavka' ? customerState.addressNote : '',
+      extraPhone: customerState.orderType === 'dostavka' ? customerState.extraPhone : '',
+      comment: customerState.comment || '',
+      requestId: customerState.lastOrderRequestId
+    });
+
+    if (res.ok) {
+      customerState.cart = {};
+      customerState.usePoints = false;
+      customerState.bonusPoints = res.bonusBalance;
+      customerState.location = null;
+      customerState.addressNote = '';
+      customerState.extraPhone = '';
+      customerState.comment = '';
+      customerState.lastOrderRequestId = null;
+      if (overlay) overlay.remove();
+
+      let successMsgHtml;
+      let needsPaymentProofModal = false;
+      if (res.paymentPending) {
+        if (res.paymentConfirmMethod === 'naqd_kassa') {
+          successMsgHtml = `${icon('restaurant', 'icon-xs icon-success')} Buyurtma qabul qilindi (${fmtNum(res.total)} so'm).<br>` +
+            `Iltimos, kassaga borib to'lovni amalga oshiring - to'lov qabul qilingach, taomingiz tayyorlanishni boshlaydi.`;
+        } else {
+          successMsgHtml = `${icon('card', 'icon-xs icon-success')} Buyurtma qabul qilindi (${fmtNum(res.total)} so'm) — <b>tasdiqlash kutilmoqda</b>.`;
+          needsPaymentProofModal = true;
+        }
+      } else {
+        successMsgHtml = `${icon('check-circle', 'icon-xs icon-success')} Buyurtma qabul qilindi (${fmtNum(res.total)} so'm)${res.pointsEarned ? ` · +${res.pointsEarned} bonus ball` : ''}`;
+      }
+
+      customerState.tab = 'tarix';
+      renderCustomerHistoryTab();
+      const topMsg = document.createElement('div');
+      topMsg.className = 'xabar ok';
+      topMsg.innerHTML = successMsgHtml;
+      const panelEl = document.querySelector('.panel');
+      const listWrap = document.getElementById('customerHistoryList');
+      if (panelEl && listWrap) panelEl.insertBefore(topMsg, listWrap);
+      else if (panelEl) panelEl.prepend(topMsg);
+      setTimeout(() => { if (topMsg.parentNode) topMsg.remove(); }, 6000);
+
+      if (needsPaymentProofModal) showPaymentProofModal();
+    } else {
+      if (sendBtn) sendBtn.disabled = false;
+      setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+    }
+  }
+
+  function showPaymentProofModal() {
+    const overlay = openOverlay(`
+      <div class="modal payment-proof-modal">
+        <h3>${icon('warning', 'icon-sm modal-warn-icon')} Chek rasmini yuboring</h3>
+        <p>Buyurtma hali <b>tasdiqlanmagan</b>.<br>To'lov chekining rasmini botning shaxsiy chatiga yuboring.</p>
+        <div class="btn-row">
+          <button type="button" class="btn xavfli" id="paymentProofOkBtn" style="width:100%;">Tushundim</button>
+        </div>
+      </div>
+    `);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    overlay.querySelector('#paymentProofOkBtn').addEventListener('click', () => overlay.remove());
+  }
+
+  async function renderPersonRegistrationScreen(onDone) {
+    const canRequestContact = tg && typeof tg.requestContact === 'function';
+    ekran(`
+      <div class="panel">
+        <div class="salom">Tanishuv</div>
+        <div class="bosh">Davom etishdan oldin ismingiz, familiyangiz va telefon raqamingizni kiriting.</div>
+        <div class="kartochka">
+          <label class="field-label">Ism</label>
+          <input type="text" id="regFirstName" placeholder="Ism" autocomplete="given-name">
+          <label class="field-label" style="margin-top:10px;">Familiya</label>
+          <input type="text" id="regLastName" placeholder="Familiya" autocomplete="family-name">
+          <label class="field-label" style="margin-top:10px;">Telefon raqam</label>
+          <input type="tel" id="regPhone" placeholder="+998901234567" autocomplete="tel">
+          ${canRequestContact ? `<button type="button" class="btn" id="regContactBtn" style="margin-top:8px;">${icon('user', 'icon-xs')}<span>Raqamni Telegram orqali yuborish</span></button>` : ''}
+          <button class="btn" id="regSubmitBtn" style="margin-top:14px;">${icon('check-circle', 'icon-xs')}<span>Davom etish</span></button>
+          <div class="xabar" id="regMsg"></div>
+        </div>
+      </div>
+    `);
+
+    const contactBtn = document.getElementById('regContactBtn');
+    if (contactBtn) {
+      contactBtn.addEventListener('click', () => {
+        try {
+          tg.requestContact((granted, contactData) => {
+            if (!granted) return;
+            const c = (contactData && (contactData.responseUnsafe || contactData)) || {};
+            const contact = c.contact || c;
+            if (contact && contact.phone_number) {
+              document.getElementById('regPhone').value = contact.phone_number;
+            }
+            if (contact && contact.first_name && !document.getElementById('regFirstName').value) {
+              document.getElementById('regFirstName').value = contact.first_name;
+            }
+            if (contact && contact.last_name && !document.getElementById('regLastName').value) {
+              document.getElementById('regLastName').value = contact.last_name;
+            }
+          });
+        } catch (e) {  }
+      });
+    }
+
+    const doSubmit = async () => {
+      const msgEl = document.getElementById('regMsg');
+      const btn = document.getElementById('regSubmitBtn');
+      const firstName = document.getElementById('regFirstName').value.trim();
+      const lastName = document.getElementById('regLastName').value.trim();
+      const phone = document.getElementById('regPhone').value.trim();
+      if (!firstName || !lastName || !phone) {
+        setMsg(msgEl, 'Barcha maydonlarni to\'ldiring.', 'err');
+        return;
+      }
+      if (!isUzPhone(phone)) {
+        setMsg(msgEl, 'Telefon raqamini O\'zbekiston formatida kiriting (masalan: +998901234567).', 'err');
+        return;
+      }
+      btn.disabled = true;
+      setMsg(msgEl, 'Yuborilmoqda...');
+      const res = await apiPost('/api/profile-register', { firstName, lastName, phone });
+      if (res.networkError) {
+        setMsg(msgEl, res.reason, 'err');
+        btn.disabled = false;
+        return;
+      }
+      if (!res.ok) {
+        setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+        btn.disabled = false;
+        return;
+      }
+      onDone();
+    };
+    document.getElementById('regSubmitBtn').addEventListener('click', doSubmit);
+  }
+
+  function customerWelcomeLoadingHtml(brand) {
+    const name = (brand && brand.name) || 'Oshxona';
+    const logoUrl = brand && brand.logoUrl;
+    return `
+      <div class="customer-welcome-loading"${logoUrl ? ` style="background-image:url('${escapeHtml(logoUrl)}')"` : ''}>
+        <div class="customer-welcome-overlay">
+          ${logoUrl
+            ? `<img class="customer-welcome-logo" src="${escapeHtml(logoUrl)}" alt="">`
+            : `<div class="customer-welcome-logo customer-welcome-logo-fallback">${icon('restaurant', 'icon-lg')}</div>`}
+          <div class="customer-welcome-title">Xush kelibsiz!</div>
+          <div class="customer-welcome-sub">${escapeHtml(name)}</div>
+          <div class="customer-welcome-loading-text">Yuklanmoqda...</div>
+        </div>
+      </div>
+    `;
+  }
+
+  // ---- Kursor ortidan qoladigan "olov" effekti + hotdog-kursor (faqat mijoz ilovasida) ----
+  let __cursorFxStarted = false;
+  function initCursorFireEffect() {
+    if (__cursorFxStarted) return;
+    __cursorFxStarted = true;
+
+    // Kursorning o'zini hotdogga aylantiramiz. MUAMMO EDI: tugma/havola kabi
+    // elementlarning o'zida "cursor: pointer" bor edi, shu sababli sichqoncha
+    // ular ustiga kelganda hotdog emas, oddiy o'q ko'rinardi (CSS specificity
+    // — ichki elementning o'z qoidasi body'nikidan ustun turadi). YECHIM: endi
+    // butun body uchun klass-asosli qoida (!important + universal selektor)
+    // yozamiz, shunda HAR QANDAY ichki elementning o'z cursor qoidasidan
+    // ustun turadi — bosiladigan narsa ustida esa hotdog emas, KETCHUP
+    // shishasi ko'rinadi (interaktivlikni bildiradi, o'zi ham jonli detal).
+    // TUZATISH: ikkalasi ham 32x32'da juda mayda va notanish shakl bo'lib
+    // ko'rinar edi (bitta rangli to'rtburchak + chiziq). Endi 40x40'ga
+    // kattalashtirilgan va har biri bir nechta qatlamdan (soya/asosiy/
+    // yaltiroq) tuzilgan — shu bilan kursor o'lchamida ham "hotdog" va
+    // "ketchup shishasi" ekani darhol tanilishi kerak.
+    const hotdogSvg = `<svg xmlns='http://www.w3.org/2000/svg' width='40' height='40' viewBox='0 0 40 40'>
+      <g transform='rotate(-40 20 20)'>
+        <rect x='3' y='13' width='34' height='16' rx='8' fill='%23D9A15C'/>
+        <rect x='7' y='12' width='26' height='12' rx='6' fill='%238C3A1B'/>
+        <rect x='7' y='12' width='26' height='5.5' rx='2.75' fill='%23B5511F'/>
+        <path d='M9 16 Q13 11 17 16 T25 16 T31 16' stroke='%23805300' stroke-width='3.4' fill='none' stroke-linecap='round'/>
+        <path d='M9 16 Q13 11 17 16 T25 16 T31 16' stroke='%23FFCE3A' stroke-width='2' fill='none' stroke-linecap='round'/>
+      </g>
+    </svg>`.replace(/\s+/g, ' ').trim();
+
+    const ketchupSvg = `<svg xmlns='http://www.w3.org/2000/svg' width='40' height='40' viewBox='0 0 40 40'>
+      <g transform='rotate(-40 20 20)'>
+        <path d='M8 14 L30 10.5 Q35.5 20 30 29.5 L8 26 Q5 20 8 14 Z' fill='%23A81E0C'/>
+        <path d='M10 15.6 L28.4 12.6 Q32.4 20 28.4 27.4 L10 24.4 Q7.8 20 10 15.6 Z' fill='%23E5391A'/>
+        <ellipse cx='20.5' cy='20' rx='8.6' ry='5' fill='white' opacity='0.92'/>
+        <rect x='0' y='16' width='8' height='8' rx='3' fill='%231c1c1c'/>
+        <circle cx='1.2' cy='20' r='2.2' fill='%23A81E0C'/>
+        <path d='M13 15.4 L15.4 14.9 L16 17 L13.5 17.5 Z' fill='white' opacity='0.5'/>
+      </g>
+    </svg>`.replace(/\s+/g, ' ').trim();
+
+    const cursorStyleTag = document.createElement('style');
+    cursorStyleTag.textContent = `
+      body.ko-cursor-hotdog, body.ko-cursor-hotdog * {
+        cursor: url("data:image/svg+xml,${hotdogSvg}") 8 8, auto !important;
+      }
+      body.ko-cursor-ketchup, body.ko-cursor-ketchup * {
+        cursor: url("data:image/svg+xml,${ketchupSvg}") 5 20, pointer !important;
+      }
+    `;
+    document.head.appendChild(cursorStyleTag);
+    document.body.classList.add('ko-cursor-hotdog');
+
+    function isInteractiveTarget(el) {
+      if (!el || el.nodeType !== 1) return false;
+      if (el.closest('button, a, input, select, textarea, label, [role="button"], .btn, [onclick]')) return true;
+      try { return window.getComputedStyle(el).cursor === 'pointer'; } catch (e) { return false; }
+    }
+
+    document.addEventListener('pointerover', (e) => {
+      if (isInteractiveTarget(e.target)) {
+        document.body.classList.add('ko-cursor-ketchup');
+        document.body.classList.remove('ko-cursor-hotdog');
+      }
+    }, { passive: true });
+    document.addEventListener('pointerout', (e) => {
+      if (!isInteractiveTarget(e.relatedTarget)) {
+        document.body.classList.add('ko-cursor-hotdog');
+        document.body.classList.remove('ko-cursor-ketchup');
+      }
+    }, { passive: true });
+
+    const canvas = document.createElement('canvas');
+    canvas.id = 'cursorFireCanvas';
+    canvas.style.position = 'fixed';
+    canvas.style.top = '0';
+    canvas.style.left = '0';
+    canvas.style.width = '100%';
+    canvas.style.height = '100%';
+    canvas.style.pointerEvents = 'none';
+    canvas.style.zIndex = '9999';
+    document.body.appendChild(canvas);
+    const ctx = canvas.getContext('2d');
+
+    function resize() {
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = window.innerWidth * dpr;
+      canvas.height = window.innerHeight * dpr;
+      canvas.style.width = window.innerWidth + 'px';
+      canvas.style.height = window.innerHeight + 'px';
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    }
+    resize();
+    window.addEventListener('resize', resize);
+
+    let particles = [];
+    let lastSpawn = 0;
+
+    function spawn(x, y) {
+      const now = Date.now();
+      if (now - lastSpawn < 14) return;
+      lastSpawn = now;
+      // TUZATISH: oldin zarrachalar juda YORQIN edi (deyarli oq yadro, ~0.85-1.0
+      // shaffoflik) va "lighter" rejimda ustma-ust tushib fon matnini butunlay
+      // yopib qo'yardi. Endi boshlang'ich shaffoflik pasaytirildi (matn orqada
+      // ham o'qilishi uchun), izning O'ZI esa uzunroq bo'lishi uchun so'nish
+      // (pastda p.alpha -= ...) sekinlashtirildi — zarracha kamroq yorqin,
+      // lekin uzoqroq umr ko'radi (demak iz uzunroq ko'rinadi).
+      for (let i = 0; i < 4; i++) {
+        particles.push({
+          x: x + (Math.random() - 0.5) * 8,
+          y: y + (Math.random() - 0.5) * 8,
+          r: 7 + Math.random() * 9,
+          alpha: 0.5 + Math.random() * 0.16,
+          vx: (Math.random() - 0.5) * 0.6,
+          vy: -0.8 - Math.random() * 1.0,
+          grow: 0.07 + Math.random() * 0.09,
+          seed: Math.random() * Math.PI * 2
+        });
+      }
+      if (particles.length > 340) particles.splice(0, particles.length - 340);
+    }
+
+    window.addEventListener('pointermove', (e) => spawn(e.clientX, e.clientY), { passive: true });
+    window.addEventListener('touchmove', (e) => {
+      const t = e.touches && e.touches[0];
+      if (t) spawn(t.clientX, t.clientY);
+    }, { passive: true });
+
+    function tick() {
+      ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+      // "lighter" — bir-birining ustiga tushgan zarrachalar bir-birini
+      // yorqinlashtiradi (haqiqiy olov/porlash yig'indisi kabi), shunchaki
+      // xira dumaloqlar emas.
+      ctx.globalCompositeOperation = 'lighter';
+      const now2 = Date.now();
+      particles.forEach(p => {
+        p.x += p.vx;
+        p.y += p.vy;
+        p.r += p.grow;
+        p.alpha -= 0.011;
+        if (p.alpha > 0) {
+          const wobble = 1 + Math.sin(now2 / 90 + p.seed) * 0.18;
+          const r = p.r * wobble;
+          const grad = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, r);
+          // Markazda deyarli oq-issiq yadro, keyin yorqin sariq, to'q
+          // to'qsariq, chetda qizil — chetlarga borgan sari tezroq so'nadi.
+          // TUZATISH: har bir bosqichning shaffofligi pasaytirildi (0.28/0.6
+          // nuqtalaridagi ko'paytiruvchilar kichraytirildi) — orqadagi matn
+          // butunlay yopilib qolmasligi uchun, "lighter" rejimda zarrachalar
+          // ustma-ust tushganda ham fon o'qilishi imkonini beradi.
+          grad.addColorStop(0, `rgba(255, 253, 230, ${p.alpha * 0.8})`);
+          grad.addColorStop(0.28, `rgba(255, 210, 90, ${p.alpha * 0.6})`);
+          grad.addColorStop(0.6, `rgba(255, 120, 30, ${p.alpha * 0.4})`);
+          grad.addColorStop(1, 'rgba(210, 30, 10, 0)');
+          ctx.fillStyle = grad;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      });
+      ctx.globalCompositeOperation = 'source-over';
+      particles = particles.filter(p => p.alpha > 0);
+      requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  }
+
+  async function renderCustomerApp(ownerId) {
+    initCursorFireEffect();
+    clearAppHeader();
+    ekran(customerWelcomeLoadingHtml(null));
+
+    let stillLoading = true;
+    apiPost('/api/restaurant-brand', { ownerId }).then(r => {
+      if (stillLoading && r && r.ok) ekran(customerWelcomeLoadingHtml(r));
+    }).catch(() => {});
+    const verifyRes = await apiPost('/api/customer-verify', { ownerId });
+    stillLoading = false;
+    if (verifyRes.networkError) {
+      renderNetworkErrorScreen(verifyRes.reason, () => renderCustomerApp(ownerId));
+      return;
+    }
+    if (!verifyRes.ok) {
+      ekran(`<div class="xato">Kirish rad etildi.<br>${escapeHtml(verifyRes.reason || 'Bu menyu hozircha mavjud emas.')}</div>`);
+      return;
+    }
+    applyBrandColor(verifyRes.restaurant.brandColor);
+    setAppHeader(verifyRes.restaurant.logoUrl, verifyRes.restaurant.name);
+    customerState.ownerId = ownerId;
+    customerState.restaurant = verifyRes.restaurant;
+    customerState.branches = verifyRes.restaurant.branches || [];
+    customerState.favorites = verifyRes.customer.favorites || [];
+    customerState.addresses = verifyRes.customer.addresses || [];
+    customerState.bonusPoints = verifyRes.customer.bonusPoints || 0;
+    customerState.bonusEnabled = !!verifyRes.bonusEnabled;
+    customerState.cardOnlyRestricted = !!verifyRes.customer.cardOnlyRestricted;
+    customerState.personRegistered = !!verifyRes.personRegistered;
+
+    // 3-bosqich (yangilangan): mijozdan filialni ilova ochilishi bilanoq
+    // so'ramaymiz — avval markaziy (yoki oldin shu qurilmada tanlangan)
+    // filial menyusi ko'rsatiladi, mijoz erkin ko'rib-tanlaydi. Filialni
+    // tasdiqlash/almashtirish so'rovi endi buyurtma rasmiylashtirish
+    // (checkout) oynasida, "Buyurtma berish" tugmasidan oldin ko'rsatiladi.
+    if (customerState.branches.length > 0) {
+      const stored = getStoredCustomerBranch();
+      const storedValid = stored === '__central__' || customerState.branches.some(b => String(b.id) === String(stored));
+      customerState.branchId = storedValid ? (stored === '__central__' ? null : stored) : null;
+    } else {
+      customerState.branchId = null;
+    }
+
+    await continueCustomerAppLoad(ownerId);
+  }
+
+  async function continueCustomerAppLoad(ownerId) {
+    const kitchenStatus = await apiPost('/api/kitchen-status', { ownerId });
+    if (kitchenStatus.ok && !kitchenStatus.open) {
+      renderKitchenClosedScreen(ownerId, kitchenStatus);
+      return;
+    }
+
+    const menuRes = await apiPost('/api/customer-menu-list', { ownerId, branchId: customerState.branchId });
+    customerState.menu = menuRes.ok ? menuRes.menu : [];
+    customerState.categories = menuRes.ok ? (menuRes.categories || []) : [];
+    customerState.promotions = menuRes.ok ? menuRes.promotions : [];
+    customerState.banners = menuRes.ok ? (menuRes.banners || []) : [];
+    customerState.aiRecommendations = menuRes.ok ? (menuRes.recommendations || null) : null;
+
+    renderCustomerMenuTab();
+
+    refreshCustomerNotifBadge();
+  }
+
+  // 3-bosqich: filial tanlash ekrani. Markaziy (asosiy) filial ham ro'yxatda
+  // birinchi variant sifatida ko'rsatiladi.
+  function customerBranchPickerHtml(branches, centralLabel) {
+    const centralItem = `
+      <div class="owner-item" data-pick-branch-id="" style="cursor:pointer;">
+        <div>
+          <div class="owner-id">${escapeHtml(centralLabel)}</div>
+        </div>
+        <div style="font-size:20px;">›</div>
+      </div>
+    `;
+    const branchItems = (branches || []).map(b => `
+      <div class="owner-item" data-pick-branch-id="${escapeHtml(b.id)}" style="cursor:pointer;">
+        <div>
+          <div class="owner-id">${escapeHtml(b.name)}</div>
+          ${b.address ? `<div class="owner-username">${escapeHtml(b.address)}</div>` : ''}
+        </div>
+        <div style="font-size:20px;">›</div>
+      </div>
+    `).join('');
+    return centralItem + branchItems;
+  }
+
+  function renderCustomerBranchPicker(ownerId) {
+    clearAppHeader();
+    const r = customerState.restaurant || {};
+    setAppHeader(r.logoUrl, r.name);
+    const centralLabel = r.centralBranchName || `${r.name || 'Oshxona'} (asosiy)`;
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Filialni tanlang</div>
+        <div class="bosh">Buyurtma berish uchun qaysi filialdan xarid qilishni tanlang.</div>
+        <div class="owner-list" style="margin-top:14px;">${customerBranchPickerHtml(customerState.branches, centralLabel)}</div>
+      </div>
+    `);
+    document.querySelectorAll('[data-pick-branch-id]').forEach(el => {
+      el.addEventListener('click', () => selectCustomerBranch(ownerId, el.getAttribute('data-pick-branch-id') || null));
+    });
+  }
+
+  function selectCustomerBranch(ownerId, branchId) {
+    customerState.branchId = branchId || null;
+    setStoredCustomerBranch(customerState.branchId);
+    continueCustomerAppLoad(ownerId);
+  }
+
+  let kitchenCountdownTimer = null;
+
+  function customerClosedScreenHtml(status) {
+    const already = !!status.alreadyReminded;
+    return `
+      <div class="panel" style="padding-top:6px;">
+        <svg width="100%" viewBox="0 0 380 380" style="display:block; border-radius:12px; overflow:hidden;">
+          <rect x="0" y="0" width="380" height="120" fill="#0E1A33"/>
+          <circle cx="315" cy="30" r="15" fill="#F4E9C9"/>
+          <circle cx="55" cy="24" r="1.4" fill="#F4E9C9"/>
+          <circle cx="105" cy="46" r="1.1" fill="#F4E9C9"/>
+          <circle cx="260" cy="12" r="1.2" fill="#F4E9C9"/>
+          <rect x="0" y="120" width="380" height="260" fill="#182233"/>
+          <rect x="65" y="118" width="6" height="236" fill="#4A3A2A"/>
+          <rect x="309" y="118" width="6" height="236" fill="#4A3A2A"/>
+          <rect x="66" y="64" width="248" height="32" rx="3" fill="#2B2B28"/>
+          <rect x="66" y="64" width="248" height="32" rx="3" fill="none" stroke="var(--brand-primary)" stroke-width="2"/>
+          <text x="190" y="85" text-anchor="middle" font-size="17" font-weight="700" fill="#F0E9DC">TOSHKENT HOT-DOG</text>
+          <rect x="60" y="96" width="20" height="26" fill="var(--brand-primary)"/>
+          <rect x="80" y="96" width="20" height="26" fill="#F0E9DC"/>
+          <rect x="100" y="96" width="20" height="26" fill="var(--brand-primary)"/>
+          <rect x="120" y="96" width="20" height="26" fill="#F0E9DC"/>
+          <rect x="140" y="96" width="20" height="26" fill="var(--brand-primary)"/>
+          <rect x="160" y="96" width="20" height="26" fill="#F0E9DC"/>
+          <rect x="180" y="96" width="20" height="26" fill="var(--brand-primary)"/>
+          <rect x="200" y="96" width="20" height="26" fill="#F0E9DC"/>
+          <rect x="220" y="96" width="20" height="26" fill="var(--brand-primary)"/>
+          <rect x="240" y="96" width="20" height="26" fill="#F0E9DC"/>
+          <rect x="260" y="96" width="20" height="26" fill="var(--brand-primary)"/>
+          <rect x="280" y="96" width="20" height="26" fill="#F0E9DC"/>
+          <rect x="300" y="96" width="20" height="26" fill="var(--brand-primary)"/>
+          <circle cx="70" cy="122" r="9" fill="var(--brand-primary)"/>
+          <circle cx="90" cy="122" r="9" fill="#F0E9DC"/>
+          <circle cx="110" cy="122" r="9" fill="var(--brand-primary)"/>
+          <circle cx="130" cy="122" r="9" fill="#F0E9DC"/>
+          <circle cx="150" cy="122" r="9" fill="var(--brand-primary)"/>
+          <circle cx="170" cy="122" r="9" fill="#F0E9DC"/>
+          <circle cx="190" cy="122" r="9" fill="var(--brand-primary)"/>
+          <circle cx="210" cy="122" r="9" fill="#F0E9DC"/>
+          <circle cx="230" cy="122" r="9" fill="var(--brand-primary)"/>
+          <circle cx="250" cy="122" r="9" fill="#F0E9DC"/>
+          <circle cx="270" cy="122" r="9" fill="var(--brand-primary)"/>
+          <circle cx="290" cy="122" r="9" fill="#F0E9DC"/>
+          <circle cx="310" cy="122" r="9" fill="var(--brand-primary)"/>
+          <rect x="60" y="132" width="260" height="220" fill="#2B2B28"/>
+          <rect x="80" y="146" width="220" height="88" fill="#8A8F98"/>
+          <line x1="80" y1="154" x2="300" y2="154" stroke="#6B7078" stroke-width="1.5"/>
+          <line x1="80" y1="162" x2="300" y2="162" stroke="#6B7078" stroke-width="1.5"/>
+          <line x1="80" y1="170" x2="300" y2="170" stroke="#6B7078" stroke-width="1.5"/>
+          <line x1="80" y1="178" x2="300" y2="178" stroke="#6B7078" stroke-width="1.5"/>
+          <line x1="80" y1="186" x2="300" y2="186" stroke="#6B7078" stroke-width="1.5"/>
+          <line x1="80" y1="194" x2="300" y2="194" stroke="#6B7078" stroke-width="1.5"/>
+          <line x1="80" y1="202" x2="300" y2="202" stroke="#6B7078" stroke-width="1.5"/>
+          <line x1="80" y1="210" x2="300" y2="210" stroke="#6B7078" stroke-width="1.5"/>
+          <line x1="80" y1="218" x2="300" y2="218" stroke="#6B7078" stroke-width="1.5"/>
+          <line x1="80" y1="226" x2="300" y2="226" stroke="#6B7078" stroke-width="1.5"/>
+          <circle cx="190" cy="190" r="9" fill="#5A5F66"/>
+          <rect x="187" y="196" width="6" height="10" fill="#5A5F66"/>
+          <line x1="178" y1="146" x2="182" y2="180" stroke="#4A3A2A" stroke-width="1"/>
+          <line x1="202" y1="146" x2="198" y2="180" stroke="#4A3A2A" stroke-width="1"/>
+          <g transform="rotate(-4 190 194)">
+            <rect x="160" y="180" width="60" height="26" rx="2" fill="#F0E9DC"/>
+            <text x="190" y="197" text-anchor="middle" font-size="14" font-weight="700" fill="#792A1F">yopiq</text>
+          </g>
+          <ellipse cx="290" cy="304" rx="14" ry="5" fill="#D9A463"/>
+          <rect x="278" y="295" width="24" height="7" rx="3" fill="#6B4226"/>
+          <path d="M278 293 L284 289 L290 293 L296 289 L302 293 L302 296 L278 296 Z" fill="#F2C94C"/>
+          <path d="M278 289 Q283 284 290 289 Q297 284 302 289" fill="none" stroke="#6FA83B" stroke-width="3" stroke-linecap="round"/>
+          <ellipse cx="290" cy="286" rx="14" ry="8" fill="#E4B673"/>
+          <circle cx="284" cy="283" r="1.1" fill="#F7EFDD"/>
+          <circle cx="290" cy="281" r="1.1" fill="#F7EFDD"/>
+          <circle cx="296" cy="283" r="1.1" fill="#F7EFDD"/>
+          <rect x="86" y="240" width="188" height="8" fill="#4A3A2A"/>
+          <rect x="90" y="248" width="180" height="100" rx="3" fill="#24322B"/>
+          <rect x="90" y="248" width="180" height="100" rx="3" fill="none" stroke="#4A3A2A" stroke-width="3"/>
+          <text x="180" y="266" text-anchor="middle" font-size="13" font-weight="600" fill="#E9E2D0">
+            <tspan x="180" dy="0">Kunduzi sizga yaxshiroq va</tspan>
+            <tspan x="180" dy="16">mazaliroq tayyorlash uchun</tspan>
+            <tspan x="180" dy="16">hozir dam olyabmiz</tspan>
+          </text>
+          <text id="kitchenTimerSvgText" x="180" y="335" text-anchor="middle" font-size="26" font-weight="700" fill="#F0E9DC" font-family="monospace">00:00:00</text>
+          <rect x="50" y="354" width="280" height="14" fill="#4A3A2A"/>
+        </svg>
+        <div style="text-align:center; margin-top:14px;">
+          <div style="font-size:12px; color:var(--text-muted); margin-bottom:10px;">Ish vaqti: ${pad2(status.openHour)}:${pad2(status.openMinute || 0)} — ${pad2(status.closeHour)}:${pad2(status.closeMinute || 0)}</div>
+          <div style="height:4px; background:var(--surface-1); border-radius:4px; overflow:hidden; max-width:260px; margin:0 auto 16px;">
+            <div id="kitchenProgressFill" style="height:100%; width:0%; background:var(--brand-primary); border-radius:4px;"></div>
+          </div>
+          <button class="btn" id="kitchenRemindBtn" ${already ? 'disabled' : ''}>
+            <span>${already ? "🔔 Eslatma yoqilgan" : "🔔 Ochilganda eslatib qo'y"}</span>
+          </button>
+        </div>
+      </div>
+    `;
+  }
+
+  function pad2(n) { return n < 10 ? '0' + n : '' + n; }
+
+  function renderKitchenClosedScreen(ownerId, status) {
+    clearAppHeader();
+    if (kitchenCountdownTimer) { clearInterval(kitchenCountdownTimer); kitchenCountdownTimer = null; }
+    ekran(customerClosedScreenHtml(status));
+
+    const opensAt = new Date(status.opensAt).getTime();
+    const openMinTotal = status.openHour * 60 + (status.openMinute || 0);
+    const closeMinTotal = status.closeHour * 60 + (status.closeMinute || 0);
+    const closedMinutes = (((openMinTotal - closeMinTotal) % 1440) + 1440) % 1440 || 1440;
+    const totalWindowMs = closedMinutes * 60 * 1000;
+    const timerEl = document.getElementById('kitchenTimerSvgText');
+    const progressEl = document.getElementById('kitchenProgressFill');
+
+    function tick() {
+      const now = Date.now();
+      const diff = opensAt - now;
+      if (diff <= 0) {
+        clearInterval(kitchenCountdownTimer);
+        kitchenCountdownTimer = null;
+        renderCustomerApp(ownerId);
+        return;
+      }
+      const totalSec = Math.floor(diff / 1000);
+      const hh = Math.floor(totalSec / 3600);
+      const mm = Math.floor((totalSec % 3600) / 60);
+      const ss = totalSec % 60;
+      if (timerEl) timerEl.textContent = pad2(hh) + ':' + pad2(mm) + ':' + pad2(ss);
+      if (progressEl && totalWindowMs > 0) {
+        const elapsed = totalWindowMs - diff;
+        const pct = Math.max(0, Math.min(100, (elapsed / totalWindowMs) * 100));
+        progressEl.style.width = pct.toFixed(0) + '%';
+      }
+    }
+    tick();
+    kitchenCountdownTimer = setInterval(tick, 1000);
+
+    const btn = document.getElementById('kitchenRemindBtn');
+    if (btn) {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        const r = await apiPost('/api/kitchen-remind', { ownerId });
+        if (r.ok) {
+          btn.innerHTML = '<span>🔔 Eslatma yoqilgan</span>';
+        } else {
+          btn.disabled = false;
+          alert(r.reason || 'Xatolik yuz berdi.');
+        }
+      });
+    }
+  }
+
+  function customerRestaurantPickerHtml(restaurants) {
+    return restaurants.map(r => `
+      <div class="owner-item" data-pick-restaurant-id="${escapeHtml(r.id)}" style="cursor:pointer;">
+        <div>
+          <div class="owner-id">${r.avgRating !== null && r.avgRating !== undefined ? `⭐ ${r.avgRating} · ` : ''}${escapeHtml(r.name)}</div>
+          ${r.address ? `<div class="owner-username">${escapeHtml(r.address)}</div>` : ''}
+        </div>
+        <div style="font-size:20px;">›</div>
+      </div>
+    `).join('');
+  }
+
+  // "Siz ham oshxona egasimisiz? Hamkor bo'ling" — ilgari bu HAR BIR yangi
+  // mijozga botning /start xabarida alohida tugma sifatida chiqardi va
+  // "oshxona egasimisiz?" deb so'ralayotgandek tuyular edi. Endi mijozlar
+  // to'g'ridan-to'g'ri menyuga o'tadi (yoki ro'yxatdan tanlaydi), hamkorlik
+  // taklifi esa shu — kamroq ko'zga tashlanadigan — havola orqali, faqat
+  // "aniq bir oshxonaga bog'lanmagan" umumiy kirish ekranida beriladi.
+  function becomePartnerLinkHtml() {
+    return `
+      <button type="button" id="becomePartnerBtn" style="margin-top:18px; width:100%; text-align:center; background:none; border:none; color:var(--text-secondary); font-size:var(--fs-sm); text-decoration:underline; cursor:pointer; padding:8px;">
+        🏪 Siz ham oshxona egasimisiz? Hamkor bo'ling
+      </button>
+    `;
+  }
+  function wireBecomePartnerLink() {
+    const btn = document.getElementById('becomePartnerBtn');
+    if (!btn) return;
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      const res = await apiPost('/api/partner-register-link');
+      btn.disabled = false;
+      if (!res.ok) { alert(res.reason || 'Xatolik yuz berdi.'); return; }
+      if (tg && typeof tg.openTelegramLink === 'function') {
+        tg.openTelegramLink(`https://t.me/${res.botUsername}?start=owner_register`);
+      } else {
+        window.open(`https://t.me/${res.botUsername}?start=owner_register`, '_blank');
+      }
+    });
+  }
+
+  async function renderCustomerEntry() {
+    clearAppHeader();
+    resetBrandColor();
+    ekran(customerWelcomeLoadingHtml(readCachedBrand()));
+    const res = await apiPost('/api/customer-restaurants-list');
+    if (res.networkError) {
+      renderNetworkErrorScreen(res.reason, renderCustomerEntry);
+      return;
+    }
+    const restaurants = res.ok ? res.restaurants : [];
+
+    if (!restaurants.length) {
+      ekran(`
+        <div class="panel">
+          <div class="xato">Hozircha faol oshxona topilmadi.<br>Iltimos, keyinroq urinib ko'ring.</div>
+          ${becomePartnerLinkHtml()}
+        </div>
+      `);
+      wireBecomePartnerLink();
+      return;
+    }
+    if (restaurants.length === 1) {
+      renderCustomerApp(restaurants[0].id);
+      return;
+    }
+    ekran(`
+      <div class="panel">
+        <div class="salom" style="font-size:20px;">Oshxonani tanlang</div>
+        <div class="owner-list" style="margin-top:14px;">${customerRestaurantPickerHtml(restaurants)}</div>
+        ${becomePartnerLinkHtml()}
+      </div>
+    `);
+    document.querySelectorAll('[data-pick-restaurant-id]').forEach(el => {
+      el.addEventListener('click', () => renderCustomerApp(el.getAttribute('data-pick-restaurant-id')));
+    });
+    wireBecomePartnerLink();
+  }
+
+  const urlParams = new URLSearchParams(location.search);
+  const customerOwnerId = urlParams.get('customer');
+
+  if (!tg && !customerOwnerId) {
+
+    if (initData) {
+      bootstrapApp();
+    } else {
+      renderOwnerLoginScreen();
+    }
+  } else if (!tg) {
+    ekran('<div class="xato">Kirish rad etildi.<br>Bu havola faqat Telegram orqali ishlaydi.</div>');
+  } else {
+    tg.ready();
+    tg.expand();
+    if (typeof tg.disableVerticalSwipes === 'function') tg.disableVerticalSwipes();
+
+    if (customerOwnerId) {
+      renderCustomerApp(customerOwnerId);
+    } else {
+      bootstrapApp();
+    }
+  }
+
+  // Kirish oynasi foni: fast-food emojilari bir tekis to'r bo'ylab, har biri biroz buriltirilgan.
+  // Joylashuv har safar bir xil (tasodifiy emas), shuning uchun sahifa "sakramaydi".
+  function loginEmojiBackgroundHtml() {
+    const emojis = ['🌭', '🍔', '🍟', '🍕', '🥤', '🌮', '🍗', '🥪', '🧃', '🍩'];
+    const cols = 6, rows = 11;
+    let html = '';
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const i = r * cols + c;
+        const x = (c + (r % 2 ? 0.5 : 0)) * (100 / cols) + 2;
+        const y = r * (100 / rows) + 2;
+        const rot = ((i * 37) % 50) - 25;
+        const size = 26 + ((i * 13) % 3) * 6;
+        html += `<span style="left:${x.toFixed(1)}%;top:${y.toFixed(1)}%;font-size:${size}px;transform:rotate(${rot}deg)">${emojis[(i * 7 + r) % emojis.length]}</span>`;
+      }
+    }
+    return `<div class="login-emoji-bg" aria-hidden="true">${html}</div>`;
+  }
+
+  function renderOwnerLoginScreen(errorText) {
+    clearAppHeader();
+    resetBrandColor();
+    ekran(`
+      <div class="login-screen">
+        ${loginEmojiBackgroundHtml()}
+        <div class="login-card">
+          <div class="login-logo" aria-hidden="true">🌭</div>
+          <h1 class="login-title">Xush kelibsiz!</h1>
+          <p class="login-sub">Login va parolingizni kiriting</p>
+          <div id="loginFormBox">
+            <label class="field-label" for="ownerLoginInput">Login</label>
+            <input type="text" id="ownerLoginInput" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="Login">
+            <label class="field-label" for="ownerPasswordInput">Parol</label>
+            <input type="password" id="ownerPasswordInput" autocomplete="current-password" placeholder="Parol">
+            <button class="btn login-submit" id="ownerLoginBtn">${icon('user', 'icon-xs')}<span>Kirish</span></button>
+            <div class="xabar ${errorText ? 'err' : ''}" id="ownerLoginMsg">${errorText ? escapeHtml(errorText) : ''}</div>
+            <button type="button" class="login-link" id="forgotPwBtn">Parolni unutdim</button>
+          </div>
+          <div id="forgotFormBox" class="hidden">
+            <p class="login-hint">Telegram ID raqamingizni kiriting. Bot sizga yangi login va parolni yuboradi.<br>
+              ID ni bilmasangiz, Telegramda <b>@userinfobot</b> ga <b>/start</b> yozing.</p>
+            <label class="field-label" for="forgotTgIdInput">Telegram ID</label>
+            <input type="tel" id="forgotTgIdInput" inputmode="numeric" placeholder="Masalan: 123456789">
+            <button class="btn login-submit" id="forgotSendBtn">${icon('send', 'icon-xs')}<span>Yuborish</span></button>
+            <div class="xabar" id="forgotMsg"></div>
+            <button type="button" class="login-link" id="forgotBackBtn">← Kirish oynasiga qaytish</button>
+          </div>
+        </div>
+      </div>
+    `);
+
+    const loginBox = document.getElementById('loginFormBox');
+    const forgotBox = document.getElementById('forgotFormBox');
+    document.getElementById('forgotPwBtn').addEventListener('click', () => {
+      loginBox.classList.add('hidden');
+      forgotBox.classList.remove('hidden');
+      document.getElementById('forgotTgIdInput').focus();
+    });
+    document.getElementById('forgotBackBtn').addEventListener('click', () => {
+      forgotBox.classList.add('hidden');
+      loginBox.classList.remove('hidden');
+    });
+    const sendForgot = async () => {
+      const telegramId = document.getElementById('forgotTgIdInput').value.replace(/\D/g, '');
+      const msgEl = document.getElementById('forgotMsg');
+      const btn = document.getElementById('forgotSendBtn');
+      if (!telegramId) { setMsg(msgEl, 'Telegram ID ni kiriting.', 'err'); return; }
+      btn.disabled = true;
+      setMsg(msgEl, 'Yuborilmoqda...');
+      const res = await apiPost('/api/password-reset-request', { telegramId });
+      btn.disabled = false;
+      if (!res.ok) { setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err'); return; }
+      setMsg(msgEl, res.message, 'ok');
+    };
+    document.getElementById('forgotSendBtn').addEventListener('click', sendForgot);
+    document.getElementById('forgotTgIdInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') sendForgot();
+    });
+
+    const doLogin = async () => {
+      const login = document.getElementById('ownerLoginInput').value.trim();
+      const password = document.getElementById('ownerPasswordInput').value;
+      const msgEl = document.getElementById('ownerLoginMsg');
+      const btn = document.getElementById('ownerLoginBtn');
+      if (!login || !password) {
+        setMsg(msgEl, 'Login va parolni kiriting.', 'err');
+        return;
+      }
+      btn.disabled = true;
+      setMsg(msgEl, 'Tekshirilmoqda...');
+      const res = await apiPost('/api/owner-login', { login, password });
+      btn.disabled = false;
+      if (res.networkError) {
+        setMsg(msgEl, res.reason, 'err');
+        return;
+      }
+      if (!res.ok) {
+        setMsg(msgEl, res.reason || 'Login yoki parol noto\'g\'ri.', 'err');
+        return;
+      }
+      initData = res.sessionToken;
+      usingOwnerSession = true;
+      localStorage.setItem(OWNER_SESSION_STORAGE_KEY, res.sessionToken);
+      bootstrapApp();
+    };
+
+    document.getElementById('ownerLoginBtn').addEventListener('click', doLogin);
+    document.getElementById('ownerPasswordInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') doLogin();
+    });
+  }
+
+  function attachOwnerPasswordSecurityHandlers() {
+    const toggleChangeBtn = document.getElementById('togglePwChangeBtn');
+    const changeForm = document.getElementById('pwChangeForm');
+    if (toggleChangeBtn && changeForm) {
+      toggleChangeBtn.addEventListener('click', () => changeForm.classList.toggle('hidden'));
+    }
+
+    const changeCancelBtn = document.getElementById('pwChangeCancelBtn');
+    if (changeCancelBtn) {
+      changeCancelBtn.addEventListener('click', () => {
+        document.getElementById('pwCurrentInput').value = '';
+        document.getElementById('pwNewInput').value = '';
+        document.getElementById('pwNewRepeatInput').value = '';
+        const msgEl = document.getElementById('pwChangeMsg');
+        setMsg(msgEl, '');
+        changeForm.classList.add('hidden');
+      });
+    }
+
+    const changeSaveBtn = document.getElementById('pwChangeSaveBtn');
+    if (changeSaveBtn) {
+      changeSaveBtn.addEventListener('click', async () => {
+        const currentPassword = document.getElementById('pwCurrentInput').value;
+        const newPassword = document.getElementById('pwNewInput').value;
+        const newPasswordRepeat = document.getElementById('pwNewRepeatInput').value;
+        const msgEl = document.getElementById('pwChangeMsg');
+        if (!currentPassword || !newPassword) {
+          setMsg(msgEl, 'Barcha maydonlarni to\'ldiring.', 'err');
+          return;
+        }
+        if (newPassword.length < 6) {
+          setMsg(msgEl, 'Yangi parol kamida 6 belgidan iborat bo\'lishi kerak.', 'err');
+          return;
+        }
+        if (newPassword !== newPasswordRepeat) {
+          setMsg(msgEl, 'Yangi parollar mos kelmadi.', 'err');
+          return;
+        }
+        changeSaveBtn.disabled = true;
+        setMsg(msgEl, 'Saqlanmoqda...');
+        const res = await apiPost('/api/owner-change-password', { currentPassword, newPassword });
+        changeSaveBtn.disabled = false;
+        if (res.networkError) {
+          setMsg(msgEl, res.reason, 'err');
+          return;
+        }
+        if (!res.ok) {
+          setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+          return;
+        }
+        if (usingOwnerSession) {
+
+          localStorage.removeItem(OWNER_SESSION_STORAGE_KEY);
+          initData = null;
+          renderOwnerLoginScreen('Parol muvaffaqiyatli o\'zgartirildi. Yangi parol bilan qayta kiring.');
+          return;
+        }
+        setMsg(msgEl, 'Parol muvaffaqiyatli o\'zgartirildi.', 'ok');
+        document.getElementById('pwCurrentInput').value = '';
+        document.getElementById('pwNewInput').value = '';
+        document.getElementById('pwNewRepeatInput').value = '';
+      });
+    }
+
+    const toggleRemoveBtn = document.getElementById('togglePwRemoveBtn');
+    const removeForm = document.getElementById('pwRemoveForm');
+    if (toggleRemoveBtn && removeForm) {
+      toggleRemoveBtn.addEventListener('click', () => removeForm.classList.toggle('hidden'));
+    }
+
+    const removeCancelBtn = document.getElementById('pwRemoveCancelBtn');
+    if (removeCancelBtn) {
+      removeCancelBtn.addEventListener('click', () => {
+        document.getElementById('pwRemoveCurrentInput').value = '';
+        const msgEl = document.getElementById('pwRemoveMsg');
+        setMsg(msgEl, '');
+        removeForm.classList.add('hidden');
+      });
+    }
+
+    const removeConfirmBtn = document.getElementById('pwRemoveConfirmBtn');
+    if (removeConfirmBtn) {
+      removeConfirmBtn.addEventListener('click', async () => {
+        const currentPassword = document.getElementById('pwRemoveCurrentInput').value;
+        const msgEl = document.getElementById('pwRemoveMsg');
+        if (!currentPassword) {
+          setMsg(msgEl, 'Joriy parolni kiriting.', 'err');
+          return;
+        }
+        removeConfirmBtn.disabled = true;
+        setMsg(msgEl, 'Bajarilmoqda...');
+        const res = await apiPost('/api/owner-remove-password', { currentPassword });
+        removeConfirmBtn.disabled = false;
+        if (res.networkError) {
+          setMsg(msgEl, res.reason, 'err');
+          return;
+        }
+        if (!res.ok) {
+          setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
+          return;
+        }
+
+        const gateKey = ownerTelegramGateKey();
+        if (gateKey) localStorage.removeItem(gateKey);
+        ownerHasTelegramLogin = false;
+        location.reload();
+      });
+    }
+  }
+
+  async function ownerLogout() {
+    await apiPost('/api/owner-logout');
+    localStorage.removeItem(OWNER_SESSION_STORAGE_KEY);
+    location.reload();
+  }
+
+  const LAST_BRAND_STORAGE_KEY = 'kitchenOsLastBrand';
+  function readCachedBrand() {
+    try {
+      const raw = localStorage.getItem(LAST_BRAND_STORAGE_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (e) { return null; }
+  }
+  function writeCachedBrand(name, logoUrl) {
+    if (!name && !logoUrl) return;
+    try { localStorage.setItem(LAST_BRAND_STORAGE_KEY, JSON.stringify({ name, logoUrl })); } catch (e) {  }
+  }
+
+  async function bootstrapApp() {
+
+    ekran(customerWelcomeLoadingHtml(readCachedBrand()));
+    const data = await apiPost('/api/verify');
+    if (data.networkError) {
+      renderNetworkErrorScreen(data.reason, bootstrapApp);
+      return;
+    }
+    if (data.ok && data.ownerRestaurantName) {
+      writeCachedBrand(data.ownerRestaurantName, data.ownerLogoUrl);
+    }
+    if (!data.ok) {
+      if (usingOwnerSession) {
+
+        localStorage.removeItem(OWNER_SESSION_STORAGE_KEY);
+        initData = null;
+        renderOwnerLoginScreen(data.reason);
+        return;
+      }
+
+      renderCustomerEntry();
+      return;
+    }
+    if (!data.personRegistered) {
+      renderPersonRegistrationScreen(() => bootstrapApp());
+      return;
+    }
+    if (data.isAdmin) {
+      loadOwnersAndRender();
+    } else if (data.isOwner || data.role === 'egasi') {
+      maybeGateOwnerWithPassword(data);
+    } else if (data.role) {
+
+      if (Array.isArray(data.roles) && data.roles.length > 1) {
+        const key = staffChosenRoleKey();
+        const savedRole = key ? localStorage.getItem(key) : null;
+        if (savedRole && data.roles.includes(savedRole)) {
+          renderStaffScreen(savedRole, ROLE_LABELS[savedRole] || data.roleLabel, data.ownerRestaurantName, data.ownerLogoUrl, data.ownerBrandColor, data.roles);
+        } else {
+          renderStaffRolePicker(data);
+        }
+      } else {
+        renderStaffScreen(data.role, data.roleLabel, data.ownerRestaurantName, data.ownerLogoUrl, data.ownerBrandColor, data.roles);
+      }
+    } else {
+      renderCustomerEntry();
+    }
+  }
+
+  function ownerTelegramGateKey() {
+    const tgUserId = tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.id;
+    return tgUserId ? `kitchenOsOwnerPwOk:${tgUserId}` : null;
+  }
+
+  function maybeGateOwnerWithPassword(data) {
+    ownerHasTelegramLogin = !!data.hasOwnerLogin;
+    if (!data.hasOwnerLogin) { loadOwnProfileAndRender(); return; }
+    const gateKey = ownerTelegramGateKey();
+    if (gateKey && localStorage.getItem(gateKey) === '1') { loadOwnProfileAndRender(); return; }
+    renderOwnerTelegramPasswordGate(gateKey);
+  }
+
+  function renderOwnerTelegramPasswordGate(gateKey, errorText) {
+    clearAppHeader();
+    resetBrandColor();
+    ekran(`
+      <div class="panel">
+        <div class="salom">Parolni kiriting</div>
+        <div class="bosh">Xavfsizlik uchun administrator o'rnatgan parolni kiriting. Bu faqat shu qurilmada bir marta so'raladi.</div>
+        <div class="kartochka">
+          <label class="field-label">Parol</label>
+          <input type="password" id="ownerGatePasswordInput" autocomplete="current-password" placeholder="Parol">
+          <button class="btn" id="ownerGateBtn" style="margin-top:10px;">${icon('user', 'icon-xs')}<span>Tasdiqlash</span></button>
+          <div class="xabar ${errorText ? 'err' : ''}" id="ownerGateMsg">${errorText ? escapeHtml(errorText) : ''}</div>
+        </div>
+      </div>
+    `);
+
+    const doConfirm = async () => {
+      const password = document.getElementById('ownerGatePasswordInput').value;
+      const msgEl = document.getElementById('ownerGateMsg');
+      const btn = document.getElementById('ownerGateBtn');
+      if (!password) {
+        setMsg(msgEl, 'Parolni kiriting.', 'err');
+        return;
+      }
+      btn.disabled = true;
+      setMsg(msgEl, 'Tekshirilmoqda...');
+      const res = await apiPost('/api/owner-confirm-password', { password });
+      btn.disabled = false;
+      if (res.networkError) {
+        setMsg(msgEl, res.reason, 'err');
+        return;
+      }
+      if (!res.ok) {
+        setMsg(msgEl, res.reason || 'Parol noto\'g\'ri.', 'err');
+        return;
+      }
+      if (gateKey) localStorage.setItem(gateKey, '1');
+      loadOwnProfileAndRender();
+    };
+
+    document.getElementById('ownerGateBtn').addEventListener('click', doConfirm);
+    document.getElementById('ownerGatePasswordInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') doConfirm();
+    });
+  }
+
+  function ownerTelegramGateLogout() {
+    const gateKey = ownerTelegramGateKey();
+    if (gateKey) localStorage.removeItem(gateKey);
+    location.reload();
+  }
