@@ -879,7 +879,7 @@
   .btn-row { display: flex; gap: var(--sp-2); margin-top: 10px; }
   .btn-row .btn { flex: 1; }
 
-  input[type="text"], input[type="tel"], input[type="number"], textarea, select {
+  input[type="text"], input[type="tel"], input[type="number"], input[type="password"], textarea, select {
     width: 100%;
     min-height: 44px;
     padding: 12px 14px;
@@ -894,7 +894,7 @@
     box-sizing: border-box;
     transition: border-color var(--transition-fast), box-shadow var(--transition-fast);
   }
-  input[type="text"]:focus, input[type="tel"]:focus, input[type="number"]:focus, textarea:focus, select:focus {
+  input[type="text"]:focus, input[type="tel"]:focus, input[type="number"]:focus, input[type="password"]:focus, textarea:focus, select:focus {
     border-color: var(--brand-primary);
     box-shadow: var(--shadow-inset), 0 0 0 3px color-mix(in srgb, var(--brand-primary) 16%, transparent);
     outline: none;
@@ -2395,3 +2395,117 @@
       transition-duration: 0.01ms !important;
     }
   }
+
+/* ===== Kirish oynasi: markazda karta, orqada fast-food emojilari ===== */
+.login-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  overflow-y: auto;
+  background:
+    radial-gradient(circle at 50% 35%, color-mix(in srgb, var(--brand-primary) 10%, transparent), transparent 70%),
+    var(--brand-primary-light, #FCE7E9);
+}
+.login-emoji-bg {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+}
+.login-emoji-bg span {
+  position: absolute;
+  line-height: 1;
+  opacity: 0.22;
+  filter: saturate(0.9);
+}
+.login-card {
+  position: relative;
+  width: 100%;
+  max-width: 360px;
+  background: var(--surface-0, #fff);
+  border-radius: 24px;
+  padding: 28px 24px 20px;
+  box-shadow: 0 18px 50px color-mix(in srgb, var(--brand-primary-dark, #B8050F) 22%, transparent),
+              0 2px 6px rgba(0, 0, 0, 0.06);
+  text-align: center;
+}
+.login-logo {
+  width: 72px;
+  height: 72px;
+  margin: -64px auto 12px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 40px;
+  background: var(--surface-0, #fff);
+  box-shadow: 0 6px 18px color-mix(in srgb, var(--brand-primary) 30%, transparent);
+  border: 3px solid var(--brand-primary);
+}
+.login-title {
+  font-size: 24px;
+  font-weight: 800;
+  line-height: 1.2;
+  margin: 0 0 6px;
+  color: var(--text-primary);
+}
+.login-sub {
+  font-size: 15px;
+  line-height: 1.4;
+  margin: 0 0 20px;
+  color: var(--text-secondary);
+}
+.login-hint {
+  font-size: 14px;
+  line-height: 1.45;
+  margin: 0 0 16px;
+  color: var(--text-secondary);
+}
+.login-card label.field-label {
+  text-align: left;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+  margin: 0 0 6px;
+}
+/* Login, parol va ID maydonlari bir xil bo'yi va shriftda */
+.login-card input[type="text"],
+.login-card input[type="password"],
+.login-card input[type="tel"] {
+  height: 50px;
+  min-height: 50px;
+  padding: 0 16px;
+  font-size: 16px;
+  border-radius: 14px;
+  margin-bottom: 14px;
+}
+.login-card .login-submit {
+  width: 100%;
+  height: 50px;
+  font-size: 16px;
+  font-weight: 700;
+  margin-top: 4px;
+}
+.login-card .xabar {
+  min-height: 20px;
+  margin-top: 10px;
+  font-size: 14px;
+}
+.login-link {
+  display: inline-block;
+  margin-top: 6px;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--brand-primary);
+  cursor: pointer;
+}
+.login-link:hover { text-decoration: underline; }
