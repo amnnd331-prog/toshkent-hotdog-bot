@@ -448,12 +448,59 @@ function normalizeLogin(login) {
   return String(login || '').trim().toLowerCase();
 }
 
+// ===== Xodimlar uchun login/parol (login = Telegram ID) =====
+// Xodim o'z parolini o'rnatmaguncha (staff.passwordHash yo'q) umumiy boshlang'ich parol ishlaydi.
+// Uni STAFF_DEFAULT_PASSWORD muhit o'zgaruvchisi bilan almashtirish mumkin.
+const STAFF_DEFAULT_PASSWORD = process.env.STAFF_DEFAULT_PASSWORD || 'toshkenthotdog';
+
+function findStaffRecord(owners, userId) {
+  for (const owner of owners) {
+    const staff = (owner.staff || []).find(s => String(s.id) === String(userId));
+    if (staff) return { owner, staff };
+  }
+  return null;
+}
+
+function verifyStaffPassword(staff, password) {
+  if (staff.passwordHash) return verifyPassword(password, staff.passwordHash);
+  const a = Buffer.from(String(password));
+  const b = Buffer.from(STAFF_DEFAULT_PASSWORD);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+function findStaffBySessionToken(owners, token) {
+  for (const owner of owners) {
+    const staff = (owner.staff || []).find(s => s.sessionToken === token);
+    if (!staff) continue;
+    if (!staff.sessionExpiresAt || new Date(staff.sessionExpiresAt).getTime() < Date.now()) {
+      return { ok: false, reason: 'Sessiya muddati tugagan. Iltimos, qaytadan login/parol bilan kiring.' };
+    }
+    return { ok: true, user: { id: staff.id, username: staff.username || null, first_name: staff.name || 'Xodim' } };
+  }
+  return null;
+}
+
+// Xodim yozuvini saytga yuborishdan oldin maxfiy maydonlardan tozalaydi (parol xeshi, sessiya).
+function publicStaff(s) {
+  if (!s || typeof s !== 'object') return s;
+  const { passwordHash, sessionToken, sessionExpiresAt, ...rest } = s;
+  rest.hasOwnPassword = !!passwordHash;
+  return rest;
+}
+function publicStaffList(list) {
+  return (list || []).map(publicStaff);
+}
+
 function verifyAuth(initData) {
   if (typeof initData === 'string' && initData.startsWith('sess_')) {
     const token = initData.slice('sess_'.length);
     const owners = loadOwners();
     const owner = owners.find(o => o.sessionToken === token);
-    if (!owner) return { ok: false, reason: 'Sessiya topilmadi. Iltimos, qaytadan login/parol bilan kiring.' };
+    if (!owner) {
+      const staffSession = findStaffBySessionToken(owners, token);
+      if (staffSession) return staffSession;
+      return { ok: false, reason: 'Sessiya topilmadi. Iltimos, qaytadan login/parol bilan kiring.' };
+    }
     if (!owner.sessionExpiresAt || new Date(owner.sessionExpiresAt).getTime() < Date.now()) {
       return { ok: false, reason: 'Sessiya muddati tugagan. Iltimos, qaytadan login/parol bilan kiring.' };
     }
@@ -2985,6 +3032,16 @@ async function handleTelegramUpdate(update) {
     const from = msg.from;
     const chatId = msg.chat.id;
 
+    // /myid — foydalanuvchining Telegram ID raqami (ilova/saytga kirish logini va "Parolni unutdim" uchun).
+    // Guruhda yozilsa, guruh ID si ham ko'rsatiladi.
+    if (text === '/myid' || text.startsWith('/myid@')) {
+      let reply = `🆔 Sizning Telegram ID raqamingiz:\n<code>${from.id}</code>\n\n` +
+        '<i>Ustiga bossangiz, nusxa olinadi. Xodimlar ilovaga kirishda login o\'rniga shu raqamni yozadi.</i>';
+      if (msg.chat.type !== 'private') reply += `\n\n👥 Bu guruh ID si: <code>${chatId}</code>`;
+      await sendMessage(chatId, reply, null, msg.message_thread_id);
+      return;
+    }
+
     if (msg.chat.type === 'private' && (text === '/bekor') && botFlowState.has(String(from.id))) {
       skClearState(from.id);
       await sendMessage(chatId, 'Bekor qilindi.');
@@ -4968,7 +5025,7 @@ authed('/api/staff-list', (payload, res, { userId }) => {
   if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi ko\'ra oladi');
   const owner = ownerCtx.owner;
 
-  return sendOk(res, { staff: owner.staff || [] });
+  return sendOk(res, { staff: publicStaffList(owner.staff) });
 });
 
 authed('/api/add-staff', async (payload, res, { userId }) => {
@@ -5104,7 +5161,7 @@ authed('/api/set-staff-roles', (payload, res, { userId }) => {
   staff.role = uniqueRoles[0];
   saveOwners(owners);
 
-  return sendOk(res, { staff });
+  return sendOk(res, { staff: publicStaff(staff) });
 });
 
 authed('/api/set-staff-branch', (payload, res, { userId }) => {
@@ -5127,7 +5184,7 @@ authed('/api/set-staff-branch', (payload, res, { userId }) => {
   }
   saveOwners(owners);
 
-  return sendOk(res, { staff });
+  return sendOk(res, { staff: publicStaff(staff) });
 });
 
 authed('/api/remove-staff', (payload, res, { userId }) => {
@@ -9245,7 +9302,7 @@ authed('/api/staff-activity-log', (payload, res, { userId }) => {
     });
   });
 
-  return sendOk(res, { entries, staff: owner.staff || [] });
+  return sendOk(res, { entries, staff: publicStaffList(owner.staff) });
 });
 
 authed('/api/notification-error-log', (payload, res, { userId }) => {
@@ -9808,6 +9865,7 @@ authed('/api/owners', (payload, res, { userId }) => {
     delete clean.sessionToken;
     delete clean.sessionExpiresAt;
     clean.hasLogin = !!(o.login && o.passwordHash);
+    clean.staff = publicStaffList(o.staff);
 
     const rating = ownerAverageRating(o);
     clean.avgRating = rating.avg;
@@ -10071,6 +10129,27 @@ authed('/api/owner-remove-password', (payload, res, { userId }) => {
   return sendOk(res);
 });
 
+// Xodim kirishi: login = Telegram ID. Sessiya xodim yozuvining o'zida saqlanadi va
+// verifyAuth uni Telegram orqali kirgandek o'sha xodim ID si bilan tanitadi.
+function staffLogin(telegramId, password, res) {
+  const owners = loadOwners();
+  const rec = findStaffRecord(owners, telegramId);
+  if (!rec || !verifyStaffPassword(rec.staff, password)) {
+    return sendFail(res, 'Login yoki parol noto\'g\'ri.');
+  }
+  if (!isOwnerAccessValid(rec.owner)) {
+    return sendFail(res, 'Oshxona obunasi faol emas. Egasi bilan bog\'laning.');
+  }
+  const token = crypto.randomBytes(24).toString('hex');
+  rec.staff.sessionToken = token;
+  rec.staff.sessionExpiresAt = new Date(Date.now() + SESSION_TOKEN_TTL_MS).toISOString();
+  saveOwners(owners);
+  return sendOk(res, {
+    sessionToken: `sess_${token}`,
+    restaurantName: (rec.owner.profile && rec.owner.profile.name) || null
+  });
+}
+
 route('/api/owner-login', (payload, res) => {
   const { login, password } = payload;
   const loginNorm = normalizeLogin(login);
@@ -10080,6 +10159,9 @@ route('/api/owner-login', (payload, res) => {
 
   const owners = pruneExpiredOwners();
   const owner = owners.find(o => normalizeLogin(o.login) === loginNorm);
+  if (!owner && /^\d{5,15}$/.test(loginNorm)) {
+    return staffLogin(loginNorm, password, res);
+  }
   if (!owner || !owner.passwordHash || !verifyPassword(password, owner.passwordHash)) {
     return sendFail(res, 'Login yoki parol noto\'g\'ri.');
   }
@@ -10110,6 +10192,16 @@ route('/api/owner-logout', (payload, res) => {
       owner.sessionToken = null;
       owner.sessionExpiresAt = null;
       saveOwners(owners);
+    } else {
+      for (const o of owners) {
+        const staff = (o.staff || []).find(st => st.sessionToken === token);
+        if (staff) {
+          staff.sessionToken = null;
+          staff.sessionExpiresAt = null;
+          saveOwners(owners);
+          break;
+        }
+      }
     }
   }
   return sendOk(res);
@@ -10142,10 +10234,12 @@ route('/api/password-reset-request', async (payload, res) => {
   pwResetLastAt.set(telegramId, now);
   for (const [nonce, r] of pwResetRequests) if (r.expiresAt < now) pwResetRequests.delete(nonce);
 
-  const owner = findOwner(loadOwners(), telegramId);
-  if (owner && owner.login) {
+  const allOwners = loadOwners();
+  const owner = findOwner(allOwners, telegramId);
+  const kind = owner && owner.login ? 'owner' : (findStaffRecord(allOwners, telegramId) ? 'staff' : null);
+  if (kind) {
     const nonce = crypto.randomBytes(12).toString('hex');
-    pwResetRequests.set(nonce, { ownerId: String(owner.id), expiresAt: now + PW_RESET_TTL_MS });
+    pwResetRequests.set(nonce, { ownerId: telegramId, kind, expiresAt: now + PW_RESET_TTL_MS });
     await sendMessage(telegramId,
       '🔐 <b>Parolni tiklash so\'rovi</b>\n\nSaytda sizning Telegram ID raqamingiz bilan yangi parol so\'raldi.\n' +
       'Agar bu siz bo\'lsangiz, pastdagi tugmani bosing — yangi login va parol shu yerga yuboriladi.\n\n' +
@@ -10174,21 +10268,29 @@ async function handlePasswordResetCallback(cq, data, chatId, messageId) {
   }
 
   const owners = loadOwners();
-  const owner = findOwner(owners, req.ownerId);
-  if (!owner || !owner.login) {
+  // Egasi: o'z logini. Xodim: login doim Telegram ID.
+  let account = null, login = null;
+  if (req.kind === 'staff') {
+    const rec = findStaffRecord(owners, req.ownerId);
+    if (rec) { account = rec.staff; login = String(rec.staff.id); }
+  } else {
+    const owner = findOwner(owners, req.ownerId);
+    if (owner && owner.login) { account = owner; login = owner.login; }
+  }
+  if (!account) {
     await answerCallbackQuery(cq.id, 'Akkaunt topilmadi.', true);
     return;
   }
   const newPassword = generateReadablePassword();
-  owner.passwordHash = hashPassword(newPassword);
-  owner.sessionToken = null; // eski kirishlar yopiladi
-  owner.sessionExpiresAt = null;
+  account.passwordHash = hashPassword(newPassword);
+  account.sessionToken = null; // eski kirishlar yopiladi
+  account.sessionExpiresAt = null;
   saveOwners(owners);
 
   await answerCallbackQuery(cq.id, 'Yangi parol yuborildi');
   await editMessageText(chatId, messageId,
     '🔑 <b>Yangi kirish ma\'lumotlari</b>\n\n' +
-    `Login: <code>${escapeHtmlServer(owner.login)}</code>\n` +
+    `Login: <code>${escapeHtmlServer(login)}</code>\n` +
     `Parol: <code>${newPassword}</code>\n\n` +
     'Kirgandan keyin sozlamalardan parolni o\'zingizga qulayiga almashtiring. Bu xabarni hech kimga ko\'rsatmang.');
 }
@@ -10928,7 +11030,8 @@ server.listen(PORT, async () => {
 
   try {
     const cmdResult = await telegramApi('setMyCommands', { commands: JSON.stringify([
-      { command: 'sklad', description: "Sklad: ostatka, retsept, audit" }
+      { command: 'sklad', description: "Sklad: ostatka, retsept, audit" },
+      { command: 'myid', description: "Telegram ID raqamimni ko'rsat" }
     ]) });
     if (!cmdResult || !cmdResult.ok) console.error('setMyCommands xato:', cmdResult && cmdResult.description);
   } catch (e) {
