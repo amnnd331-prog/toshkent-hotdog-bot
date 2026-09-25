@@ -10283,23 +10283,84 @@ const tg = window.Telegram && window.Telegram.WebApp;
     }
   }
 
+  // Kirish oynasi foni: fast-food emojilari bir tekis to'r bo'ylab, har biri biroz buriltirilgan.
+  // Joylashuv har safar bir xil (tasodifiy emas), shuning uchun sahifa "sakramaydi".
+  function loginEmojiBackgroundHtml() {
+    const emojis = ['🌭', '🍔', '🍟', '🍕', '🥤', '🌮', '🍗', '🥪', '🧃', '🍩'];
+    const cols = 6, rows = 11;
+    let html = '';
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const i = r * cols + c;
+        const x = (c + (r % 2 ? 0.5 : 0)) * (100 / cols) + 2;
+        const y = r * (100 / rows) + 2;
+        const rot = ((i * 37) % 50) - 25;
+        const size = 26 + ((i * 13) % 3) * 6;
+        html += `<span style="left:${x.toFixed(1)}%;top:${y.toFixed(1)}%;font-size:${size}px;transform:rotate(${rot}deg)">${emojis[(i * 7 + r) % emojis.length]}</span>`;
+      }
+    }
+    return `<div class="login-emoji-bg" aria-hidden="true">${html}</div>`;
+  }
+
   function renderOwnerLoginScreen(errorText) {
     clearAppHeader();
     resetBrandColor();
     ekran(`
-      <div class="panel">
-        <div class="salom">Oshxona egasi kirishi</div>
-        <div class="bosh">Administrator sizga bergan login va parolni kiriting.</div>
-        <div class="kartochka">
-          <label class="field-label">Login</label>
-          <input type="text" id="ownerLoginInput" autocomplete="username" placeholder="Login">
-          <label class="field-label">Parol</label>
-          <input type="password" id="ownerPasswordInput" autocomplete="current-password" placeholder="Parol">
-          <button class="btn" id="ownerLoginBtn" style="margin-top:10px;">${icon('user', 'icon-xs')}<span>Kirish</span></button>
-          <div class="xabar ${errorText ? 'err' : ''}" id="ownerLoginMsg">${errorText ? escapeHtml(errorText) : ''}</div>
+      <div class="login-screen">
+        ${loginEmojiBackgroundHtml()}
+        <div class="login-card">
+          <div class="login-logo" aria-hidden="true">🌭</div>
+          <h1 class="login-title">Xush kelibsiz!</h1>
+          <p class="login-sub">Login va parolingizni kiriting</p>
+          <div id="loginFormBox">
+            <label class="field-label" for="ownerLoginInput">Login</label>
+            <input type="text" id="ownerLoginInput" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="Login">
+            <label class="field-label" for="ownerPasswordInput">Parol</label>
+            <input type="password" id="ownerPasswordInput" autocomplete="current-password" placeholder="Parol">
+            <button class="btn login-submit" id="ownerLoginBtn">${icon('user', 'icon-xs')}<span>Kirish</span></button>
+            <div class="xabar ${errorText ? 'err' : ''}" id="ownerLoginMsg">${errorText ? escapeHtml(errorText) : ''}</div>
+            <button type="button" class="login-link" id="forgotPwBtn">Parolni unutdim</button>
+          </div>
+          <div id="forgotFormBox" class="hidden">
+            <p class="login-hint">Telegram ID raqamingizni kiriting. Bot sizga yangi login va parolni yuboradi.<br>
+              ID ni bilmasangiz, Telegramda <b>@userinfobot</b> ga <b>/start</b> yozing.</p>
+            <label class="field-label" for="forgotTgIdInput">Telegram ID</label>
+            <input type="tel" id="forgotTgIdInput" inputmode="numeric" placeholder="Masalan: 123456789">
+            <button class="btn login-submit" id="forgotSendBtn">${icon('send', 'icon-xs')}<span>Yuborish</span></button>
+            <div class="xabar" id="forgotMsg"></div>
+            <button type="button" class="login-link" id="forgotBackBtn">← Kirish oynasiga qaytish</button>
+          </div>
         </div>
       </div>
     `);
+
+    const loginBox = document.getElementById('loginFormBox');
+    const forgotBox = document.getElementById('forgotFormBox');
+    document.getElementById('forgotPwBtn').addEventListener('click', () => {
+      loginBox.classList.add('hidden');
+      forgotBox.classList.remove('hidden');
+      document.getElementById('forgotTgIdInput').focus();
+    });
+    document.getElementById('forgotBackBtn').addEventListener('click', () => {
+      forgotBox.classList.add('hidden');
+      loginBox.classList.remove('hidden');
+    });
+    const sendForgot = async () => {
+      const telegramId = document.getElementById('forgotTgIdInput').value.replace(/\D/g, '');
+      const msgEl = document.getElementById('forgotMsg');
+      const btn = document.getElementById('forgotSendBtn');
+      if (!telegramId) { setMsg(msgEl, 'Telegram ID ni kiriting.', 'err'); return; }
+      btn.disabled = true;
+      setMsg(msgEl, 'Yuborilmoqda...');
+      const res = await apiPost('/api/password-reset-request', { telegramId });
+      btn.disabled = false;
+      if (!res.ok) { setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err'); return; }
+      setMsg(msgEl, res.message, 'ok');
+    };
+    document.getElementById('forgotSendBtn').addEventListener('click', sendForgot);
+    document.getElementById('forgotTgIdInput').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') sendForgot();
+    });
 
     const doLogin = async () => {
       const login = document.getElementById('ownerLoginInput').value.trim();
