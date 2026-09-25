@@ -10312,6 +10312,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <div class="login-logo" aria-hidden="true">🌭</div>
           <h1 class="login-title">Xush kelibsiz!</h1>
           <p class="login-sub">Login va parolingizni kiriting</p>
+          <p class="login-hint login-staff-hint">👨‍🍳 Xodimlar: login o'rniga <b>Telegram ID</b> raqamingizni yozing (botga <b>/myid</b> deb yozsangiz ko'rsatadi)</p>
           <div id="loginFormBox">
             <label class="field-label" for="ownerLoginInput">Login</label>
             <input type="text" id="ownerLoginInput" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="Login">
@@ -10323,7 +10324,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           </div>
           <div id="forgotFormBox" class="hidden">
             <p class="login-hint">Telegram ID raqamingizni kiriting. Bot sizga yangi login va parolni yuboradi.<br>
-              ID ni bilmasangiz, Telegramda <b>@userinfobot</b> ga <b>/start</b> yozing.</p>
+              ID ni bilmasangiz, botimizga <b>/myid</b> deb yozing.</p>
             <label class="field-label" for="forgotTgIdInput">Telegram ID</label>
             <input type="tel" id="forgotTgIdInput" inputmode="numeric" placeholder="Masalan: 123456789">
             <button class="btn login-submit" id="forgotSendBtn">${icon('send', 'icon-xs')}<span>Yuborish</span></button>
