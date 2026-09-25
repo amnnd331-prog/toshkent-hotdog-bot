@@ -2509,3 +2509,10 @@
   cursor: pointer;
 }
 .login-link:hover { text-decoration: underline; }
+.login-staff-hint {
+  font-size: 13px;
+  margin: -8px 0 18px;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--brand-primary) 7%, transparent);
+}
