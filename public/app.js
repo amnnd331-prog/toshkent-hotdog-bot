@@ -109,6 +109,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (res.printer) printerSettings = res.printer;
     if (res.queued) {
       // Agent rejimi: kompyuterdagi print-agent chekni bir-ikki soniyada o'zi chiqaradi
+      if (res.agentOnline === false) {
+        alert("Chek navbatga qo'yildi, lekin printer ulangan kompyuterdagi agent ishlamayapti.\n\n" +
+          "Kompyuterda start-agent.bat ni ishga tushiring — chek 10 daqiqa ichida o'zi chiqadi.");
+        return true;
+      }
       if (tg && tg.HapticFeedback) { try { tg.HapticFeedback.notificationOccurred('success'); } catch (e) {} }
       showPrintToast('🖨 Chek printerga yuborildi');
       return true;
@@ -3585,7 +3590,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   // Agent bloki: ulanish holati, token va tayyor config.json matni.
   async function renderAgentBox(box, printer, regenerate) {
     const seen = printer.agentLastSeen ? new Date(printer.agentLastSeen) : null;
-    const online = seen && (Date.now() - seen.getTime() < 15000);
+    const online = printer.agentOnline !== undefined ? printer.agentOnline : !!(seen && (Date.now() - seen.getTime() < 30000));
     const statusHtml = online
       ? `<span class="badge paid">● Agent ulangan</span>`
       : `<span class="badge unpaid">● Agent ulanmagan${seen ? ` (oxirgi: ${timeAgo(printer.agentLastSeen)})` : ''}</span>`;
@@ -3611,7 +3616,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       <ol class="agent-steps">
         <li>Printer ulangan kompyuterga <b>Node.js</b> o'rnating (nodejs.org).</li>
         <li><b>print-agent</b> papkasini shu kompyuterga ko'chiring.</li>
-        <li>Papkada <b>config.json</b> fayl yarating va ichiga quyidagini joylang:</li>
+        <li><b>start-agent.bat</b> ni ikki marta bosing va so'ralganda quyidagi matnni joylang (sichqonchaning o'ng tugmasi → Enter):</li>
       </ol>
       <pre class="agent-config" id="agentConfig">${escapeHtml(config)}</pre>
       <div class="btn-row">
@@ -3619,7 +3624,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <button class="btn ikkinchi" id="agentRegenBtn" type="button">Yangi token</button>
       </div>
       <ol class="agent-steps" start="4">
-        <li><b>start-agent.bat</b> ni ikki marta bosing. Oynada "Ulandi" yozuvi chiqsa — tayyor.</li>
+        <li>Oynada "Ulandi" yozuvi chiqsa — tayyor. Endi "🖨 Chek" bosilganda chek printerdan o'zi chiqadi.</li>
         <li>Kompyuter yoqilganda o'zi ishga tushishi uchun: <b>Win+R → shell:startup</b> papkasiga start-agent.bat yorlig'ini qo'ying.</li>
       </ol>
       <div class="bosh">Token — maxfiy kalit. Uni faqat o'z kompyuteringizga yozing. Yangi token yaratilsa, eskisi darhol ishlamay qoladi.</div>`;
@@ -5192,7 +5197,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
         printBtn.textContent = '🖨 Chekni chop etish';
         printBtn.addEventListener('click', () => openReceipt(res.orderId, 'oshxona'));
         topMsg.after(printBtn);
-        if (printerSettings && printerSettings.auto) openReceipt(res.orderId, 'oshxona');
+        // Agent orqali server chekni o'zi chiqargan bo'lsa — qayta ochmaymiz (ikki marta chiqmasin)
+        if (res.printQueued) showPrintToast('🖨 Chek printerga yuborildi');
+        else if (printerSettings && printerSettings.auto) openReceipt(res.orderId, 'oshxona');
       }
     } else {
       if (sendBtn) sendBtn.disabled = false;
