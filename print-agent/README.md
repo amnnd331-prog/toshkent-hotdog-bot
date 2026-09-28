@@ -13,18 +13,16 @@ kassirning aralashuvisiz.
 1. Kompyuterga **Node.js** o'rnating: https://nodejs.org (LTS versiyasi).
 2. Shu `print-agent` papkasini kompyuterga ko'chiring (masalan `C:\print-agent`).
 3. Botda: **Profil → Printer va chek → Chop etish usuli: Kompyuter agenti** →
-   **Token yaratish**. Chiqqan matnni **Nusxa olish** bilan oling.
-4. Papkada `config.json` fayl yarating va nusxalangan matnni joylang:
-   ```json
-   {
-     "server": "https://sizning-botingiz.up.railway.app",
-     "token": "…48 belgili maxfiy kalit…",
-     "printer": "auto",
-     "pollMs": 2000
-   }
-   ```
-5. `start-agent.bat` ni ikki marta bosing. Oynada **"Ulandi: <do'kon nomi>"** chiqsa — tayyor.
-   Botdagi sozlamalarda ham **● Agent ulangan** yozuvi paydo bo'ladi.
+   **Token yaratish** → **Nusxa olish**.
+4. `start-agent.bat` ni ikki marta bosing. Birinchi marta oyna matn so'raydi —
+   nusxalangan matnni joylang (sichqonchaning o'ng tugmasi) va **Enter** bosing.
+   Agent uni `config.json` ga o'zi saqlaydi, keyingi safar so'ramaydi.
+5. Oynada **"Ulandi: <do'kon nomi>"** chiqsa — tayyor. Botdagi sozlamalarda ham
+   **● Agent ulangan** yozuvi paydo bo'ladi. Endi "🖨 Chek" bosilganda chek printerdan
+   o'zi chiqadi — chop etish oynasi ochilmaydi.
+
+> Chek hech qachon drayver yoki chop etish oynasi orqali chiqmaydi. Agent o'chiq bo'lsa,
+> cheklar 10 daqiqagacha navbatda kutadi va agent yoqilishi bilan chiqadi.
 
 ## Kompyuter yoqilganda o'zi ishga tushsin
 

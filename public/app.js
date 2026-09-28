@@ -3529,12 +3529,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
       return;
     }
     card.innerHTML = `
-      <div class="bosh">Chek kassirning telefoni yoki kompyuteridan chiqadi — printer USB, WiFi yoki Bluetooth orqali ulangan bo'lsa ham bir xil ishlaydi.</div>
+      <div class="bosh">Buyurtma oshxonaga yuborilishi bilan chek to'g'ridan-to'g'ri printerdan chiqadi — drayver va chop etish oynasisiz.</div>
       <label class="field-label" for="printerMode">Chop etish usuli</label>
       <select id="printerMode">
-        <option value="agent"${res.mode === 'agent' ? ' selected' : ''}>Kompyuter agenti (USB yoki WiFi, drayversiz)</option>
-        <option value="brauzer"${res.mode === 'brauzer' ? ' selected' : ''}>Qurilmaning chop etish oynasi (iPhone ham)</option>
-        <option value="rawbt"${res.mode === 'rawbt' ? ' selected' : ''}>RawBT ilovasi orqali (Android, oynasiz)</option>
+        <option value="agent"${res.mode !== 'rawbt' ? ' selected' : ''}>Kompyuter agenti (USB yoki WiFi, drayversiz)</option>
+        <option value="rawbt"${res.mode === 'rawbt' ? ' selected' : ''}>Android telefon — RawBT ilovasi orqali</option>
       </select>
       <div class="bosh" id="printerModeHint" style="margin-bottom:6px;"></div>
       <div id="agentBox" class="agent-box"></div>
@@ -3573,7 +3572,6 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
     const MODE_HINTS = {
       agent: "Printer ulangan kompyuterda kichik dastur (print-agent) ishlaydi. U chekni drayversiz, chop etish oynasisiz chiqaradi — kassir, oshxona va mijoz buyurtmalari uchun.",
-      brauzer: "Chek sahifasi ochiladi va qurilmaning chop etish oynasi chiqadi. Printer drayveri o'rnatilgan bo'lishi kerak.",
       rawbt: "RawBT — Android ilovasi. Chek printeriga Bluetooth, WiFi yoki USB orqali to'g'ridan-to'g'ri yuboradi."
     };
     const modeEl = document.getElementById('printerMode');
@@ -5197,9 +5195,17 @@ const tg = window.Telegram && window.Telegram.WebApp;
         printBtn.textContent = '🖨 Chekni chop etish';
         printBtn.addEventListener('click', () => openReceipt(res.orderId, 'oshxona'));
         topMsg.after(printBtn);
-        // Agent orqali server chekni o'zi chiqargan bo'lsa — qayta ochmaymiz (ikki marta chiqmasin)
-        if (res.printQueued) showPrintToast('🖨 Chek printerga yuborildi');
-        else if (printerSettings && printerSettings.auto) openReceipt(res.orderId, 'oshxona');
+        // Chekni server printer agentiga o'zi yuboradi — drayver/chop etish oynasi ishlatilmaydi
+        if (res.printQueued) {
+          if (res.agentOnline === false) {
+            alert("Buyurtma oshxonaga yuborildi, lekin printer ulangan kompyuterdagi agent ishlamayapti.\n\n" +
+              "Kompyuterda start-agent.bat ni ishga tushiring — chek 10 daqiqa ichida o'zi chiqadi.");
+          } else {
+            showPrintToast('🖨 Chek printerga yuborildi');
+          }
+        } else if (printerSettings && printerSettings.auto && printerSettings.mode === 'rawbt') {
+          openReceipt(res.orderId, 'oshxona'); // Android: RawBT orqali printerga
+        }
       }
     } else {
       if (sendBtn) sendBtn.disabled = false;
