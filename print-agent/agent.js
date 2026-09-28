@@ -18,6 +18,7 @@
 
 const fs = require('fs');
 const net = require('net');
+const readline = require('readline');
 const path = require('path');
 const { execFileSync, spawn } = require('child_process');
 
@@ -31,16 +32,48 @@ function log(...args) {
   console.log(`[${t}]`, ...args);
 }
 
-function loadConfig() {
-  if (!fs.existsSync(CONFIG_FILE)) {
-    console.error(`config.json topilmadi. config.example.json nusxasini "config.json" deb saqlang va to'ldiring.`);
-    process.exit(1);
-  }
-  const cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+function normalizeConfig(cfg) {
   cfg.server = String(cfg.server || '').replace(/\/+$/, '');
   cfg.printer = cfg.printer || 'auto';
   cfg.pollMs = Math.max(1000, Number(cfg.pollMs) || 2000);
   return cfg;
+}
+
+// Birinchi ishga tushishda: botdagi "Nusxa olish" matnini so'raydi va config.json'ga yozadi.
+function setupInteractive() {
+  console.log('');
+  console.log('==============================================================');
+  console.log('  Birinchi sozlash');
+  console.log('  Botda: Profil -> Printer va chek -> Kompyuter agenti ->');
+  console.log('  "Nusxa olish" ni bosing, keyin shu oynaga joylang');
+  console.log("  (sichqonchaning o'ng tugmasi) va Enter bosing.");
+  console.log('==============================================================');
+  console.log('');
+  return new Promise(resolve => {
+    const rl = readline.createInterface({ input: process.stdin });
+    let text = '';
+    rl.on('line', line => {
+      text += line + '\n';
+      const start = text.indexOf('{'), end = text.lastIndexOf('}');
+      if (start < 0 || end < start) return;
+      try {
+        const cfg = JSON.parse(text.slice(start, end + 1));
+        if (!cfg.server || !cfg.token) throw new Error('server yoki token yo\'q');
+        fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2));
+        console.log('Saqlandi: config.json');
+        rl.close();
+        resolve(normalizeConfig(cfg));
+      } catch (e) {
+        if (end > start) { console.log(`Matn noto'g'ri (${e.message}). Botdan qaytadan nusxa olib joylang.`); text = ''; }
+      }
+    });
+  });
+}
+
+function loadConfig() {
+  if (!fs.existsSync(CONFIG_FILE)) return null;
+  const cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8'));
+  return normalizeConfig(cfg);
 }
 
 // ---------- USB qurilmaga yozuvchi yordamchi (Windows) ----------
@@ -232,7 +265,7 @@ async function api(cfg, url, body) {
 }
 
 async function run() {
-  const cfg = loadConfig();
+  const cfg = loadConfig() || await setupInteractive();
   if (!cfg.server || !cfg.token) {
     console.error('config.json da "server" va "token" to\'ldirilishi shart.');
     process.exit(1);
@@ -288,7 +321,7 @@ async function run() {
     return;
   }
   if (arg === '--test') {
-    const cfg = fs.existsSync(CONFIG_FILE) ? loadConfig() : { printer: 'auto' };
+    const cfg = loadConfig() || { printer: 'auto' };
     const target = await resolvePrinter(cfg.printer);
     await print(target, testReceipt());
     log(`Sinov cheki yuborildi → ${target}`);
