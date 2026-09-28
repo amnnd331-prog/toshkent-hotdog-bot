@@ -10901,7 +10901,7 @@ authed('/api/broadcast-history', (payload, res, { userId }) => {
 // buyurtmani ko'ra olmaydi va imzo RECEIPT_TTL_MS dan keyin eskiradi.
 // ==========================================================================
 const RECEIPT_TTL_MS = 12 * 60 * 60 * 1000;
-const RECEIPT_MODES = { oshxona: 'OSHXONA', mijoz: 'MIJOZ CHEKI' };
+const RECEIPT_MODES = { oshxona: 'OSHXONA', mijoz: 'MIJOZ CHEKI', ikkala: 'MIJOZ + OSHXONA' };
 
 function receiptSign(base) {
   return crypto.createHmac('sha256', BOT_TOKEN).update(base).digest('hex').slice(0, 32);
@@ -10940,10 +10940,21 @@ function ensurePrinterSettings(owner) {
     agentToken: typeof p.agentToken === 'string' ? p.agentToken : null,
     width: p.width === 58 ? 58 : 80,
     copies: Math.min(3, Math.max(1, Number(p.copies) || 1)),
-    auto: migrate ? true : !!p.auto,
-    footer: typeof p.footer === 'string' ? p.footer : 'Rahmat! Yana kutamiz.'
+    auto: migrate ? true : !!p.auto,                       // oshxona cheki — buyurtma oshxonaga tushganda
+    autoCustomer: p.autoCustomer === undefined ? true : !!p.autoCustomer, // mijoz cheki — buyurtma tayyor bo'lganda
+    footer: typeof p.footer === 'string' ? p.footer : 'Rahmat! Yana kutamiz.',
+    // Mijoz chekining tepasidagi brend rasmi (logotip + nom), bot ilovasida canvas orqali
+    // 1-bitli rastrga aylantirilgan: { width: 58|80, w, h, data: base64, sig }
+    header: isValidHeaderRaster(p.header) ? p.header : null
   };
   return owner.printer;
+}
+
+function isValidHeaderRaster(h) {
+  return !!h && (h.width === 58 || h.width === 80) &&
+    Number.isInteger(h.w) && h.w > 0 && h.w <= 576 && h.w % 8 === 0 &&
+    Number.isInteger(h.h) && h.h > 0 && h.h <= 480 &&
+    typeof h.data === 'string' && Buffer.from(h.data, 'base64').length === (h.w / 8) * h.h;
 }
 
 // Buyurtma joriy ro'yxatda yoki arxivda bo'lishi mumkin.
@@ -11046,96 +11057,168 @@ function escposText(str) {
     .replace(/[^\x20-\x7E\n]/g, '');
 }
 
-function escposReceipt(owner, order, mode) {
-  const printer = ensurePrinterSettings(owner);
-  const W = printer.width === 58 ? 32 : 48;
-  const profile = owner.profile || {};
-  const forKitchen = mode === 'oshxona';
+// ESC/POS yozuvchi: matn, juftlik (chap-o'ng), uzun matnni bo'lish va rasm (GS v 0).
+function escposWriter(W) {
   const chunks = [];
-
-  const raw = arr => chunks.push(Buffer.from(arr));
-  const line = (text = '') => chunks.push(Buffer.from(escposText(text) + '\n', 'latin1'));
-  const rule = (ch = '-') => line(ch.repeat(W));
-  // Chapdagi nom va o'ngdagi qiymat bir qatorda
-  const pair = (left, right) => {
-    const l = escposText(left), r = escposText(right);
-    const space = Math.max(1, W - l.length - r.length);
-    line(l + ' '.repeat(space) + r);
+  const w = {
+    raw: arr => chunks.push(Buffer.from(arr)),
+    line: (text = '') => chunks.push(Buffer.from(escposText(text) + '\n', 'latin1')),
+    rule: (ch = '-') => w.line(ch.repeat(W)),
+    pair: (left, right, width = W) => {
+      const l = escposText(left), r = escposText(right);
+      w.line(l + ' '.repeat(Math.max(1, width - l.length - r.length)) + r);
+    },
+    wrap: (text, indent = 0, width = W) => {
+      const words = escposText(text).split(/\s+/).filter(Boolean);
+      let cur = '';
+      words.forEach(word => {
+        if ((cur + ' ' + word).trim().length > width - indent) { if (cur) w.line(' '.repeat(indent) + cur.trim()); cur = word; }
+        else cur += ' ' + word;
+      });
+      if (cur.trim()) w.line(' '.repeat(indent) + cur.trim());
+    },
+    // 1-bitli rasm. Ba'zi printerlar bitta buyruqda katta rasmni qabul qilmaydi —
+    // shuning uchun 96 qatorli bo'laklarga bo'lib yuboriladi.
+    image: (raster) => {
+      const bytesPerRow = raster.w / 8;
+      const data = Buffer.from(raster.data, 'base64');
+      for (let y = 0; y < raster.h; y += 96) {
+        const rows = Math.min(96, raster.h - y);
+        w.raw([GS, 0x76, 0x30, 0x00, bytesPerRow & 0xFF, bytesPerRow >> 8, rows & 0xFF, rows >> 8]);
+        chunks.push(data.subarray(y * bytesPerRow, (y + rows) * bytesPerRow));
+      }
+    },
+    done: () => Buffer.concat(chunks)
   };
-  // Uzun nomni qatorlarga bo'lib yozadi
-  const wrap = (text, indent = 0) => {
-    const words = escposText(text).split(/\s+/);
-    let cur = '';
-    words.forEach(w => {
-      if ((cur + ' ' + w).trim().length > W - indent) { line(' '.repeat(indent) + cur.trim()); cur = w; }
-      else cur += ' ' + w;
-    });
-    if (cur.trim()) line(' '.repeat(indent) + cur.trim());
-  };
+  return w;
+}
 
-  raw(ESCPOS_CMD.init);
-  raw(ESCPOS_CMD.center);
-  raw(ESCPOS_CMD.big); raw(ESCPOS_CMD.boldOn);
-  line((profile.name || 'PULSAR').toUpperCase());
-  raw(ESCPOS_CMD.normal); raw(ESCPOS_CMD.boldOff);
-  if (profile.address) line(profile.address);
-  if (profile.phone) line(profile.phone);
-  const branch = (owner.branches || []).find(b => String(b.id) === String(order.branchId));
-  if (branch) line('Filial: ' + branch.name);
-  rule();
-
-  raw(ESCPOS_CMD.boldOn);
-  line(RECEIPT_MODES[mode]);
-  raw(ESCPOS_CMD.big);
-  line('N ' + (order.orderNumber || '-'));
-  raw(ESCPOS_CMD.normal);
-  line((ORDER_TYPES[order.orderType] || order.orderType || '').toUpperCase());
-  raw(ESCPOS_CMD.boldOff);
-  line(receiptTimeLabel(order.createdAt));
-  rule();
-
-  raw(ESCPOS_CMD.left);
-  (order.items || []).forEach(it => {
-    raw(ESCPOS_CMD.boldOn);
-    if (forKitchen) raw(ESCPOS_CMD.tall);
-    wrap(`${it.qty}x ${it.name}`);
-    if (forKitchen) raw(ESCPOS_CMD.normal);
-    raw(ESCPOS_CMD.boldOff);
-    if (!forKitchen) pair('', fmtNum((it.price || 0) * (it.qty || 0)));
-  });
-
-  if (!forKitchen) {
-    rule();
-    if (order.discountAmount) pair('Chegirma', '-' + fmtNum(order.discountAmount));
-    if (order.pointsUsed) pair('Bonus', '-' + fmtNum(order.pointsUsed));
-    raw(ESCPOS_CMD.boldOn); raw(ESCPOS_CMD.tall);
-    pair('JAMI', fmtNum(order.total || 0) + " so'm");
-    raw(ESCPOS_CMD.normal); raw(ESCPOS_CMD.boldOff);
-    pair("To'lov", PAYMENT_TYPES[order.paymentType] || order.paymentType || '');
-  }
-
+function receiptExtras(order) {
   const extra = [];
-  if (order.comment) extra.push(['Izoh', order.comment]);
   if (order.orderType === 'dostavka') {
     if (order.addressNote) extra.push(['Manzil', order.addressNote]);
     if (order.extraPhone) extra.push(['Telefon', order.extraPhone]);
     else if (order.customerPhone) extra.push(['Telefon', order.customerPhone]);
     if (order.customerName) extra.push(['Mijoz', order.customerName]);
   }
+  return extra;
+}
+
+// OSHXONA CHEKI — oshxona guruhiga ketadigan xabar kabi: yirik, narxsiz, tez o'qiladi.
+function escposKitchenTicket(owner, order) {
+  const printer = ensurePrinterSettings(owner);
+  const W = printer.width === 58 ? 32 : 48;
+  const w = escposWriter(W);
+  const branch = (owner.branches || []).find(b => String(b.id) === String(order.branchId));
+
+  w.raw(ESCPOS_CMD.init);
+  w.raw(ESCPOS_CMD.center);
+  w.raw(ESCPOS_CMD.boldOn);
+  w.line('*** OSHXONA ***');
+  w.raw(ESCPOS_CMD.big);
+  w.line('N ' + (order.orderNumber || '-'));
+  w.raw(ESCPOS_CMD.tall);
+  w.line((ORDER_TYPES[order.orderType] || order.orderType || '').toUpperCase());
+  w.raw(ESCPOS_CMD.normal);
+  w.raw(ESCPOS_CMD.boldOff);
+  w.line(receiptTimeLabel(order.createdAt) + (branch ? '  ' + branch.name : ''));
+  w.rule('=');
+
+  w.raw(ESCPOS_CMD.left);
+  (order.items || []).forEach(it => {
+    w.raw(ESCPOS_CMD.boldOn); w.raw(ESCPOS_CMD.tall);
+    w.wrap(`${it.qty} x ${it.name}`);
+    w.raw(ESCPOS_CMD.normal); w.raw(ESCPOS_CMD.boldOff);
+  });
+
+  if (order.comment) {
+    w.rule('=');
+    w.raw(ESCPOS_CMD.boldOn);
+    w.line('IZOH:');
+    w.wrap(order.comment, 2);
+    w.raw(ESCPOS_CMD.boldOff);
+  }
+  const extra = receiptExtras(order);
   if (extra.length) {
-    rule();
-    extra.forEach(([k, v]) => { line(k + ':'); wrap(v, 2); });
+    w.rule();
+    extra.forEach(([k, v]) => { w.line(k + ':'); w.wrap(v, 2); });
+  }
+  w.rule('=');
+  w.line(); w.line();
+  w.raw(ESCPOS_CMD.cut);
+  return w.done();
+}
+
+// MIJOZ CHEKI — brend sarlavhasi (rasm), narxlar jadvali, jami va to'lov.
+function escposCustomerReceipt(owner, order) {
+  const printer = ensurePrinterSettings(owner);
+  const W = printer.width === 58 ? 32 : 48;
+  const w = escposWriter(W);
+  const profile = owner.profile || {};
+  const branch = (owner.branches || []).find(b => String(b.id) === String(order.branchId));
+
+  w.raw(ESCPOS_CMD.init);
+  w.raw(ESCPOS_CMD.center);
+  if (printer.header && printer.header.width === printer.width) {
+    w.image(printer.header);
+  } else {
+    w.raw(ESCPOS_CMD.big); w.raw(ESCPOS_CMD.boldOn);
+    w.line((profile.name || 'PULSAR').toUpperCase());
+    w.raw(ESCPOS_CMD.normal); w.raw(ESCPOS_CMD.boldOff);
+  }
+  if (profile.address) w.wrap(profile.address);
+  if (profile.phone) w.line('Tel: ' + profile.phone);
+  if (branch) w.line('Filial: ' + branch.name);
+  w.rule('=');
+
+  w.raw(ESCPOS_CMD.boldOn);
+  w.line('MIJOZ CHEKI');
+  w.raw(ESCPOS_CMD.big);
+  w.line('N ' + (order.orderNumber || '-'));
+  w.raw(ESCPOS_CMD.normal); w.raw(ESCPOS_CMD.boldOff);
+  w.line(`${(ORDER_TYPES[order.orderType] || order.orderType || '').toUpperCase()}  |  ${receiptTimeLabel(order.createdAt)}`);
+  w.rule();
+
+  // Jadval: nom qalin, ostida "miqdor x narx" va o'ngda summa
+  w.raw(ESCPOS_CMD.left);
+  (order.items || []).forEach(it => {
+    const qty = it.qty || 0, price = it.price || 0;
+    w.raw(ESCPOS_CMD.boldOn); w.wrap(it.name); w.raw(ESCPOS_CMD.boldOff);
+    w.pair(`   ${qty} x ${fmtNum(price)}`, fmtNum(qty * price));
+  });
+  w.rule();
+
+  const subtotal = order.subtotal || (order.items || []).reduce((sum, it) => sum + (it.price || 0) * (it.qty || 0), 0);
+  if (order.discountAmount || order.pointsUsed) {
+    w.pair('Oraliq jami', fmtNum(subtotal));
+    if (order.discountAmount) w.pair('Chegirma' + (order.promoTitle ? ` (${order.promoTitle})` : ''), '-' + fmtNum(order.discountAmount));
+    if (order.pointsUsed) w.pair('Bonus ballar', '-' + fmtNum(order.pointsUsed));
+  }
+  w.raw(ESCPOS_CMD.boldOn); w.raw(ESCPOS_CMD.tall);
+  w.pair('JAMI', fmtNum(order.total || 0) + " so'm");
+  w.raw(ESCPOS_CMD.normal); w.raw(ESCPOS_CMD.boldOff);
+  w.rule('=');
+  w.pair("To'lov turi", PAYMENT_TYPES[order.paymentType] || order.paymentType || '');
+  if (order.pointsEarned) w.pair("Bonus qo'shildi", '+' + fmtNum(order.pointsEarned));
+
+  const extra = receiptExtras(order);
+  if (extra.length) {
+    w.rule();
+    extra.forEach(([k, v]) => w.pair(k, v));
   }
 
-  rule();
-  raw(ESCPOS_CMD.center);
-  if (printer.footer) wrap(printer.footer);
-  line(profile.name || '');
-  raw(ESCPOS_CMD.left);
-  line(); line();
-  raw(ESCPOS_CMD.cut);
+  w.rule();
+  w.raw(ESCPOS_CMD.center);
+  if (printer.footer) { w.raw(ESCPOS_CMD.boldOn); w.wrap(printer.footer); w.raw(ESCPOS_CMD.boldOff); }
+  w.line('Yoqimli ishtaha!');
+  w.raw(ESCPOS_CMD.left);
+  w.line(); w.line(); w.line();
+  w.raw(ESCPOS_CMD.cut);
+  return w.done();
+}
 
-  return Buffer.concat(chunks);
+function escposReceipt(owner, order, mode) {
+  return mode === 'mijoz' ? escposCustomerReceipt(owner, order) : escposKitchenTicket(owner, order);
 }
 
 // Nusxalar soniga qarab takrorlangan, RawBT uchun base64 ko'rinishidagi chek.
@@ -11145,30 +11228,37 @@ function escposBase64(owner, order, mode) {
   return Buffer.concat(Array.from({ length: printer.copies }, () => one)).toString('base64');
 }
 
-// To'liq chop etiladigan sahifa. Ochilganda chop etish oynasi o'zi chiqadi
-// (avto=0 bo'lsa chiqmaydi), pastda esa qo'lda bosish uchun tugma turadi.
+// Chek sahifasi (Android telefon + RawBT). Ochilishi bilan cheklar RawBT orqali printerga
+// o'zi ketadi: 'ikkala' rejimida avval MIJOZ cheki, 3 soniyadan keyin OSHXONA cheki.
+// Drayver/chop etish oynasi ishlatilmaydi. Pastdagi tugmalar — faqat avtomatik ishlamasa.
+function rawbtIntentUrl(owner, order, mode) {
+  return 'intent:base64,' + escposBase64(owner, order, mode) + '#Intent;scheme=rawbt;package=ru.a402d.rawbtprinter;end;';
+}
+
 function receiptPageHtml(owner, order, mode, auto) {
   const printer = ensurePrinterSettings(owner);
-  const copies = Array.from({ length: printer.copies }, () => receiptBodyHtml(owner, order, mode)).join('<div class="cut"></div>');
+  const modes = mode === 'ikkala'
+    ? [printer.autoCustomer ? 'mijoz' : null, printer.auto ? 'oshxona' : null].filter(Boolean)
+    : [mode];
+  if (!modes.length) modes.push('oshxona');
+  const jobs = modes.map(m => ({ mode: m, url: rawbtIntentUrl(owner, order, m) }));
+  const bodies = modes.map(m => receiptBodyHtml(owner, order, m)).join('<div class="cut"></div>');
   const paper = printer.width === 58 ? '58mm' : '80mm';
-  // RawBT (Android): baytlar to'g'ridan-to'g'ri printerga ketadi, chop etish oynasi ochilmaydi.
-  const rawbtUrl = 'intent:base64,' + escposBase64(owner, order, mode) +
-    '#Intent;scheme=rawbt;package=ru.a402d.rawbtprinter;end;';
-  const rawbtFirst = printer.mode === 'rawbt';
   const fs = printer.width === 58 ? 11 : 12;
+  const labels = { mijoz: 'Mijoz cheki', oshxona: 'Oshxona cheki' };
   return `<!DOCTYPE html>
 <html lang="uz"><head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Chek № ${order.orderNumber || ''}</title>
 <style>
-  @page { size: ${paper} auto; margin: 0; }
   * { box-sizing: border-box; }
   body {
     margin: 0; background: #EDEDED; color: #000;
     font-family: "Courier New", ui-monospace, monospace; font-size: ${fs}px; line-height: 1.35;
   }
-  .chek { width: ${paper}; margin: 0 auto; background: #fff; padding: 4mm 3mm; }
+  .status { font-family: system-ui, sans-serif; text-align: center; padding: 14px 16px; background: #E30613; color: #fff; font-weight: 700; font-size: 15px; }
+  .chek { width: ${paper}; max-width: 100%; margin: 12px auto 0; background: #fff; padding: 4mm 3mm; }
   .logo { display: block; width: 18mm; height: 18mm; object-fit: contain; margin: 0 auto 2mm; }
   .brand { text-align: center; font-size: ${fs + 6}px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
   .sub { text-align: center; font-size: ${fs - 1}px; }
@@ -11186,32 +11276,44 @@ function receiptPageHtml(owner, order, mode, auto) {
   .row.total { font-size: ${fs + 5}px; font-weight: 700; }
   .row.small, .foot.small { font-size: ${fs - 1}px; }
   .foot { text-align: center; }
-  .cut { border-top: 2px dashed #000; margin: 4mm 0; }
-  .tools { text-align: center; padding: 6mm 4mm 10mm; }
-  .tools button, .tools a.btn {
-    display: inline-block; font: inherit; font-size: 15px; font-weight: 700; padding: 14px 26px;
-    border: 0; border-radius: 12px; background: #E30613; color: #fff; cursor: pointer; text-decoration: none;
-    margin: 4px;
+  .cut { height: 12px; }
+  .tools { text-align: center; padding: 6mm 4mm 10mm; font-family: system-ui, sans-serif; }
+  .tools a.btn {
+    display: inline-block; font-size: 15px; font-weight: 700; padding: 14px 22px; margin: 4px;
+    border-radius: 12px; background: #fff; color: #E30613; border: 2px solid #E30613; text-decoration: none;
   }
-  .tools a.btn.second { background: #fff; color: #E30613; border: 2px solid #E30613; }
   .tools p { color: #555; font-size: 12px; margin: 8px 0 0; }
-  @media print { body { background: #fff; } .tools { display: none; } .chek { width: auto; } }
 </style>
 </head><body>
-${copies}
+<div class="status" id="status">🖨 Chek printerga yuborilmoqda...</div>
+${bodies}
 <div class="tools">
-  ${rawbtFirst
-    ? `<a class="btn" id="rawbtBtn" href="${rawbtUrl}">Printerga yuborish</a>
-       <button id="printBtn" type="button" class="second" style="background:#fff;color:#E30613;border:2px solid #E30613">Brauzer orqali</button>`
-    : `<button id="printBtn" type="button">Chop etish</button>
-       <a class="btn second" id="rawbtBtn" href="${rawbtUrl}">RawBT orqali (Android)</a>`}
-  <p>Chek chiqmasa, shu tugmalardan birini bosing.<br>RawBT — Android'da Bluetooth/WiFi/USB printerga to'g'ridan-to'g'ri yuboradi.</p>
+  ${jobs.map((j, i) => `<a class="btn" href="${j.url}">${i + 1}. ${labels[j.mode]}</a>`).join('')}
+  <p>Chek chiqmasa, shu tugmalarni tartib bilan bosing.<br>Printer RawBT ilovasiga ulangan bo'lishi kerak.</p>
 </div>
 <script>
-  document.getElementById('printBtn').addEventListener('click', function () { window.print(); });
-  ${auto ? (rawbtFirst
-      ? "window.addEventListener('load', function () { setTimeout(function () { window.location.href = document.getElementById('rawbtBtn').href; }, 300); });"
-      : "window.addEventListener('load', function () { setTimeout(function () { window.print(); }, 400); });") : ''}
+  (function () {
+    var jobs = ${JSON.stringify(jobs.map(j => j.url))};
+    var auto = ${auto ? 'true' : 'false'};
+    var PAUSE = 3000;          // mijoz chekidan keyin oshxona chekigacha
+    var i = 0, lastAt = 0;
+    var status = document.getElementById('status');
+    function next() {
+      if (i >= jobs.length) { status.textContent = '✅ Cheklar printerga yuborildi'; return; }
+      // RawBT chop etish uchun o'z oynasini ochib-yopadi. Keyingi chekni sahifa yana
+      // ko'ringanda va mijoz chekidan kamida 3 soniya o'tgach yuboramiz — ko'rinmas
+      // sahifadan Android ilovani ochib bo'lmaydi.
+      if (i > 0 && (Date.now() - lastAt < PAUSE || document.visibilityState !== 'visible')) {
+        setTimeout(next, 250);
+        return;
+      }
+      lastAt = Date.now();
+      window.location.href = jobs[i++];
+      setTimeout(next, 250);
+    }
+    if (auto) window.addEventListener('load', function () { setTimeout(next, 300); });
+    else status.textContent = 'Chekni chiqarish uchun pastdagi tugmani bosing';
+  })();
 </script>
 </body></html>`;
 }
@@ -11246,14 +11348,18 @@ function usesAgent(owner) {
 }
 
 function publicPrinter(owner) {
-  const { agentToken, ...rest } = ensurePrinterSettings(owner);
+  const { agentToken, header, ...rest } = ensurePrinterSettings(owner);
   rest.hasAgentToken = !!agentToken;
+  rest.headerSig = header ? header.sig || null : null;
+  rest.headerWidth = header ? header.width : null;
   rest.agentLastSeen = agentLastSeen.get(String(owner.id)) || null;
   rest.agentOnline = isAgentOnline(owner);
   return rest;
 }
 
-function enqueuePrintJob(owner, order, mode) {
+// delayMs — chek shuncha vaqtdan keyin agentga beriladi (availableAt). Shu tufayli
+// mijoz cheki doim birinchi, oshxona cheki keyin chiqadi — agent qayta ulansa ham.
+function enqueuePrintJob(owner, order, mode, delayMs = 0) {
   const key = String(owner.id);
   const queue = (printQueues.get(key) || []).filter(j => Date.now() - j.createdAt < PRINT_JOB_TTL_MS);
   queue.push({
@@ -11261,18 +11367,31 @@ function enqueuePrintJob(owner, order, mode) {
     orderNumber: order.orderNumber || null,
     mode,
     data: escposBase64(owner, order, mode),
-    createdAt: Date.now()
+    createdAt: Date.now(),
+    availableAt: Date.now() + delayMs
   });
   while (queue.length > PRINT_QUEUE_MAX) queue.shift();
   printQueues.set(key, queue);
 }
 
 function willAutoPrint(owner) {
-  return ensurePrinterSettings(owner).auto && usesAgent(owner);
+  const printer = ensurePrinterSettings(owner);
+  return usesAgent(owner) && (printer.auto || printer.autoCustomer);
 }
 
+// Buyurtma oshxonaga yuborilganda: avval MIJOZ cheki (brend, narxlar), keyin OSHXONA cheki.
+// Tugma bosish shart emas. Server oshxona chekini biroz keyinroq beradi (tartib kafolati),
+// aniq 3 soniyalik pauzani esa agent mijoz cheki CHIQQAN paytdan sanaydi.
+const KITCHEN_AFTER_CUSTOMER_MS = 1000;
 function autoPrintKitchenTicket(owner, order) {
-  if (willAutoPrint(owner)) enqueuePrintJob(owner, order, 'oshxona');
+  if (!usesAgent(owner)) return;
+  const printer = ensurePrinterSettings(owner);
+  let delay = 0;
+  if (printer.autoCustomer) {
+    enqueuePrintJob(owner, order, 'mijoz');
+    delay = KITCHEN_AFTER_CUSTOMER_MS;
+  }
+  if (printer.auto) enqueuePrintJob(owner, order, 'oshxona', delay);
 }
 
 function findOwnerByAgentToken(owners, token) {
@@ -11308,7 +11427,9 @@ route('/api/print-agent/poll', (payload, res) => {
   printQueues.set(key, queue);
   return sendOk(res, {
     shop: (owner.profile && owner.profile.name) || null,
-    jobs: queue.map(j => ({ id: j.id, orderNumber: j.orderNumber, mode: j.mode, data: j.data }))
+    jobs: queue
+      .filter(j => !j.availableAt || j.availableAt <= Date.now())
+      .map(j => ({ id: j.id, orderNumber: j.orderNumber, mode: j.mode, data: j.data }))
   });
 });
 
@@ -11403,7 +11524,12 @@ authed('/api/order-receipt-link', (payload, res, { userId }) => {
 
   const mode = RECEIPT_MODES[payload.mode] ? payload.mode : 'oshxona';
   if (usesAgent(ctx.owner)) {
-    enqueuePrintJob(ctx.owner, order, mode);
+    if (mode === 'ikkala') {
+      enqueuePrintJob(ctx.owner, order, 'mijoz');
+      enqueuePrintJob(ctx.owner, order, 'oshxona', KITCHEN_AFTER_CUSTOMER_MS);
+    } else {
+      enqueuePrintJob(ctx.owner, order, mode);
+    }
     return sendOk(res, { queued: true, agentOnline: isAgentOnline(ctx.owner), printer: publicPrinter(ctx.owner) });
   }
   return sendOk(res, {
@@ -11420,6 +11546,25 @@ authed('/api/printer-settings-get', (payload, res, { userId }) => {
   return sendOk(res, { printer: publicPrinter(ctx.owner), canEdit: isOwnerRole(ctx) });
 });
 
+// Mijoz chekining brend sarlavhasi (logotip + nom), ilovada 1-bitli rastrga aylantirilgan.
+authed('/api/printer-header-save', (payload, res, { userId }) => {
+  const owners = loadOwners();
+  const ctx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ctx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'zgartira oladi');
+  const header = {
+    width: Number(payload.width) === 58 ? 58 : 80,
+    w: Number(payload.w),
+    h: Number(payload.h),
+    data: String(payload.data || ''),
+    sig: String(payload.sig || '').slice(0, 64)
+  };
+  if (!isValidHeaderRaster(header)) return sendFail(res, 'Rasm formati noto\'g\'ri');
+  const printer = ensurePrinterSettings(ctx.owner);
+  printer.header = header;
+  saveOwners(owners);
+  return sendOk(res, { printer: publicPrinter(ctx.owner) });
+});
+
 authed('/api/printer-settings-save', (payload, res, { userId }) => {
   const owners = loadOwners();
   const ctx = resolveOwnerContext(owners, userId);
@@ -11430,6 +11575,7 @@ authed('/api/printer-settings-save', (payload, res, { userId }) => {
   if (payload.width !== undefined) printer.width = Number(payload.width) === 58 ? 58 : 80;
   if (payload.copies !== undefined) printer.copies = Math.min(3, Math.max(1, Number(payload.copies) || 1));
   if (payload.auto !== undefined) printer.auto = !!payload.auto;
+  if (payload.autoCustomer !== undefined) printer.autoCustomer = !!payload.autoCustomer;
   if (payload.footer !== undefined) printer.footer = String(payload.footer).slice(0, 120);
   saveOwners(owners);
 

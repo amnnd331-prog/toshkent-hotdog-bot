@@ -341,6 +341,10 @@ async function run() {
 
   const printed = new Set();   // shu seansda chiqarilganlar — ikki marta chiqmasligi uchun
   let failures = 0, lastShop = null;
+  // Mijoz cheki chiqqandan keyin keyingi chek (oshxona) KITCHEN_PAUSE_MS kutib chiqadi —
+  // kassir mijoz chekini yirtib olishga ulguradi.
+  const KITCHEN_PAUSE_MS = 3000;
+  let pauseUntil = 0;
 
   while (true) {
     try {
@@ -359,7 +363,10 @@ async function run() {
       for (const job of res.jobs || []) {
         if (printed.has(job.id)) { done.push(job.id); continue; }
         try {
+          const wait = pauseUntil - Date.now();
+          if (wait > 0) await new Promise(r => setTimeout(r, wait));
           await print(target, Buffer.from(job.data, 'base64'));
+          if (job.mode === 'mijoz') pauseUntil = Date.now() + KITCHEN_PAUSE_MS;
           printed.add(job.id);
           done.push(job.id);
           log(`Chek chiqdi: № ${job.orderNumber || '?'} (${job.mode})`);

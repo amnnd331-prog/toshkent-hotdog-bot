@@ -109,11 +109,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
     if (res.printer) printerSettings = res.printer;
     if (res.queued) {
       // Agent rejimi: kompyuterdagi print-agent chekni bir-ikki soniyada o'zi chiqaradi
-      if (res.agentOnline === false) {
-        alert("Chek navbatga qo'yildi, lekin printer ulangan kompyuterdagi agent ishlamayapti.\n\n" +
-          "Kompyuterda start-agent.bat ni ishga tushiring — chek 10 daqiqa ichida o'zi chiqadi.");
-        return true;
-      }
+      // Printer ulanmagan bo'lsa ham ogohlantirish chiqarmaymiz — chek navbatda kutadi
       if (tg && tg.HapticFeedback) { try { tg.HapticFeedback.notificationOccurred('success'); } catch (e) {} }
       showPrintToast('🖨 Chek printerga yuborildi');
       return true;
@@ -130,6 +126,128 @@ const tg = window.Telegram && window.Telegram.WebApp;
       return false;
     }
     return true;
+  }
+
+  // ===== MIJOZ CHEKINING BREND SARLAVHASI =====
+  // Chek printeri JPEG/PNG ni tushunmaydi — unga 1-bitli nuqtalar xaritasi kerak.
+  // Shuning uchun logotip va brend nomi shu yerda (canvas'da) chiziladi, Floyd–Steinberg
+  // usulida oq-qoraga aylantiriladi va serverga saqlanadi. Server uni har bir mijoz
+  // chekining tepasiga qo'shadi. Logotip yoki nom o'zgarsa — avtomatik qayta yasaladi.
+  function receiptHeaderSig(profile, width) {
+    const str = `v1|${width}|${(profile && profile.name) || ''}|${(profile && profile.logoUrl) || ''}`;
+    let h = 5381;
+    for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) >>> 0;
+    return h.toString(16);
+  }
+
+  function loadImageForCanvas(src) {
+    return new Promise(resolve => {
+      if (!src) return resolve(null);
+      const img = new Image();
+      img.crossOrigin = 'anonymous';
+      img.onload = () => resolve(img);
+      img.onerror = () => resolve(null);
+      img.src = src;
+    });
+  }
+
+  async function buildReceiptHeader(profile, widthMm) {
+    const W = widthMm === 58 ? 384 : 576;                  // printer nuqtalari (203 dpi)
+    const name = String((profile && profile.name) || 'PULSAR').toUpperCase();
+    const img = await loadImageForCanvas(profile && profile.logoUrl);
+    const logo = img ? Math.round(W * 0.36) : 0;
+
+    // Nom shrifti: sig'guncha kichraytiriladi
+    const measure = document.createElement('canvas').getContext('2d');
+    let fs = Math.round(W * 0.105);
+    const font = size => `900 ${size}px "Arial Black", "Segoe UI", Arial, sans-serif`;
+    measure.font = font(fs);
+    while (fs > 18 && measure.measureText(name).width > W - 24) { fs -= 2; measure.font = font(fs); }
+
+    const pad = 10;
+    const H = Math.ceil((pad + (logo ? logo + 14 : 0) + fs * 1.15 + 16 + pad) / 8) * 8;
+    const canvas = document.createElement('canvas');
+    canvas.width = W; canvas.height = H;
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
+
+    let y = pad;
+    if (img) {
+      // Logotip: dumaloq ramka ichida, "cover" bo'lib joylashadi
+      const cx = W / 2, cy = y + logo / 2, r = logo / 2;
+      ctx.save();
+      ctx.beginPath(); ctx.arc(cx, cy, r - 4, 0, Math.PI * 2); ctx.clip();
+      const scale = Math.max(logo / img.width, logo / img.height);
+      const dw = img.width * scale, dh = img.height * scale;
+      ctx.drawImage(img, cx - dw / 2, cy - dh / 2, dw, dh);
+      ctx.restore();
+      ctx.lineWidth = 5; ctx.strokeStyle = '#000';
+      ctx.beginPath(); ctx.arc(cx, cy, r - 3, 0, Math.PI * 2); ctx.stroke();
+      y += logo + 14;
+    }
+    ctx.fillStyle = '#000';
+    ctx.font = font(fs);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText(name, W / 2, y);
+    y += Math.round(fs * 1.15) + 6;
+    // Nom ostida bezakli qo'sh chiziq
+    ctx.fillRect(W * 0.18, y, W * 0.64, 3);
+    ctx.fillRect(W * 0.28, y + 6, W * 0.44, 2);
+
+    // Floyd–Steinberg: kulrang tuslar nuqtalar zichligi bilan beriladi (logotip chiroyli chiqadi)
+    let data;
+    try { data = ctx.getImageData(0, 0, W, H).data; } catch (e) { return null; }
+    const gray = new Float32Array(W * H);
+    for (let i = 0; i < W * H; i++) gray[i] = 0.299 * data[i * 4] + 0.587 * data[i * 4 + 1] + 0.114 * data[i * 4 + 2];
+    const bytes = new Uint8Array((W / 8) * H);
+    for (let yy = 0; yy < H; yy++) {
+      for (let xx = 0; xx < W; xx++) {
+        const i = yy * W + xx;
+        const old = gray[i];
+        const black = old < 128;
+        if (black) bytes[yy * (W / 8) + (xx >> 3)] |= (0x80 >> (xx & 7));
+        const err = old - (black ? 0 : 255);
+        if (xx + 1 < W) gray[i + 1] += err * 7 / 16;
+        if (yy + 1 < H) {
+          if (xx > 0) gray[i + W - 1] += err * 3 / 16;
+          gray[i + W] += err * 5 / 16;
+          if (xx + 1 < W) gray[i + W + 1] += err * 1 / 16;
+        }
+      }
+    }
+    // Ko'rinish (preview) uchun oq-qora rasm
+    const out = ctx.createImageData(W, H);
+    for (let i = 0; i < W * H; i++) {
+      const on = bytes[(Math.floor(i / W)) * (W / 8) + ((i % W) >> 3)] & (0x80 >> ((i % W) & 7));
+      const v = on ? 0 : 255;
+      out.data[i * 4] = out.data[i * 4 + 1] = out.data[i * 4 + 2] = v; out.data[i * 4 + 3] = 255;
+    }
+    ctx.putImageData(out, 0, 0);
+    let bin = '';
+    for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+    return { w: W, h: H, data: btoa(bin), preview: canvas.toDataURL('image/png') };
+  }
+
+  // Sarlavha eskirgan bo'lsa (logotip/nom/qog'oz eni o'zgargan) — jimgina qayta yasab saqlaydi.
+  let receiptHeaderPreview = null;
+  async function ensureReceiptHeader(profile, force) {
+    try {
+      const printer = printerSettings || await loadPrinterSettings();
+      if (!printer || !profile) return null;
+      const sig = receiptHeaderSig(profile, printer.width);
+      if (!force && printer.headerSig === sig && printer.headerWidth === printer.width && receiptHeaderPreview) return receiptHeaderPreview;
+      const header = await buildReceiptHeader(profile, printer.width);
+      if (!header) return null;
+      receiptHeaderPreview = header.preview;
+      if (force || printer.headerSig !== sig || printer.headerWidth !== printer.width) {
+        const res = await apiPost('/api/printer-header-save', { width: printer.width, w: header.w, h: header.h, data: header.data, sig });
+        if (res.ok && res.printer) printerSettings = res.printer;
+      }
+      return receiptHeaderPreview;
+    } catch (e) {
+      return null;
+    }
   }
 
   let adminTargetOwnerId = null;
@@ -3514,13 +3632,13 @@ const tg = window.Telegram && window.Telegram.WebApp;
     document.getElementById('editProfileBtn').addEventListener('click', () => renderProfileForm(profile));
     document.getElementById('openPaymentCardBtn').addEventListener('click', () => renderOwnerPaymentCardScreen(() => renderOwnerProfileScreen(profile, onBack)));
     loadNotificationPrefs();
-    loadPrinterCard();
+    loadPrinterCard(profile);
   }
 
   // Printer sozlamalari kartochkasi: qog'oz eni, nusxalar soni, avtomatik chop
   // etish va chek ostidagi matn. Sozlama serverda saqlanadi, shuning uchun
   // kassirning telefoni almashsa ham o'zgarmaydi.
-  async function loadPrinterCard() {
+  async function loadPrinterCard(profile) {
     const card = document.getElementById('printerCard');
     if (!card) return;
     const res = await loadPrinterSettings();
@@ -3529,7 +3647,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
       return;
     }
     card.innerHTML = `
-      <div class="bosh">Buyurtma oshxonaga yuborilishi bilan chek to'g'ridan-to'g'ri printerdan chiqadi — drayver va chop etish oynasisiz.</div>
+      <div class="bosh">Buyurtma berilishi bilan avval <b>mijoz cheki</b>, 3 soniyadan keyin <b>oshxona cheki</b> printerdan o'zi chiqadi — drayver va tugmasiz.</div>
+      <div class="receipt-preview" id="receiptPreview"></div>
       <label class="field-label" for="printerMode">Chop etish usuli</label>
       <select id="printerMode">
         <option value="agent"${res.mode !== 'rawbt' ? ' selected' : ''}>Kompyuter agenti (USB yoki WiFi, drayversiz)</option>
@@ -3548,7 +3667,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
       </select>
       <label class="field-label" for="printerFooter">Chek ostidagi matn</label>
       <input type="text" id="printerFooter" maxlength="120" value="${escapeHtml(res.footer || '')}" placeholder="Rahmat! Yana kutamiz.">
-      <label class="check-label"><input type="checkbox" id="printerAuto"${res.auto ? ' checked' : ''}><span>Yangi buyurtma oshxonaga tushganda chek o'zi chiqsin</span></label>
+      <label class="check-label"><input type="checkbox" id="printerAutoCustomer"${res.autoCustomer !== false ? ' checked' : ''}><span>Mijoz cheki (brend, narxlar) — buyurtma berilganda</span></label>
+      <label class="check-label"><input type="checkbox" id="printerAuto"${res.auto ? ' checked' : ''}><span>Oshxona cheki — 3 soniyadan keyin</span></label>
       <button class="btn" id="printerSaveBtn" style="margin-top:10px;">Saqlash</button>
       <div class="xabar" id="printerMsg"></div>
     `;
@@ -3560,7 +3680,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
         width: document.getElementById('printerWidth').value,
         copies: document.getElementById('printerCopies').value,
         footer: document.getElementById('printerFooter').value,
-        auto: document.getElementById('printerAuto').checked
+        auto: document.getElementById('printerAuto').checked,
+        autoCustomer: document.getElementById('printerAutoCustomer').checked
       });
       if (!saveRes.ok) {
         setMsg(msgEl, saveRes.reason || 'Xatolik yuz berdi.', 'err');
@@ -3568,7 +3689,19 @@ const tg = window.Telegram && window.Telegram.WebApp;
       }
       printerSettings = saveRes.printer;
       setMsg(msgEl, 'Saqlandi.', 'ok');
+      showReceiptPreview(true);
     });
+
+    // Mijoz chekining sarlavhasi — avtomatik yasaladi va shu yerda ko'rsatiladi
+    const showReceiptPreview = async (force) => {
+      const el = document.getElementById('receiptPreview');
+      if (!el || !profile) return;
+      const src = await ensureReceiptHeader(profile, force);
+      if (src && document.body.contains(el)) {
+        el.innerHTML = `<div class="receipt-preview-label">Mijoz chekining tepasi shunday chiqadi:</div><img src="${src}" alt="Chek sarlavhasi">`;
+      }
+    };
+    showReceiptPreview(false);
 
     const MODE_HINTS = {
       agent: "Printer ulangan kompyuterda kichik dastur (print-agent) ishlaydi. U chekni drayversiz, chop etish oynasisiz chiqaradi — kassir, oshxona va mijoz buyurtmalari uchun.",
@@ -3906,6 +4039,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   function renderOwnerHomeScreen(profile) {
+    if (profile) setTimeout(() => ensureReceiptHeader(profile), 1500);
 
     clearAppHeader();
 
@@ -5238,14 +5372,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
         topMsg.after(printBtn);
         // Chekni server printer agentiga o'zi yuboradi — drayver/chop etish oynasi ishlatilmaydi
         if (res.printQueued) {
-          if (res.agentOnline === false) {
-            alert("Buyurtma oshxonaga yuborildi, lekin printer ulangan kompyuterdagi agent ishlamayapti.\n\n" +
-              "Kompyuterda start-agent.bat ni ishga tushiring — chek 10 daqiqa ichida o'zi chiqadi.");
-          } else {
-            showPrintToast('🖨 Chek printerga yuborildi');
-          }
-        } else if (printerSettings && printerSettings.auto && printerSettings.mode === 'rawbt') {
-          openReceipt(res.orderId, 'oshxona'); // Android: RawBT orqali printerga
+          // Printer ulanmagan bo'lsa — hech qanday ogohlantirish chiqmaydi
+          if (res.agentOnline) showPrintToast('🖨 Mijoz va oshxona cheklari printerga yuborildi');
+        } else if (printerSettings && printerSettings.mode === 'rawbt' && (printerSettings.auto || printerSettings.autoCustomer)) {
+          // Android + RawBT: avval mijoz cheki, 3 soniyadan keyin oshxona cheki — tugmasiz
+          openReceipt(res.orderId, 'ikkala');
         }
       }
     } else {

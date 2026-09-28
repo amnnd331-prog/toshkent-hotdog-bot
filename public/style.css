@@ -2546,3 +2546,7 @@
   .agent-manual { margin-top: var(--sp-2); }
   .agent-manual summary { cursor: pointer; font-size: var(--fs-sm); color: var(--text-secondary); padding: 6px 0; }
   .agent-manual[open] summary { margin-bottom: var(--sp-2); }
+  .receipt-preview:empty { display: none; }
+  .receipt-preview { margin: var(--sp-2) 0 var(--sp-3); padding: var(--sp-3); background: #fff; border-radius: var(--radius-md); box-shadow: var(--shadow-card); text-align: center; }
+  .receipt-preview img { width: 100%; max-width: 288px; height: auto; image-rendering: pixelated; display: block; margin: 0 auto; }
+  .receipt-preview-label { font-size: var(--fs-xs); color: #6E5F5B; margin-bottom: 6px; }
