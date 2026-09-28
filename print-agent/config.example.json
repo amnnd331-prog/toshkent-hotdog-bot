@@ -1,0 +1,6 @@
+{
+  "server": "https://sizning-botingiz.up.railway.app",
+  "token": "Ilova → Profil → Printer va chek → Agent tokeni",
+  "printer": "auto",
+  "pollMs": 2000
+}

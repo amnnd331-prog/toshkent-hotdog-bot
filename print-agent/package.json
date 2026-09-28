@@ -1,0 +1,15 @@
+{
+  "name": "pulsar-print-agent",
+  "version": "1.0.0",
+  "description": "Chek printeriga drayversiz (USB yoki WiFi) chop etuvchi agent",
+  "type": "commonjs",
+  "main": "agent.js",
+  "scripts": {
+    "start": "node agent.js",
+    "test-print": "node agent.js --test",
+    "list": "node agent.js --list"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
