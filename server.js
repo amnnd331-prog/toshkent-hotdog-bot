@@ -11312,6 +11312,74 @@ route('/api/print-agent/poll', (payload, res) => {
   });
 });
 
+// ----- Kompyuterni 6 xonali kod bilan ulash (nusxalashsiz) -----
+// Agent ishga tushganda serverdan kod oladi va uni ekranga chiqaradi. Ega botda shu
+// kodni yozadi — server agentga token beradi. Kodni faqat kompyuter qarshisidagi
+// odam ko'radi; agent tokenni faqat o'zi yaratgan maxfiy "secret" bilan oladi.
+const PAIR_TTL_MS = 10 * 60 * 1000;
+const PAIR_MAX_PENDING = 500;
+const pairRequests = new Map();  // kod -> { secretHash, createdAt, token, shop }
+const pairAttempts = new Map();  // egasi ID -> { count, firstAt }
+
+function sha256Hex(s) { return crypto.createHash('sha256').update(String(s)).digest('hex'); }
+function cleanupPairRequests() {
+  const now = Date.now();
+  for (const [code, r] of pairRequests) if (now - r.createdAt > PAIR_TTL_MS) pairRequests.delete(code);
+}
+
+route('/api/print-agent/pair-start', (payload, res) => {
+  const secret = String(payload.secret || '');
+  if (!/^[0-9a-f]{32,64}$/.test(secret)) return sendFail(res, 'Noto\'g\'ri so\'rov');
+  cleanupPairRequests();
+  if (pairRequests.size >= PAIR_MAX_PENDING) return sendFail(res, 'Hozir so\'rovlar juda ko\'p, birozdan so\'ng urinib ko\'ring');
+  let code;
+  do { code = String(crypto.randomInt(0, 1000000)).padStart(6, '0'); } while (pairRequests.has(code));
+  pairRequests.set(code, { secretHash: sha256Hex(secret), createdAt: Date.now(), token: null, shop: null });
+  return sendOk(res, { code, expiresInSec: PAIR_TTL_MS / 1000 });
+});
+
+route('/api/print-agent/pair-poll', (payload, res) => {
+  const hash = sha256Hex(payload.secret || '');
+  cleanupPairRequests();
+  for (const [code, r] of pairRequests) {
+    if (r.secretHash !== hash) continue;
+    if (!r.token) return sendOk(res, { pending: true });
+    pairRequests.delete(code);
+    return sendOk(res, { token: r.token, shop: r.shop });
+  }
+  return sendFail(res, 'Kod muddati tugagan');
+});
+
+authed('/api/print-agent-pair', (payload, res, { userId }) => {
+  const owners = loadOwners();
+  const ctx = resolveOwnerContext(owners, userId);
+  if (!isOwnerRole(ctx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi ulay oladi');
+
+  const now = Date.now();
+  let att = pairAttempts.get(userId);
+  if (!att || now - att.firstAt > PAIR_TTL_MS) att = { count: 0, firstAt: now };
+  if (att.count >= 10) return sendFail(res, 'Juda ko\'p noto\'g\'ri urinish. 10 daqiqadan so\'ng qayta urinib ko\'ring.');
+
+  const code = String(payload.code || '').replace(/\D/g, '');
+  if (code.length !== 6) return sendFail(res, 'Kompyuterdagi oynada chiqqan 6 xonali kodni yozing.');
+  cleanupPairRequests();
+  const r = pairRequests.get(code);
+  if (!r || r.token) {
+    att.count++;
+    pairAttempts.set(userId, att);
+    return sendFail(res, 'Bunday kod topilmadi yoki muddati tugagan. Kompyuterdagi oynadagi kodni tekshiring.');
+  }
+  pairAttempts.delete(userId);
+
+  const printer = ensurePrinterSettings(ctx.owner);
+  if (!printer.agentToken) printer.agentToken = crypto.randomBytes(24).toString('hex');
+  printer.mode = 'agent';
+  saveOwners(owners);
+  r.token = printer.agentToken;
+  r.shop = (ctx.owner.profile && ctx.owner.profile.name) || null;
+  return sendOk(res, { printer: publicPrinter(ctx.owner) });
+});
+
 // Agent chop etgan cheklarni tasdiqlaydi — ular navbatdan o'chiriladi.
 route('/api/print-agent/ack', (payload, res) => {
   const owner = findOwnerByAgentToken(loadOwners(), payload.token);

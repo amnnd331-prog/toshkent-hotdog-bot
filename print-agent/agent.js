@@ -18,6 +18,7 @@
 
 const fs = require('fs');
 const net = require('net');
+const crypto = require('crypto');
 const readline = require('readline');
 const path = require('path');
 const { execFileSync, spawn } = require('child_process');
@@ -39,20 +40,27 @@ function normalizeConfig(cfg) {
   return cfg;
 }
 
-// Birinchi ishga tushishda: botdagi "Nusxa olish" matnini so'raydi va config.json'ga yozadi.
+// Birinchi ishga tushishda (config.json yo'q): bot manzilini (masalan
+// https://....up.railway.app) yoki botdagi "Qo'lda sozlash" matnini so'raydi.
 function setupInteractive() {
   console.log('');
   console.log('==============================================================');
   console.log('  Birinchi sozlash');
-  console.log('  Botda: Profil -> Printer va chek -> Kompyuter agenti ->');
-  console.log('  "Nusxa olish" ni bosing, keyin shu oynaga joylang');
-  console.log("  (sichqonchaning o'ng tugmasi) va Enter bosing.");
+  console.log('  Bot saytining manzilini yozing va Enter bosing, masalan:');
+  console.log('    https://toshkent-hotdog-bot-production.up.railway.app');
   console.log('==============================================================');
   console.log('');
   return new Promise(resolve => {
     const rl = readline.createInterface({ input: process.stdin });
     let text = '';
     rl.on('line', line => {
+      const url = line.trim().match(/^https?:\/\/[^\s"']+$/);
+      if (url && !text) {
+        const cfg = { server: url[0].replace(/\/+$/, ''), printer: 'auto', pollMs: 2000 };
+        fs.writeFileSync(CONFIG_FILE, JSON.stringify(cfg, null, 2));
+        rl.close();
+        return resolve(normalizeConfig(cfg));
+      }
       text += line + '\n';
       const start = text.indexOf('{'), end = text.lastIndexOf('}');
       if (start < 0 || end < start) return;
@@ -253,6 +261,62 @@ function testReceipt() {
   return Buffer.concat(parts);
 }
 
+// ---------- Kod bilan ulash (nusxalashsiz) ----------
+async function postJson(url, body) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(15000)
+  });
+  return res.json();
+}
+
+// Serverdan 6 xonali kod oladi, ekranga chiqaradi va ega botda kiritguncha kutadi.
+// Token faqat shu agent yaratgan maxfiy "secret" bilan beriladi.
+async function pairWithCode(cfg) {
+  while (true) {
+    const secret = crypto.randomBytes(24).toString('hex');
+    let start;
+    try { start = await postJson(cfg.server + '/api/print-agent/pair-start', { secret }); }
+    catch (e) { log(`Serverga ulanib bo'lmadi: ${e.message}. 10 soniyadan keyin qayta urinaman...`); await new Promise(r => setTimeout(r, 10000)); continue; }
+    if (!start || typeof start !== 'object' || !('ok' in start)) {
+      // Server hali "kod bilan ulash"ni bilmaydigan eski versiyada — yangilanishini kutamiz
+      log('Server hali yangilanmagan (kod bilan ulash yo\'q). 30 soniyadan keyin qayta urinaman...');
+      await new Promise(r => setTimeout(r, 30000));
+      continue;
+    }
+    if (!start.ok) throw new Error(start.reason || 'Server kod bermadi');
+
+    const code = `${start.code.slice(0, 3)} ${start.code.slice(3)}`;
+    console.log('');
+    console.log('==============================================================');
+    console.log('  KOMPYUTERNI ULASH KODI:');
+    console.log('');
+    console.log(`              >>>   ${code}   <<<`);
+    console.log('');
+    console.log('  Botda: Profil -> Printer va chek -> shu kodni yozing');
+    console.log('  va "Ulash" ni bosing. Kod 10 daqiqa amal qiladi.');
+    console.log('==============================================================');
+    console.log('');
+
+    const deadline = Date.now() + (start.expiresInSec || 600) * 1000;
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 2000));
+      let res;
+      try { res = await postJson(cfg.server + '/api/print-agent/pair-poll', { secret }); } catch (e) { continue; }
+      if (res.ok && res.token) {
+        cfg.token = res.token;
+        fs.writeFileSync(CONFIG_FILE, JSON.stringify({ server: cfg.server, token: cfg.token, printer: cfg.printer, pollMs: cfg.pollMs }, null, 2));
+        log(`Kompyuter ulandi: ${res.shop || 'do\'kon'}`);
+        return cfg;
+      }
+      if (!res.ok) break; // kod eskirdi — yangisini olamiz
+    }
+    log('Kod muddati tugadi, yangi kod olinmoqda...');
+  }
+}
+
 // ---------- Asosiy sikl ----------
 async function api(cfg, url, body) {
   const res = await fetch(cfg.server + url, {
@@ -265,11 +329,12 @@ async function api(cfg, url, body) {
 }
 
 async function run() {
-  const cfg = loadConfig() || await setupInteractive();
-  if (!cfg.server || !cfg.token) {
-    console.error('config.json da "server" va "token" to\'ldirilishi shart.');
+  let cfg = loadConfig() || await setupInteractive();
+  if (!cfg.server) {
+    console.error('config.json da "server" (bot sayti manzili) yozilishi shart.');
     process.exit(1);
   }
+  if (!cfg.token) cfg = await pairWithCode(cfg);
   let target = await resolvePrinter(cfg.printer);
   log(`Printer: ${target}`);
   log(`Server:  ${cfg.server}`);
@@ -280,6 +345,12 @@ async function run() {
   while (true) {
     try {
       const res = await api(cfg, '/api/print-agent/poll');
+      if (!res.ok && /token/i.test(res.reason || '')) {
+        log('Token eskirgan — kompyuterni qayta ulash kerak.');
+        delete cfg.token;
+        cfg = await pairWithCode(cfg);
+        continue;
+      }
       if (!res.ok) throw new Error(res.reason || 'Server rad etdi');
       if (res.shop && res.shop !== lastShop) { log(`Ulandi: ${res.shop}`); lastShop = res.shop; }
       if (failures) { log('Aloqa tiklandi.'); failures = 0; }
