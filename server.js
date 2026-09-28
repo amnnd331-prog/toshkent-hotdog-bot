@@ -7228,7 +7228,7 @@ authed('/api/create-order', async (payload, res, { user, userId }) => {
   notifyKitchenGroup(ctx.owner, order, `Yaratdi: ${escapeHtmlServer(displayName(user))} (kassir)`);
   saveOwners(owners);
 
-  const successResponse = { ok: true, orderId: order.id, total };
+  const successResponse = { ok: true, orderId: order.id, total, printQueued: willAutoPrint(ctx.owner) };
   setCachedOrderResponse(ctx.owner.id, userId, requestId, successResponse);
   return sendJSON(res, 200, successResponse);
 });
@@ -11178,10 +11178,27 @@ const PRINT_QUEUE_MAX = 50;
 const printQueues = new Map();   // ownerId -> [{ id, orderNumber, mode, data, createdAt }]
 const agentLastSeen = new Map(); // ownerId -> ISO vaqt
 
+const AGENT_ONLINE_MS = 30 * 1000;
+
+function isAgentOnline(owner) {
+  const seen = agentLastSeen.get(String(owner.id));
+  return !!seen && Date.now() - new Date(seen).getTime() < AGENT_ONLINE_MS;
+}
+
+// Chek agentga ketadimi? Agent rejimi tanlangan bo'lsa — ha. Oddiy (brauzer)
+// rejimda ham agent hozir ulangan bo'lsa — ha: kassir "Chek" bosganda chop
+// etish oynasi emas, printerning o'zi ishlashi kerak. RawBT tanlangan bo'lsa
+// (Android telefon) — egasining tanlovi hurmat qilinadi.
+function usesAgent(owner) {
+  const printer = ensurePrinterSettings(owner);
+  return printer.mode === 'agent' || (printer.mode === 'brauzer' && isAgentOnline(owner));
+}
+
 function publicPrinter(owner) {
   const { agentToken, ...rest } = ensurePrinterSettings(owner);
   rest.hasAgentToken = !!agentToken;
   rest.agentLastSeen = agentLastSeen.get(String(owner.id)) || null;
+  rest.agentOnline = isAgentOnline(owner);
   return rest;
 }
 
@@ -11199,9 +11216,12 @@ function enqueuePrintJob(owner, order, mode) {
   printQueues.set(key, queue);
 }
 
+function willAutoPrint(owner) {
+  return ensurePrinterSettings(owner).auto && usesAgent(owner);
+}
+
 function autoPrintKitchenTicket(owner, order) {
-  const printer = ensurePrinterSettings(owner);
-  if (printer.mode === 'agent' && printer.auto) enqueuePrintJob(owner, order, 'oshxona');
+  if (willAutoPrint(owner)) enqueuePrintJob(owner, order, 'oshxona');
 }
 
 function findOwnerByAgentToken(owners, token) {
@@ -11263,9 +11283,9 @@ authed('/api/order-receipt-link', (payload, res, { userId }) => {
   if (!order) return sendFail(res, 'Buyurtma topilmadi');
 
   const mode = RECEIPT_MODES[payload.mode] ? payload.mode : 'oshxona';
-  if (ensurePrinterSettings(ctx.owner).mode === 'agent') {
+  if (usesAgent(ctx.owner)) {
     enqueuePrintJob(ctx.owner, order, mode);
-    return sendOk(res, { queued: true, printer: publicPrinter(ctx.owner) });
+    return sendOk(res, { queued: true, agentOnline: isAgentOnline(ctx.owner), printer: publicPrinter(ctx.owner) });
   }
   return sendOk(res, {
     path: buildReceiptPath(ctx.owner.id, order.id, mode),
