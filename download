@@ -1,3 +1,8 @@
 node_modules/
 .env
 *.log
+*.json.bak
+pre_restore_backups/
+
+# Print agent tokeni maxfiy — GitHub/serverga yuklanmasin
+print-agent/config.json
