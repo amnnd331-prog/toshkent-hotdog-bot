@@ -1,5 +1,38 @@
 # Faqat admin uchun Telegram Mini App — sozlash yo'riqnomasi
 
+## Chek printeri — drayversiz, to'g'ridan-to'g'ri
+
+Kassir **"Oshxonaga yuborish"** ni bosishi bilan (yoki mijoz buyurtmasi oshxonaga tushishi
+bilan) chek printerdan o'zi chiqadi. Drayver ham, chop etish oynasi ham ishlatilmaydi —
+chek printer tushunadigan ESC/POS baytlari ko'rinishida to'g'ridan-to'g'ri yuboriladi.
+
+**Printer kompyuterga ulangan bo'lsa (USB yoki WiFi):** `print-agent/` dasturi ishlatiladi.
+U printer ulangan kompyuterda ishlab turadi va yangi cheklarni serverdan olib, printerga yozadi.
+Sozlash — 2 daqiqa: [print-agent/README.md](print-agent/README.md).
+
+**Printer Android telefonga ulangan bo'lsa (Bluetooth / USB-OTG):** bepul **RawBT** ilovasi:
+1. Play Market'dan **RawBT** (`ru.a402d.rawbtprinter`) ni o'rnating va printerni unga qo'shing.
+2. Ilovada: Profil → Printer va chek → **Android telefon — RawBT ilovasi orqali**.
+
+**Sozlamalar** (Profil → Printer va chek): qog'oz eni (58/80 mm), nusxalar soni, chek ostidagi
+matn va "Yangi buyurtma oshxonaga tushganda chek o'zi chiqsin" (sukut bo'yicha yoqilgan).
+Har bir buyurtma ostidagi **🖨 Chek** tugmasi bilan chekni qayta chiqarish ham mumkin.
+
+Ikki xil chek bor: `oshxona` (narxsiz, yirik shrift — tayyorlash uchun) va `mijoz`
+(narxlar va jami bilan).
+
+## Xavfsizlik: login va parollar
+
+- Kodda **hech qanday standart parol yo'q**. Bosh ega uchun `ADMIN_PASSWORD` (kamida 8 belgi)
+  berilmagan bo'lsa, tasodifiy parol yaratiladi va egasining o'ziga **Telegram bot orqali** yuboriladi.
+- Ilgari ishlatilgan eski standart parol server ishga tushganda avtomatik almashtiriladi,
+  yangisi egasiga botda yuboriladi.
+- Xodimlar uchun umumiy boshlang'ich parol faqat `STAFF_DEFAULT_PASSWORD` (kamida 8 belgi)
+  berilganda ishlaydi. Aks holda xodim saytdagi **"Parolni unutdim"** orqali botdan shaxsiy parol oladi.
+- Bitta loginga 5 marta noto'g'ri urinishdan keyin u 15 daqiqaga bloklanadi.
+- `BOT_TOKEN`, `.env` va `print-agent/config.json` ni hech qachon GitHub'ga yuklamang —
+  ular `.gitignore` da.
+
 ## Dasturchilar uchun: kod tuzilishi (v8)
 - **API endpointlar** `server.js` da `route(url, fn)` / `authed(url, fn)` orqali ro'yxatga olinadi.
   `authed` Telegram `initData` imzosini markazda tekshiradi va handlerga `{ user, userId }` beradi —

@@ -449,9 +449,12 @@ function normalizeLogin(login) {
 }
 
 // ===== Xodimlar uchun login/parol (login = Telegram ID) =====
-// Xodim o'z parolini o'rnatmaguncha (staff.passwordHash yo'q) umumiy boshlang'ich parol ishlaydi.
-// Uni STAFF_DEFAULT_PASSWORD muhit o'zgaruvchisi bilan almashtirish mumkin.
-const STAFF_DEFAULT_PASSWORD = process.env.STAFF_DEFAULT_PASSWORD || 'toshkenthotdog';
+// Xodim o'z parolini o'rnatmaguncha (staff.passwordHash yo'q) umumiy boshlang'ich parol FAQAT
+// STAFF_DEFAULT_PASSWORD muhit o'zgaruvchisi (kamida 8 belgi) berilganda ishlaydi. Kodda yozilgan
+// standart parol yo'q: u holda xodim saytdagi "Parolni unutdim" orqali botdan shaxsiy parol oladi.
+const STAFF_DEFAULT_PASSWORD = String(process.env.STAFF_DEFAULT_PASSWORD || '').length >= 8
+  ? String(process.env.STAFF_DEFAULT_PASSWORD)
+  : null;
 
 function findStaffRecord(owners, userId) {
   for (const owner of owners) {
@@ -463,6 +466,7 @@ function findStaffRecord(owners, userId) {
 
 function verifyStaffPassword(staff, password) {
   if (staff.passwordHash) return verifyPassword(password, staff.passwordHash);
+  if (!STAFF_DEFAULT_PASSWORD) return false;
   const a = Buffer.from(String(password));
   const b = Buffer.from(STAFF_DEFAULT_PASSWORD);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
@@ -7228,7 +7232,11 @@ authed('/api/create-order', async (payload, res, { user, userId }) => {
   notifyKitchenGroup(ctx.owner, order, `Yaratdi: ${escapeHtmlServer(displayName(user))} (kassir)`);
   saveOwners(owners);
 
-  const successResponse = { ok: true, orderId: order.id, total, printQueued: willAutoPrint(ctx.owner) };
+  const successResponse = {
+    ok: true, orderId: order.id, total,
+    printQueued: willAutoPrint(ctx.owner),
+    agentOnline: isAgentOnline(ctx.owner)
+  };
   setCachedOrderResponse(ctx.owner.id, userId, requestId, successResponse);
   return sendJSON(res, 200, successResponse);
 });
@@ -10131,14 +10139,52 @@ authed('/api/owner-remove-password', (payload, res, { userId }) => {
   return sendOk(res);
 });
 
+// ===== Parol taxminidan himoya =====
+// Bitta login uchun LOGIN_MAX_FAILS marta xato urinishdan keyin shu login LOGIN_LOCK_MS ga
+// bloklanadi. Hisob xotirada turadi (server qayta ishga tushsa nollanadi) — bu yetarli:
+// maqsad parolni avtomatik tanlashni amalda imkonsiz qilish.
+const LOGIN_MAX_FAILS = 5;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const LOGIN_LOCK_MS = 15 * 60 * 1000;
+const loginFails = new Map(); // login -> { count, firstAt, lockedUntil }
+
+function loginLockedFor(key) {
+  const r = loginFails.get(key);
+  if (!r || !r.lockedUntil) return 0;
+  const left = r.lockedUntil - Date.now();
+  if (left <= 0) { loginFails.delete(key); return 0; }
+  return left;
+}
+function noteLoginFail(key) {
+  const now = Date.now();
+  let r = loginFails.get(key);
+  if (!r || now - r.firstAt > LOGIN_WINDOW_MS) r = { count: 0, firstAt: now, lockedUntil: 0 };
+  r.count++;
+  if (r.count >= LOGIN_MAX_FAILS) r.lockedUntil = now + LOGIN_LOCK_MS;
+  loginFails.set(key, r);
+  if (loginFails.size > 5000) {
+    for (const [k, v] of loginFails) if (now - v.firstAt > LOGIN_WINDOW_MS && (!v.lockedUntil || v.lockedUntil < now)) loginFails.delete(k);
+  }
+}
+function clearLoginFails(key) { loginFails.delete(key); }
+function loginLockedReason(ms) {
+  const min = Math.max(1, Math.ceil(ms / 60000));
+  return `Juda ko'p noto'g'ri urinish. ${min} daqiqadan so'ng qayta urinib ko'ring yoki "Parolni unutdim" dan foydalaning.`;
+}
+
 // Xodim kirishi: login = Telegram ID. Sessiya xodim yozuvining o'zida saqlanadi va
 // verifyAuth uni Telegram orqali kirgandek o'sha xodim ID si bilan tanitadi.
 function staffLogin(telegramId, password, res) {
   const owners = loadOwners();
   const rec = findStaffRecord(owners, telegramId);
   if (!rec || !verifyStaffPassword(rec.staff, password)) {
-    return sendFail(res, 'Login yoki parol noto\'g\'ri.');
+    noteLoginFail(telegramId);
+    const hint = rec && !rec.staff.passwordHash && !STAFF_DEFAULT_PASSWORD
+      ? ' Hali shaxsiy parolingiz yo\'q — "Parolni unutdim" orqali botdan oling.'
+      : '';
+    return sendFail(res, 'Login yoki parol noto\'g\'ri.' + hint);
   }
+  clearLoginFails(telegramId);
   if (!isOwnerAccessValid(rec.owner)) {
     return sendFail(res, 'Oshxona obunasi faol emas. Egasi bilan bog\'laning.');
   }
@@ -10158,6 +10204,8 @@ route('/api/owner-login', (payload, res) => {
   if (!loginNorm || !password) {
     return sendFail(res, 'Login va parolni kiriting.');
   }
+  const lockedMs = loginLockedFor(loginNorm);
+  if (lockedMs) return sendFail(res, loginLockedReason(lockedMs));
 
   const owners = pruneExpiredOwners();
   const owner = owners.find(o => normalizeLogin(o.login) === loginNorm);
@@ -10165,8 +10213,10 @@ route('/api/owner-login', (payload, res) => {
     return staffLogin(loginNorm, password, res);
   }
   if (!owner || !owner.passwordHash || !verifyPassword(password, owner.passwordHash)) {
+    noteLoginFail(loginNorm);
     return sendFail(res, 'Login yoki parol noto\'g\'ri.');
   }
+  clearLoginFails(loginNorm);
   if (!isOwnerAccessValid(owner)) {
     return sendJSON(res, 200, subscriptionBlockedJSON(owners, owner.id, 'Obuna muddati tugagan. Administrator bilan bog\'laning.'));
   }
@@ -10878,15 +10928,19 @@ function verifyReceiptParams(params) {
 // Printer sozlamalari: qog'oz eni, nusxalar soni, avtomatik chop etish va pastki matn.
 function ensurePrinterSettings(owner) {
   const p = owner.printer || {};
+  // v2: chek faqat TO'G'RIDAN-TO'G'RI printerga ketadi — drayver/chop etish oynasi ishlatilmaydi.
+  // Eski sozlamalar bir marta ko'chiriladi: 'brauzer' -> 'agent' va avtomatik chop etish yoqiladi
+  // (buyurtma oshxonaga yuborilishi bilan chek chiqadi). Keyin ega avtomatikni o'chirishi mumkin.
+  const migrate = p.v !== 2;
   owner.printer = {
-    // 'brauzer' — qurilmaning chop etish oynasi (har qanday printer, iPhone ham);
-    // 'rawbt'   — Android'dagi RawBT ilovasi orqali to'g'ridan-to'g'ri (oynasiz);
-    // 'agent'   — kompyuterdagi print-agent dasturi, drayversiz USB yoki WiFi (IP:9100).
-    mode: ['rawbt', 'agent'].includes(p.mode) ? p.mode : 'brauzer',
+    v: 2,
+    // 'agent' — kompyuterdagi print-agent dasturi, drayversiz USB yoki WiFi (IP:9100);
+    // 'rawbt' — Android'dagi RawBT ilovasi orqali (telefonga ulangan printer uchun).
+    mode: p.mode === 'rawbt' ? 'rawbt' : 'agent',
     agentToken: typeof p.agentToken === 'string' ? p.agentToken : null,
     width: p.width === 58 ? 58 : 80,
     copies: Math.min(3, Math.max(1, Number(p.copies) || 1)),
-    auto: !!p.auto,
+    auto: migrate ? true : !!p.auto,
     footer: typeof p.footer === 'string' ? p.footer : 'Rahmat! Yana kutamiz.'
   };
   return owner.printer;
@@ -11185,13 +11239,10 @@ function isAgentOnline(owner) {
   return !!seen && Date.now() - new Date(seen).getTime() < AGENT_ONLINE_MS;
 }
 
-// Chek agentga ketadimi? Agent rejimi tanlangan bo'lsa — ha. Oddiy (brauzer)
-// rejimda ham agent hozir ulangan bo'lsa — ha: kassir "Chek" bosganda chop
-// etish oynasi emas, printerning o'zi ishlashi kerak. RawBT tanlangan bo'lsa
-// (Android telefon) — egasining tanlovi hurmat qilinadi.
+// Chek agentga ketadimi? RawBT (Android telefon) tanlanmagan bo'lsa — doim ha:
+// chek hech qachon drayver yoki chop etish oynasi orqali chiqarilmaydi.
 function usesAgent(owner) {
-  const printer = ensurePrinterSettings(owner);
-  return printer.mode === 'agent' || (printer.mode === 'brauzer' && isAgentOnline(owner));
+  return ensurePrinterSettings(owner).mode !== 'rawbt';
 }
 
 function publicPrinter(owner) {
@@ -11307,7 +11358,7 @@ authed('/api/printer-settings-save', (payload, res, { userId }) => {
   if (!isOwnerRole(ctx)) return denyAccess(res, owners, userId, 'Faqat oshxona egasi o\'zgartira oladi');
 
   const printer = ensurePrinterSettings(ctx.owner);
-  if (payload.mode !== undefined) printer.mode = ['rawbt', 'agent'].includes(payload.mode) ? payload.mode : 'brauzer';
+  if (payload.mode !== undefined) printer.mode = payload.mode === 'rawbt' ? 'rawbt' : 'agent';
   if (payload.width !== undefined) printer.width = Number(payload.width) === 58 ? 58 : 80;
   if (payload.copies !== undefined) printer.copies = Math.min(3, Math.max(1, Number(payload.copies) || 1));
   if (payload.auto !== undefined) printer.auto = !!payload.auto;
@@ -11513,13 +11564,61 @@ function seedAdminLoginOnce() {
     console.error(`[admin login] "${login}" logini boshqa egasida band — bosh admin logini o'rnatilmadi.`);
     return;
   }
+  // Parol kodda yozilmaydi: ADMIN_PASSWORD (kamida 8 belgi) berilgan bo'lsa o'sha, aks holda
+  // tasodifiy parol yaratiladi va egasining o'ziga Telegram bot orqali yuboriladi.
+  const envPassword = String(process.env.ADMIN_PASSWORD || '');
+  const password = envPassword.length >= 8 ? envPassword : generateReadablePassword();
   owner.login = login;
-  owner.passwordHash = hashPassword(process.env.ADMIN_PASSWORD || 'toshkenthotdog');
+  owner.passwordHash = hashPassword(password);
   owner.sessionToken = null;
   owner.sessionExpiresAt = null;
   owner.adminLoginSeeded = true;
   saveOwners(owners);
   console.log(`Bosh admin uchun "${login}" logini o'rnatildi.`);
+  if (password !== envPassword) {
+    sendCredentialsToOwner(owner.id, login, password, 'Saytga kirish uchun login va parolingiz tayyor.')
+      .catch(e => console.error('Admin parolini botga yuborib bo\'lmadi:', e.message));
+  }
+}
+
+// Ilgari kodda ochiq yozilgan standart parollar. Ular hali ishlatilayotgan bo'lsa, server
+// ishga tushganda almashtiriladi va yangi parol egasining o'ziga botda yuboriladi.
+const KNOWN_WEAK_PASSWORDS = ['toshkenthotdog'];
+
+async function sendCredentialsToOwner(ownerId, login, password, intro) {
+  const sent = await sendMessage(ownerId,
+    `🔐 <b>${escapeHtmlServer(intro)}</b>\n\n` +
+    `Login: <code>${escapeHtmlServer(login)}</code>\n` +
+    `Parol: <code>${escapeHtmlServer(password)}</code>\n\n` +
+    '<i>Parolni ilovada (Profil → Parolni o\'zgartirish) o\'zingizga qulayiga almashtirishingiz mumkin. ' +
+    'Bu xabarni hech kimga ko\'rsatmang.</i>');
+  // sendMessage xato tashlamaydi — natijani o'zimiz tekshiramiz
+  if (!sent || !sent.ok) throw new Error((sent && sent.description) || 'Telegram javob bermadi');
+}
+
+async function rotateWeakOwnerPasswords() {
+  const owners = loadOwners();
+  const rotated = [];
+  for (const owner of owners) {
+    if (!owner.login || !owner.passwordHash) continue;
+    if (!KNOWN_WEAK_PASSWORDS.some(pw => verifyPassword(pw, owner.passwordHash))) continue;
+    const password = generateReadablePassword();
+    owner.passwordHash = hashPassword(password);
+    owner.sessionToken = null;
+    owner.sessionExpiresAt = null;
+    rotated.push({ id: owner.id, login: owner.login, password });
+  }
+  if (!rotated.length) return;
+  saveOwners(owners);
+  for (const r of rotated) {
+    console.log(`[xavfsizlik] "${r.login}" loginining standart paroli almashtirildi, yangisi egasiga botda yuborildi.`);
+    try {
+      await sendCredentialsToOwner(r.id, r.login, r.password,
+        'Xavfsizlik: eski standart parol o\'chirildi. Yangi parolingiz:');
+    } catch (e) {
+      console.error(`[xavfsizlik] "${r.login}" uchun yangi parolni yuborib bo'lmadi — "Parolni unutdim" orqali tiklansin:`, e.message);
+    }
+  }
 }
 
 server.listen(PORT, async () => {
@@ -11543,6 +11642,8 @@ server.listen(PORT, async () => {
   } catch (e) {
     console.error('ADMIN_ID ni owner qilishda xatolik:', e.message);
   }
+
+  rotateWeakOwnerPasswords().catch(e => console.error('Standart parollarni almashtirishda xatolik:', e.message));
 
   try {
     seedDefaultTariffsIfEmpty();
