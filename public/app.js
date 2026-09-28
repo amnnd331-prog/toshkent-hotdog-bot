@@ -78,6 +78,55 @@ const tg = window.Telegram && window.Telegram.WebApp;
     promptCall(btn.getAttribute('data-call-phone'), btn.getAttribute('data-call-tgid') || null);
   });
 
+  // ===== CHEK CHOP ETISH =====
+  // Server faqat chop etishga tayyor sahifa beradi; uni printerga qurilmaning
+  // o'zi yuboradi. Shu sababli printer USB, WiFi yoki Bluetooth orqali
+  // ulanganidan qat'i nazar, jarayon bir xil: chek sahifasi ochiladi va
+  // qurilmaning chop etish oynasi chiqadi.
+  let printerSettings = null;
+
+  async function loadPrinterSettings() {
+    const res = await apiPost('/api/printer-settings-get');
+    if (res.ok) printerSettings = res.printer;
+    return printerSettings;
+  }
+
+  function showPrintToast(text) {
+    const el = document.createElement('div');
+    el.className = 'print-toast';
+    el.textContent = text;
+    document.body.appendChild(el);
+    setTimeout(() => el.classList.add('hide'), 1800);
+    setTimeout(() => el.remove(), 2300);
+  }
+
+  async function openReceipt(orderId, mode) {
+    const res = await apiPost('/api/order-receipt-link', { orderId, mode: mode || 'oshxona' });
+    if (!res.ok) {
+      alert(res.reason || "Chekni ochib bo'lmadi.");
+      return false;
+    }
+    if (res.printer) printerSettings = res.printer;
+    if (res.queued) {
+      // Agent rejimi: kompyuterdagi print-agent chekni bir-ikki soniyada o'zi chiqaradi
+      if (tg && tg.HapticFeedback) { try { tg.HapticFeedback.notificationOccurred('success'); } catch (e) {} }
+      showPrintToast('🖨 Chek printerga yuborildi');
+      return true;
+    }
+    const url = location.origin + res.path;
+    if (tg && typeof tg.openLink === 'function') {
+      tg.openLink(url);
+      return true;
+    }
+    const win = window.open(url, '_blank');
+    if (!win) {
+      // Brauzer yangi oynani bloklagan bo'lsa (avtomatik chaqiruvda bo'ladi)
+      alert("Brauzer chek oynasini bloklab qo'ydi. Ruxsat bering yoki “Chek” tugmasini qo'lda bosing.");
+      return false;
+    }
+    return true;
+  }
+
   let adminTargetOwnerId = null;
   const ADMIN_TARGET_OWNER_ENDPOINTS = [
     '/api/menu-list', '/api/menu-add', '/api/menu-update', '/api/menu-remove', '/api/menu-set-recipe',
@@ -3450,6 +3499,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <div class="bosh">Mijoz "Karta" orqali to'lashni tanlaganda shu karta raqamini ko'radi.</div>
           <button class="btn ikkinchi" id="openPaymentCardBtn" style="margin-top:10px;">Karta ma'lumotlarini tahrirlash</button>
         </div>
+        <div class="section-label" style="margin-top:18px;">${icon('box', 'icon-xs')} Printer va chek</div>
+        <div class="kartochka" id="printerCard"><div class="bosh">Yuklanmoqda...</div></div>
         <div class="section-label" style="margin-top:18px;">${icon('bell', 'icon-xs')} Push-bildirishnoma sozlamalari</div>
         <div class="kartochka" id="notifPrefsCard"><div class="bosh">Yuklanmoqda...</div></div>
       </div>
@@ -3458,6 +3509,129 @@ const tg = window.Telegram && window.Telegram.WebApp;
     document.getElementById('editProfileBtn').addEventListener('click', () => renderProfileForm(profile));
     document.getElementById('openPaymentCardBtn').addEventListener('click', () => renderOwnerPaymentCardScreen(() => renderOwnerProfileScreen(profile, onBack)));
     loadNotificationPrefs();
+    loadPrinterCard();
+  }
+
+  // Printer sozlamalari kartochkasi: qog'oz eni, nusxalar soni, avtomatik chop
+  // etish va chek ostidagi matn. Sozlama serverda saqlanadi, shuning uchun
+  // kassirning telefoni almashsa ham o'zgarmaydi.
+  async function loadPrinterCard() {
+    const card = document.getElementById('printerCard');
+    if (!card) return;
+    const res = await loadPrinterSettings();
+    if (!res) {
+      card.innerHTML = `<div class="bosh">Sozlamalarni yuklab bo'lmadi.</div>`;
+      return;
+    }
+    card.innerHTML = `
+      <div class="bosh">Chek kassirning telefoni yoki kompyuteridan chiqadi — printer USB, WiFi yoki Bluetooth orqali ulangan bo'lsa ham bir xil ishlaydi.</div>
+      <label class="field-label" for="printerMode">Chop etish usuli</label>
+      <select id="printerMode">
+        <option value="agent"${res.mode === 'agent' ? ' selected' : ''}>Kompyuter agenti (USB yoki WiFi, drayversiz)</option>
+        <option value="brauzer"${res.mode === 'brauzer' ? ' selected' : ''}>Qurilmaning chop etish oynasi (iPhone ham)</option>
+        <option value="rawbt"${res.mode === 'rawbt' ? ' selected' : ''}>RawBT ilovasi orqali (Android, oynasiz)</option>
+      </select>
+      <div class="bosh" id="printerModeHint" style="margin-bottom:6px;"></div>
+      <div id="agentBox" class="agent-box"></div>
+      <label class="field-label" for="printerWidth">Qog'oz eni</label>
+      <select id="printerWidth">
+        <option value="80"${res.width === 80 ? ' selected' : ''}>80 mm (keng)</option>
+        <option value="58"${res.width === 58 ? ' selected' : ''}>58 mm (tor)</option>
+      </select>
+      <label class="field-label" for="printerCopies">Nusxalar soni</label>
+      <select id="printerCopies">
+        ${[1, 2, 3].map(n => `<option value="${n}"${res.copies === n ? ' selected' : ''}>${n} ta</option>`).join('')}
+      </select>
+      <label class="field-label" for="printerFooter">Chek ostidagi matn</label>
+      <input type="text" id="printerFooter" maxlength="120" value="${escapeHtml(res.footer || '')}" placeholder="Rahmat! Yana kutamiz.">
+      <label class="check-label"><input type="checkbox" id="printerAuto"${res.auto ? ' checked' : ''}><span>Yangi buyurtma oshxonaga tushganda chek o'zi chiqsin</span></label>
+      <button class="btn" id="printerSaveBtn" style="margin-top:10px;">Saqlash</button>
+      <div class="xabar" id="printerMsg"></div>
+    `;
+    document.getElementById('printerSaveBtn').addEventListener('click', async () => {
+      const msgEl = document.getElementById('printerMsg');
+      setMsg(msgEl, 'Saqlanmoqda...');
+      const saveRes = await apiPost('/api/printer-settings-save', {
+        mode: document.getElementById('printerMode').value,
+        width: document.getElementById('printerWidth').value,
+        copies: document.getElementById('printerCopies').value,
+        footer: document.getElementById('printerFooter').value,
+        auto: document.getElementById('printerAuto').checked
+      });
+      if (!saveRes.ok) {
+        setMsg(msgEl, saveRes.reason || 'Xatolik yuz berdi.', 'err');
+        return;
+      }
+      printerSettings = saveRes.printer;
+      setMsg(msgEl, 'Saqlandi.', 'ok');
+    });
+
+    const MODE_HINTS = {
+      agent: "Printer ulangan kompyuterda kichik dastur (print-agent) ishlaydi. U chekni drayversiz, chop etish oynasisiz chiqaradi — kassir, oshxona va mijoz buyurtmalari uchun.",
+      brauzer: "Chek sahifasi ochiladi va qurilmaning chop etish oynasi chiqadi. Printer drayveri o'rnatilgan bo'lishi kerak.",
+      rawbt: "RawBT — Android ilovasi. Chek printeriga Bluetooth, WiFi yoki USB orqali to'g'ridan-to'g'ri yuboradi."
+    };
+    const modeEl = document.getElementById('printerMode');
+    const syncMode = () => {
+      document.getElementById('printerModeHint').textContent = MODE_HINTS[modeEl.value] || '';
+      const box = document.getElementById('agentBox');
+      if (modeEl.value === 'agent') renderAgentBox(box, res);
+      else box.innerHTML = '';
+    };
+    modeEl.addEventListener('change', syncMode);
+    syncMode();
+  }
+
+  // Agent bloki: ulanish holati, token va tayyor config.json matni.
+  async function renderAgentBox(box, printer, regenerate) {
+    const seen = printer.agentLastSeen ? new Date(printer.agentLastSeen) : null;
+    const online = seen && (Date.now() - seen.getTime() < 15000);
+    const statusHtml = online
+      ? `<span class="badge paid">● Agent ulangan</span>`
+      : `<span class="badge unpaid">● Agent ulanmagan${seen ? ` (oxirgi: ${timeAgo(printer.agentLastSeen)})` : ''}</span>`;
+
+    if (!printer.hasAgentToken && !regenerate) {
+      box.innerHTML = `
+        ${statusHtml}
+        <div class="bosh" style="margin-top:8px;">Agentni ulash uchun maxfiy kalit (token) yarating.</div>
+        <button class="btn ikkinchi" id="agentTokenBtn" type="button" style="margin-top:8px;">Token yaratish</button>`;
+      document.getElementById('agentTokenBtn').addEventListener('click', () => renderAgentBox(box, printer, true));
+      return;
+    }
+
+    box.innerHTML = `${statusHtml}<div class="bosh" style="margin-top:8px;">Yuklanmoqda...</div>`;
+    const res = await apiPost('/api/print-agent-token', { regenerate: !!regenerate && printer.hasAgentToken });
+    if (!res.ok) {
+      box.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || "Tokenni olib bo'lmadi.")}</div>`;
+      return;
+    }
+    const config = JSON.stringify({ server: location.origin, token: res.token, printer: 'auto', pollMs: 2000 }, null, 2);
+    box.innerHTML = `
+      ${statusHtml}
+      <ol class="agent-steps">
+        <li>Printer ulangan kompyuterga <b>Node.js</b> o'rnating (nodejs.org).</li>
+        <li><b>print-agent</b> papkasini shu kompyuterga ko'chiring.</li>
+        <li>Papkada <b>config.json</b> fayl yarating va ichiga quyidagini joylang:</li>
+      </ol>
+      <pre class="agent-config" id="agentConfig">${escapeHtml(config)}</pre>
+      <div class="btn-row">
+        <button class="btn ikkinchi" id="agentCopyBtn" type="button">Nusxa olish</button>
+        <button class="btn ikkinchi" id="agentRegenBtn" type="button">Yangi token</button>
+      </div>
+      <ol class="agent-steps" start="4">
+        <li><b>start-agent.bat</b> ni ikki marta bosing. Oynada "Ulandi" yozuvi chiqsa — tayyor.</li>
+        <li>Kompyuter yoqilganda o'zi ishga tushishi uchun: <b>Win+R → shell:startup</b> papkasiga start-agent.bat yorlig'ini qo'ying.</li>
+      </ol>
+      <div class="bosh">Token — maxfiy kalit. Uni faqat o'z kompyuteringizga yozing. Yangi token yaratilsa, eskisi darhol ishlamay qoladi.</div>`;
+    document.getElementById('agentCopyBtn').addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(config); showPrintToast('Nusxa olindi'); }
+      catch (e) { alert("Nusxa olib bo'lmadi — matnni qo'lda belgilab oling."); }
+    });
+    document.getElementById('agentRegenBtn').addEventListener('click', () => {
+      if (confirm("Yangi token yaratilsinmi? Kompyuterdagi agent eski token bilan ishlamay qoladi.")) {
+        renderAgentBox(box, Object.assign({}, res.printer, { hasAgentToken: true }), true);
+      }
+    });
   }
 
   async function renderOwnerPaymentCardScreen(onBack) {
@@ -4453,6 +4627,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   function renderCashierScreen(restaurantName, onBack) {
+    preloadPrinterSettings();
     stopOrdersPolling();
     disconnectSectionedMenuObserver('cashierCatRow');
     const isEditing = !!cashierState.editingOrderId;
@@ -4823,6 +4998,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
     `;
   }
 
+  // Kassir ekranida chek sozlamalari oldindan yuklanadi (avtomatik chop etish uchun kerak).
+  function preloadPrinterSettings() {
+    if (!printerSettings) loadPrinterSettings().catch(() => {});
+  }
+
   async function loadCashierMenu(restaurantName) {
     const el = document.getElementById('cashierMenu');
     const res = await apiPost('/api/menu-list', { branchId: cashierState.branchId });
@@ -5003,6 +5183,17 @@ const tg = window.Telegram && window.Telegram.WebApp;
       topMsg.className = 'xabar ok';
       topMsg.innerHTML = `${icon('check-circle', 'icon-xs icon-success')} Buyurtma yuborildi (${fmtNum(res.total)} so'm)`;
       document.querySelector('.panel').prepend(topMsg);
+
+      // Chek: sozlamada avtomatik yoqilgan bo'lsa o'zi ochiladi, aks holda tugma orqali.
+      if (res.orderId) {
+        const printBtn = document.createElement('button');
+        printBtn.className = 'btn ikkinchi';
+        printBtn.style.marginTop = '8px';
+        printBtn.textContent = '🖨 Chekni chop etish';
+        printBtn.addEventListener('click', () => openReceipt(res.orderId, 'oshxona'));
+        topMsg.after(printBtn);
+        if (printerSettings && printerSettings.auto) openReceipt(res.orderId, 'oshxona');
+      }
     } else {
       if (sendBtn) sendBtn.disabled = false;
       setMsg(msgEl, res.reason || 'Xatolik yuz berdi.', 'err');
@@ -5218,6 +5409,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
     // qilingan buyurtma bundan mustasno). Agar "Tayyor" buyurtmaga yangi
     // mahsulot qo'shilsa, backend o'sha qo'shimchani alohida oshxona guruhiga
     // (o'ziga xos "Tayyor" tugmasi bilan) yuboradi.
+    // Chek: kassir, oshpaz va ega istalgan paytda qayta chiqara oladi.
+    const printBtn = ['kassir', 'egasi', 'oshpaz'].includes(role)
+      ? `<button class="order-action-btn ikkinchi" data-print-order-id="${escapeHtml(order.id)}">🖨 Chek</button>`
+      : '';
+
     let editBtn = '';
     if (!paymentPending && (role === 'kassir' || role === 'egasi') && order.status !== 'bekor_qilindi') {
       editBtn = `<button class="order-action-btn ikkinchi" data-edit-order-id="${escapeHtml(order.id)}">✏️ Tahrirlash</button>`;
@@ -5250,6 +5446,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         ${paymentPendingNote}
         <div class="order-bottom">
           <span class="order-total">${fmtNum(order.total)} so'm</span>
+          ${printBtn}
           ${editBtn}
           ${actionBtn}
         </div>
@@ -5273,6 +5470,13 @@ const tg = window.Telegram && window.Telegram.WebApp;
   function attachOrdersBoardHandlers(role, restaurantName, onReturn) {
     const board = document.getElementById('ordersBoard');
     if (!board) return;
+    board.querySelectorAll('[data-print-order-id]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        await openReceipt(btn.getAttribute('data-print-order-id'), 'oshxona');
+        btn.disabled = false;
+      });
+    });
     board.querySelectorAll('[data-set-status]').forEach(btn => {
       btn.addEventListener('click', async () => {
         btn.disabled = true;
