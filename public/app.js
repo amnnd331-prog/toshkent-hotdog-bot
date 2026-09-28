@@ -3585,55 +3585,96 @@ const tg = window.Telegram && window.Telegram.WebApp;
     syncMode();
   }
 
-  // Agent bloki: ulanish holati, token va tayyor config.json matni.
-  async function renderAgentBox(box, printer, regenerate) {
+  // Matnni nusxalash. Telegram ichida navigator.clipboard ko'pincha jimgina ishlamaydi,
+  // shuning uchun avval eski, lekin hamma joyda ishlaydigan execCommand usuli sinaladi.
+  function copyTextToClipboard(text) {
+    try {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      ta.setSelectionRange(0, text.length);
+      const ok = document.execCommand('copy');
+      ta.remove();
+      if (ok) return Promise.resolve();
+    } catch (e) {}
+    if (navigator.clipboard && navigator.clipboard.writeText) return navigator.clipboard.writeText(text);
+    return Promise.reject(new Error('copy'));
+  }
+
+  // Agent bloki: ulanish holati, kod bilan ulash va (ixtiyoriy) qo'lda sozlash matni.
+  async function renderAgentBox(box, printer) {
     const seen = printer.agentLastSeen ? new Date(printer.agentLastSeen) : null;
     const online = printer.agentOnline !== undefined ? printer.agentOnline : !!(seen && (Date.now() - seen.getTime() < 30000));
     const statusHtml = online
-      ? `<span class="badge paid">● Agent ulangan</span>`
-      : `<span class="badge unpaid">● Agent ulanmagan${seen ? ` (oxirgi: ${timeAgo(printer.agentLastSeen)})` : ''}</span>`;
+      ? `<span class="badge paid">● Kompyuter ulangan — chek printerdan o'zi chiqadi</span>`
+      : `<span class="badge unpaid">● Kompyuter ulanmagan${seen ? ` (oxirgi: ${timeAgo(printer.agentLastSeen)})` : ''}</span>`;
 
-    if (!printer.hasAgentToken && !regenerate) {
-      box.innerHTML = `
-        ${statusHtml}
-        <div class="bosh" style="margin-top:8px;">Agentni ulash uchun maxfiy kalit (token) yarating.</div>
-        <button class="btn ikkinchi" id="agentTokenBtn" type="button" style="margin-top:8px;">Token yaratish</button>`;
-      document.getElementById('agentTokenBtn').addEventListener('click', () => renderAgentBox(box, printer, true));
-      return;
-    }
-
-    box.innerHTML = `${statusHtml}<div class="bosh" style="margin-top:8px;">Yuklanmoqda...</div>`;
-    const res = await apiPost('/api/print-agent-token', { regenerate: !!regenerate && printer.hasAgentToken });
-    if (!res.ok) {
-      box.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || "Tokenni olib bo'lmadi.")}</div>`;
-      return;
-    }
-    const config = JSON.stringify({ server: location.origin, token: res.token, printer: 'auto', pollMs: 2000 }, null, 2);
     box.innerHTML = `
       ${statusHtml}
       <ol class="agent-steps">
-        <li>Printer ulangan kompyuterga <b>Node.js</b> o'rnating (nodejs.org).</li>
-        <li><b>print-agent</b> papkasini shu kompyuterga ko'chiring.</li>
-        <li><b>start-agent.bat</b> ni ikki marta bosing va so'ralganda quyidagi matnni joylang (sichqonchaning o'ng tugmasi → Enter):</li>
+        <li>Printer ulangan kompyuterda <b>start-agent.bat</b> ni ishga tushiring.</li>
+        <li>Oynada chiqqan <b>6 xonali kodni</b> shu yerga yozing va "Ulash" ni bosing.</li>
       </ol>
-      <pre class="agent-config" id="agentConfig">${escapeHtml(config)}</pre>
-      <div class="btn-row">
-        <button class="btn ikkinchi" id="agentCopyBtn" type="button">Nusxa olish</button>
-        <button class="btn ikkinchi" id="agentRegenBtn" type="button">Yangi token</button>
+      <div class="pair-row">
+        <input type="text" id="agentPairCode" inputmode="numeric" autocomplete="off" maxlength="7" placeholder="123 456">
+        <button class="btn" id="agentPairBtn" type="button">Ulash</button>
       </div>
-      <ol class="agent-steps" start="4">
-        <li>Oynada "Ulandi" yozuvi chiqsa — tayyor. Endi "🖨 Chek" bosilganda chek printerdan o'zi chiqadi.</li>
-        <li>Kompyuter yoqilganda o'zi ishga tushishi uchun: <b>Win+R → shell:startup</b> papkasiga start-agent.bat yorlig'ini qo'ying.</li>
-      </ol>
-      <div class="bosh">Token — maxfiy kalit. Uni faqat o'z kompyuteringizga yozing. Yangi token yaratilsa, eskisi darhol ishlamay qoladi.</div>`;
-    document.getElementById('agentCopyBtn').addEventListener('click', async () => {
-      try { await navigator.clipboard.writeText(config); showPrintToast('Nusxa olindi'); }
-      catch (e) { alert("Nusxa olib bo'lmadi — matnni qo'lda belgilab oling."); }
-    });
-    document.getElementById('agentRegenBtn').addEventListener('click', () => {
-      if (confirm("Yangi token yaratilsinmi? Kompyuterdagi agent eski token bilan ishlamay qoladi.")) {
-        renderAgentBox(box, Object.assign({}, res.printer, { hasAgentToken: true }), true);
-      }
+      <div class="xabar" id="agentPairMsg"></div>
+      <details class="agent-manual" id="agentManual">
+        <summary>Qo'lda sozlash (matn orqali)</summary>
+        <div id="agentManualBody"><div class="bosh">Yuklanmoqda...</div></div>
+      </details>`;
+
+    const codeEl = document.getElementById('agentPairCode');
+    const msgEl = document.getElementById('agentPairMsg');
+    const doPair = async () => {
+      const code = codeEl.value.replace(/\D/g, '');
+      if (code.length !== 6) { setMsg(msgEl, 'Kompyuterdagi oynada chiqqan 6 xonali kodni yozing.', 'err'); return; }
+      const btn = document.getElementById('agentPairBtn');
+      btn.disabled = true;
+      setMsg(msgEl, 'Ulanmoqda...');
+      const res = await apiPost('/api/print-agent-pair', { code });
+      btn.disabled = false;
+      if (!res.ok) { setMsg(msgEl, res.reason || "Ulab bo'lmadi.", 'err'); return; }
+      setMsg(msgEl, "Ulandi! Kompyuterdagi oynada “Ulandi” yozuvi chiqadi.", 'ok');
+      if (res.printer) printerSettings = res.printer;
+      // Agent bir necha soniyada serverga ulanadi — holatni yangilaymiz
+      setTimeout(async () => {
+        const fresh = await loadPrinterSettings();
+        if (fresh && document.body.contains(box)) renderAgentBox(box, fresh);
+      }, 4000);
+    };
+    document.getElementById('agentPairBtn').addEventListener('click', doPair);
+    codeEl.addEventListener('keydown', e => { if (e.key === 'Enter') doPair(); });
+
+    document.getElementById('agentManual').addEventListener('toggle', async e => {
+      if (!e.target.open) return;
+      const body = document.getElementById('agentManualBody');
+      const res = await apiPost('/api/print-agent-token', {});
+      if (!res.ok) { body.innerHTML = `<div class="xabar err">${escapeHtml(res.reason || "Tokenni olib bo'lmadi.")}</div>`; return; }
+      const config = JSON.stringify({ server: location.origin, token: res.token, printer: 'auto', pollMs: 2000 }, null, 2);
+      body.innerHTML = `
+        <div class="bosh">Agent oynasi matn so'rasa, shuni joylang. Token — maxfiy kalit, uni hech kimga bermang.</div>
+        <pre class="agent-config">${escapeHtml(config)}</pre>
+        <div class="btn-row">
+          <button class="btn ikkinchi" id="agentCopyBtn" type="button">Nusxa olish</button>
+          <button class="btn ikkinchi" id="agentRegenBtn" type="button">Yangi token</button>
+        </div>`;
+      document.getElementById('agentCopyBtn').addEventListener('click', () => {
+        copyTextToClipboard(config)
+          .then(() => showPrintToast('Nusxa olindi'))
+          .catch(() => alert("Nusxa olib bo'lmadi — matnni qo'lda belgilab oling."));
+      });
+      document.getElementById('agentRegenBtn').addEventListener('click', async () => {
+        if (!confirm("Yangi token yaratilsinmi? Kompyuterdagi agent eski token bilan ishlamay qoladi va qayta ulash kerak bo'ladi.")) return;
+        await apiPost('/api/print-agent-token', { regenerate: true });
+        e.target.open = false;
+        showPrintToast('Yangi token yaratildi');
+      });
     });
   }
 
