@@ -280,6 +280,12 @@ async function pairWithCode(cfg) {
     let start;
     try { start = await postJson(cfg.server + '/api/print-agent/pair-start', { secret }); }
     catch (e) { log(`Serverga ulanib bo'lmadi: ${e.message}. 10 soniyadan keyin qayta urinaman...`); await new Promise(r => setTimeout(r, 10000)); continue; }
+    if (!start || typeof start !== 'object' || !('ok' in start)) {
+      // Server hali "kod bilan ulash"ni bilmaydigan eski versiyada — yangilanishini kutamiz
+      log('Server hali yangilanmagan (kod bilan ulash yo\'q). 30 soniyadan keyin qayta urinaman...');
+      await new Promise(r => setTimeout(r, 30000));
+      continue;
+    }
     if (!start.ok) throw new Error(start.reason || 'Server kod bermadi');
 
     const code = `${start.code.slice(0, 3)} ${start.code.slice(3)}`;
