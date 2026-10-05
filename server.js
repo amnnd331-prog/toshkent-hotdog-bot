@@ -3,6 +3,7 @@ const https = require('https');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
 
 const BOT_TOKEN = process.env.BOT_TOKEN || 'BOT_TOKEN_BU_YERGA';
 const ADMIN_ID = process.env.ADMIN_ID || 'ADMIN_TELEGRAM_ID_BU_YERGA';
@@ -537,7 +538,78 @@ function saveJSONArray(file, arr) {
 }
 
 function loadOwners() { return loadJSONArray(OWNERS_FILE).map(ensureSubscriptionFields); }
-function saveOwners(owners) { saveJSONArray(OWNERS_FILE, owners); }
+function saveOwners(owners) { externalizeImages(owners); saveJSONArray(OWNERS_FILE, owners); }
+
+// ---------------------------------------------------------------------------
+// RASMLAR. Ilgari logo va taom rasmlari owners.json ichida base64 holida turardi:
+// fayl 10+ MB bo'lib, har bir so'rovda to'liq o'qilardi, menyu javobi esa 4-12 MB
+// edi — telefonda yuklanish 10 soniyagacha cho'zilardi. Endi rasm
+// DATA_DIR/images/<hash>.<ext> fayliga yoziladi, JSON'da faqat "/img/<hash>.<ext>"
+// havolasi qoladi; brauzer rasmni bir marta yuklab, keshda saqlaydi.
+const IMAGES_DIR = path.join(DATA_DIR, 'images');
+const IMG_URL_RE = /^\/img\/[a-f0-9]{32}\.(png|jpg|webp)$/;
+const DATA_IMAGE_RE = /^data:image\/(png|jpe?g|webp);base64,/i;
+const IMG_TYPES = { png: 'image/png', jpg: 'image/jpeg', webp: 'image/webp' };
+
+function storeDataImage(value) {
+  const m = DATA_IMAGE_RE.exec(value);
+  if (!m) return value;
+  const buf = Buffer.from(value.slice(m[0].length), 'base64');
+  if (!buf.length) return value;
+  const kind = m[1].toLowerCase();
+  const ext = kind === 'png' ? 'png' : kind === 'webp' ? 'webp' : 'jpg';
+  const name = crypto.createHash('sha256').update(buf).digest('hex').slice(0, 32) + '.' + ext;
+  const file = path.join(IMAGES_DIR, name);
+  try {
+    if (!fs.existsSync(file)) {
+      fs.mkdirSync(IMAGES_DIR, { recursive: true });
+      fs.writeFileSync(file + '.tmp', buf);
+      fs.renameSync(file + '.tmp', file);
+    }
+  } catch (e) {
+    console.error('Rasmni faylga yozib bo\'lmadi:', e.message);
+    return value; // diskka yozilmasa — rasm eski usulda qoladi, yo'qolmaydi
+  }
+  return '/img/' + name;
+}
+
+// Obyekt ichidagi barcha base64 rasmlarni (logo, taomlar, kombolar, bannerlar,
+// filial menyulari, buyurtmalar...) faylga chiqaradi. O'zgarish bo'lsa true.
+function externalizeImages(node) {
+  let changed = false;
+  (function walk(obj) {
+    for (const key of Object.keys(obj)) {
+      const v = obj[key];
+      if (typeof v === 'string') {
+        if (v.length > 64 && v.charCodeAt(0) === 100 /* d */ && DATA_IMAGE_RE.test(v)) {
+          const url = storeDataImage(v);
+          if (url !== v) { obj[key] = url; changed = true; }
+        }
+      } else if (v && typeof v === 'object') {
+        walk(v);
+      }
+    }
+  })(node || {});
+  return changed;
+}
+
+// Ishga tushganda bir marta: eski owners.json ichidagi rasmlarni faylga ko'chirish.
+// Ko'chirishdan oldin asl fayl owners.before-images.json nomi bilan saqlab qo'yiladi.
+(function migrateInlineImages() {
+  try {
+    if (!fs.existsSync(OWNERS_FILE)) return;
+    const before = fs.statSync(OWNERS_FILE).size;
+    const owners = loadJSONArray(OWNERS_FILE);
+    if (!owners.length || !externalizeImages(owners)) return;
+    const keep = path.join(DATA_DIR, 'owners.before-images.json');
+    if (!fs.existsSync(keep)) fs.copyFileSync(OWNERS_FILE, keep);
+    saveJSONArray(OWNERS_FILE, owners);
+    const after = fs.statSync(OWNERS_FILE).size;
+    console.log(`Rasmlar alohida faylga ko'chirildi: owners.json ${(before / 1048576).toFixed(1)} MB -> ${(after / 1048576).toFixed(2)} MB`);
+  } catch (e) {
+    console.error('Rasmlarni ko\'chirishda xatolik (ma\'lumot o\'zgartirilmadi):', e.message);
+  }
+})();
 
 // Oshxonaning standart (zaxira) ish vaqti (Toshkent bo'yicha): 10:00 dan 03:00 gacha.
 // Har bir owner o'z profilida (Sozlamalar -> Ish vaqti) "09:00 - 23:00" ko'rinishida
@@ -1442,6 +1514,7 @@ const MAX_MENU_IMAGE_BASE64_CHARS = 3_000_000;
 function isValidImageValue(value) {
   if (!value) return true;
   if (/^https?:\/\//i.test(value)) return true;
+  if (IMG_URL_RE.test(value)) return true; // allaqachon saqlangan rasm
   if (/^data:image\/(png|jpe?g|webp);base64,/i.test(value)) {
     return value.length <= MAX_MENU_IMAGE_BASE64_CHARS;
   }
@@ -4216,10 +4289,16 @@ async function resolveUserInput(input) {
   return { error: 'Noto\'g\'ri format. Telegram ID raqamini, @username yoki t.me havolasini kiriting.' };
 }
 
+// Katta javoblar gzip bilan siqiladi (JSON odatda 5-10 marta kichrayadi).
 function sendJSON(res, status, obj) {
   if (res.headersSent) return;
+  const body = Buffer.from(JSON.stringify(obj), 'utf8');
+  if (res.acceptsGzip && body.length > 1400) {
+    res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Content-Encoding': 'gzip', 'Vary': 'Accept-Encoding' });
+    return res.end(zlib.gzipSync(body, { level: 5 }));
+  }
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
-  res.end(JSON.stringify(obj));
+  res.end(body);
 }
 const sendOk = (res, data) => sendJSON(res, 200, Object.assign({ ok: true }, data));
 const sendFail = (res, reason, extra) => sendJSON(res, 200, Object.assign({ ok: false, reason }, extra));
@@ -10755,7 +10834,7 @@ function collectBroadcastRecipients(targetType) {
 }
 
 function isValidBroadcastImageUrl(value) {
-  return isValidImageValue(value);
+  return !IMG_URL_RE.test(value) && isValidImageValue(value);
 }
 function isBase64ImageValue(value) {
   return !!value && /^data:image\/(png|jpe?g|webp);base64,/i.test(value);
@@ -11583,6 +11662,22 @@ authed('/api/printer-settings-save', (payload, res, { userId }) => {
 });
 
 function handleRequest(req, res) {
+  const acceptEnc = String(req.headers['accept-encoding'] || '');
+  res.acceptsGzip = /\bgzip\b/.test(acceptEnc);
+
+  // Saqlangan rasmlar: nomi mazmunining hash'i, shuning uchun abadiy keshlanadi.
+  if (req.method === 'GET' && req.url.startsWith('/img/')) {
+    const name = req.url.slice(5).split('?')[0];
+    const m = /^[a-f0-9]{32}\.(png|jpg|webp)$/.exec(name);
+    if (!m) { res.writeHead(404, { 'Content-Type': 'text/plain' }); return res.end('404'); }
+    fs.readFile(path.join(IMAGES_DIR, name), (err, data) => {
+      if (err) { res.writeHead(404, { 'Content-Type': 'text/plain' }); return res.end('404'); }
+      res.writeHead(200, { 'Content-Type': IMG_TYPES[m[1]], 'Content-Length': data.length, 'Cache-Control': 'public, max-age=31536000, immutable' });
+      res.end(data);
+    });
+    return;
+  }
+
   // Chek sahifasi — brauzer (telefon/kompyuter) uni o'z printeriga yuboradi.
   if (req.method === 'GET' && req.url.split('?')[0] === '/chek') {
     const params = new URLSearchParams(req.url.split('?')[1] || '');
@@ -11645,6 +11740,7 @@ function handleRequest(req, res) {
       return res.end('404');
     }
     const ext = path.extname(filePath);
+    const packed = COMPRESSIBLE_EXT.has(ext) ? packStatic(filePath, data) : null;
     const type = ext === '.html' ? 'text/html'
       : ext === '.js' ? 'application/javascript'
       : ext === '.css' ? 'text/css'
@@ -11666,9 +11762,33 @@ function handleRequest(req, res) {
         ? 'public, max-age=31536000, immutable'
         : 'public, max-age=3600';
 
-    res.writeHead(200, { 'Content-Type': type + '; charset=utf-8', 'Cache-Control': cacheControl });
-    res.end(data);
+    const headers = { 'Content-Type': type + '; charset=utf-8', 'Cache-Control': cacheControl };
+    let out = data;
+    if (packed) {
+      headers['Vary'] = 'Accept-Encoding';
+      if (/\bbr\b/.test(acceptEnc)) { headers['Content-Encoding'] = 'br'; out = packed.br; }
+      else if (res.acceptsGzip) { headers['Content-Encoding'] = 'gzip'; out = packed.gz; }
+    }
+    headers['Content-Length'] = out.length;
+    res.writeHead(200, headers);
+    res.end(out);
   });
+}
+
+// app.js (~500 KB) va style.css har so'rovda qayta siqilmasligi uchun siqilgan
+// nusxalar xotirada turadi (fayl o'zgarsa — yangilanadi).
+const COMPRESSIBLE_EXT = new Set(['.html', '.js', '.css', '.json', '.svg']);
+const staticPackCache = new Map();
+function packStatic(filePath, data) {
+  const hit = staticPackCache.get(filePath);
+  if (hit && hit.raw.equals(data)) return hit;
+  const packed = {
+    raw: data,
+    gz: zlib.gzipSync(data, { level: 9 }),
+    br: zlib.brotliCompressSync(data, { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 10 } })
+  };
+  staticPackCache.set(filePath, packed);
+  return packed;
 }
 
 const DEFAULT_TARIFF_FEATURE_IDS = FEATURE_CATALOG.map(f => f.id);
@@ -11837,6 +11957,12 @@ async function rotateWeakOwnerPasswords() {
 
 server.listen(PORT, async () => {
   console.log(`Server ${PORT}-portda ishga tushdi`);
+
+  // Birinchi foydalanuvchi siqish uchun kutmasligi uchun — oldindan siqib qo'yamiz.
+  setImmediate(() => ['index.html', 'app.js', 'style.css'].forEach(f => {
+    const file = path.join(__dirname, 'public', f);
+    try { packStatic(file, fs.readFileSync(file)); } catch (e) {}
+  }));
 
   reloadAdminsCache();
   console.log(`Qo'shimcha adminlar soni: ${EXTRA_ADMIN_IDS.size}`);
