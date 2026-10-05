@@ -5001,13 +5001,149 @@ const tg = window.Telegram && window.Telegram.WebApp;
     return { order, groups };
   }
 
+  // ---------------------------------------------------------------------------
+  // ICHIMLIKLARNI BREND BO'YICHA IXCHAMLASH (faqat ko'rinish). "Coca-Cola 0.5L",
+  // "Coca-Cola 1L", "Coca-Cola 1.5L" alohida kartochka emas — bitta "Coca-Cola"
+  // kartochkasi, ichida hajmlar qatori. Menyu ma'lumoti o'zgarmaydi: har qatordagi
+  // +/- haqiqiy taom ID'si bilan ishlaydi, shuning uchun savat, narx va sklad
+  // avvalgidek. Faqat ichimlik bo'limlarida (nomiga qarab) qo'llanadi.
+  const DRINK_CATEGORY_RE = /ichimlik|ичимлик|napit|напит|drink|bever|sharbat|suv|sok|сок|choy|чай|qahva|kofe|coffee|кофе|limonad|лимонад/i;
+
+  function brandKeyOf(name) {
+    const first = String(name || '').trim().toLowerCase().split(/[\s\-‑–—_.,()/]+/).filter(Boolean)[0] || '';
+    return /^\d/.test(first) ? '' : first; // raqam bilan boshlansa ("0.5 Cola") — guruhlanmaydi
+  }
+
+  // Bir brenddagi nomlarning umumiy boshi: "Fuse tea limon 0.5" + "Fuse tea shaftoli 1L" -> "Fuse tea"
+  function brandTitleOf(names) {
+    const words = names.map(n => String(n).trim().split(/\s+/));
+    const common = [];
+    for (let i = 0; i < words[0].length; i++) {
+      const w = words[0][i].toLowerCase();
+      if (!words.every(ws => ws[i] && ws[i].toLowerCase() === w)) break;
+      common.push(words[0][i]);
+    }
+    while (common.length > 1 && /\d/.test(common[common.length - 1])) common.pop();
+    if (common.length && !/^\d/.test(common[0])) return common.join(' ');
+    return words.reduce((a, b) => (b.join(' ').length < a.join(' ').length ? b : a))[0];
+  }
+
+  function bundleBrandItems(list) {
+    const byKey = new Map();
+    list.forEach(m => {
+      const k = brandKeyOf(m.name);
+      if (!k) return;
+      if (!byKey.has(k)) byKey.set(k, []);
+      byKey.get(k).push(m);
+    });
+    const out = [];
+    const done = new Set();
+    list.forEach(m => {
+      const k = brandKeyOf(m.name);
+      const members = k ? byKey.get(k) : null;
+      if (!members || members.length < 2) { out.push(m); return; }
+      if (done.has(k)) return;
+      done.add(k);
+      const title = brandTitleOf(members.map(x => x.name));
+      const rows = [];
+      members.forEach(x => {
+        let rest = String(x.name).trim();
+        if (rest.toLowerCase().startsWith(title.toLowerCase())) rest = rest.slice(title.length).replace(/^[\s\-–—:,]+/, '');
+        if (Array.isArray(x.prices) && x.prices.length) {
+          x.prices.forEach((p, idx) => rows.push({ key: cartKeyFor(x.id, p.id), label: rest ? `${rest} · ${variantLabel(p, idx)}` : variantLabel(p, idx), price: p.price, outOfStock: !!x.outOfStock }));
+        } else {
+          rows.push({ key: x.id, label: rest || String(x.name).trim(), price: x.price, outOfStock: !!x.outOfStock });
+        }
+      });
+      const withImg = members.find(x => x.imageUrl);
+      out.push({
+        brandGroup: true, id: 'brand:' + k, name: title, imageUrl: withImg ? withImg.imageUrl : null,
+        rows, outOfStock: members.every(x => x.outOfStock)
+      });
+    });
+    return out;
+  }
+
+  function brandMinPrice(g) {
+    const live = g.rows.filter(r => !r.outOfStock);
+    return Math.min(...(live.length ? live : g.rows).map(r => r.price));
+  }
+
+  // Kassir ekrani uchun brend kartochkasi
+  function cashierBrandGroupHtml(g) {
+    const thumbHtml = g.imageUrl
+      ? `<img class="menu-item-thumb" src="${escapeHtml(g.imageUrl)}" onerror="this.style.display='none'">`
+      : `<div class="menu-item-thumb-empty"></div>`;
+    return `
+      <div class="menu-item brand-group" style="flex-direction:column; align-items:stretch;${g.outOfStock ? ' opacity:0.55;' : ''}">
+        <div class="menu-item-info">
+          ${thumbHtml}
+          <div class="m-name">${escapeHtml(g.name)} <span class="brand-count">${g.rows.length} xil</span></div>
+        </div>
+        <div class="price-variant-list">
+          ${g.rows.map(r => r.outOfStock ? `
+            <div class="price-variant-row is-out">
+              <span class="price-variant-label">${escapeHtml(r.label)}</span>
+              <span class="badge warning">Tugagan</span>
+            </div>` : `
+            <div class="price-variant-row">
+              <span class="price-variant-label brand-row-text"><span>${escapeHtml(r.label)}</span><small>${fmtNum(r.price)} so'm</small></span>
+              <div class="qty-controls">
+                <button data-qty-minus="${escapeHtml(r.key)}">-</button>
+                <span class="qty-val">${cashierState.cart[r.key] || 0}</span>
+                <button data-qty-plus="${escapeHtml(r.key)}">+</button>
+              </div>
+            </div>`).join('')}
+        </div>
+      </div>
+    `;
+  }
+
+  // Mijoz katalogi uchun brend kartochkasi
+  function customerBrandGroupHtml(g) {
+    return `
+      <div class="catalog-item brand-group"${g.outOfStock ? ' style="opacity:0.55;"' : ''}>
+        <div class="catalog-img-wrap">
+          ${g.imageUrl ? `<img class="catalog-img" src="${escapeHtml(g.imageUrl)}" onerror="this.style.display='none'">` : `<div class="catalog-img-empty"></div>`}
+        </div>
+        <div class="catalog-body">
+          <div class="m-name">${escapeHtml(g.name)}</div>
+          <div class="catalog-desc">${g.rows.length} xil · ${fmtNum(brandMinPrice(g))} so'm dan</div>
+          <div class="price-variant-list">
+            ${g.rows.map(r => {
+              if (r.outOfStock) {
+                return `
+                  <div class="price-variant-row is-out">
+                    <span class="price-variant-label">${escapeHtml(r.label)}</span>
+                    <span class="badge warning">Tugagan</span>
+                  </div>`;
+              }
+              const q = customerState.cart[r.key] || 0;
+              return `
+                <div class="price-variant-row">
+                  <span class="price-variant-label brand-row-text"><span>${escapeHtml(r.label)}</span><small>${fmtNum(r.price)} so'm</small></span>
+                  ${q > 0 ? `
+                    <div class="qty-controls">
+                      <button data-cqty-minus="${escapeHtml(r.key)}">-</button>
+                      <span class="qty-val">${q}</span>
+                      <button data-cqty-plus="${escapeHtml(r.key)}">+</button>
+                    </div>
+                  ` : `<button type="button" class="qty-add-btn" data-cqty-plus="${escapeHtml(r.key)}">+</button>`}
+                </div>`;
+            }).join('')}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   function renderSectionedMenu(items, opts) {
     if (!items.length) return `<div class="bosh">${opts.emptyText}</div>`;
     const { order, groups } = groupMenuItems(items, opts.categories);
     return order.map((cat, i) => `
       <div class="menu-section" id="${opts.sectionIdPrefix}-${i}">
         <div class="cat-heading">${escapeHtml(cat)}</div>
-        <div class="${opts.itemsWrapperClass || ''}">${groups[cat].map(opts.renderItem).join('')}</div>
+        <div class="${opts.itemsWrapperClass || ''}">${(DRINK_CATEGORY_RE.test(cat) ? bundleBrandItems(groups[cat]) : groups[cat]).map(opts.renderItem).join('')}</div>
       </div>
     `).join('');
   }
@@ -5077,6 +5213,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   function cashierItemRowHtml(m) {
+    if (m.brandGroup) return cashierBrandGroupHtml(m);
     const hasVariants = Array.isArray(m.prices) && m.prices.length > 0;
     const qty = cashierState.cart[m.id] || 0;
     const thumbHtml = m.imageUrl
@@ -8869,6 +9006,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   function customerItemCardHtml(m) {
+    if (m.brandGroup) return customerBrandGroupHtml(m);
     const hasVariants = Array.isArray(m.prices) && m.prices.length > 0;
     const qty = customerState.cart[m.id] || 0;
     const isFav = customerState.favorites.includes(m.id);
