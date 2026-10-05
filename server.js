@@ -12030,7 +12030,7 @@ function addOneTimeDrinks() {
   fs.writeFileSync(ONE_TIME_DRINKS_FLAG, new Date().toISOString());
   for (const { owner, added } of report) {
     console.log(`[ichimliklar] owner=${owner.id}: ${added} ta qo'shildi`);
-    sendMessage(owner.id, `🥤 <b>Menyuga ichimliklar qo'shildi</b> (${added} ta)\n\n` +
+    sendMessage(owner.id, `🥤 <b>Menyuga ichimliklar qo'shildi</b>${(owner.branches || []).length ? ' (barcha filiallarga ham)' : ''}\n\n` +
       ONE_TIME_DRINKS.map(d => `• ${d.name} — ${fmtNum(d.price)} so'm`).join('\n') +
       `\n\nRasmlarini Menyu bo'limida qo'yishingiz mumkin.`).catch(() => {});
   }
