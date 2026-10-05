@@ -11987,6 +11987,55 @@ async function rotateWeakOwnerPasswords() {
   }
 }
 
+// BIR MARTALIK: egasi ruxsati bilan "Toshkent Hotdog" menyusiga 5 ta ichimlik qo'shiladi
+// (2026-10). Bajarilgach DATA_DIR'da belgi fayli qoladi — qayta ishga tushganda takrorlanmaydi.
+// Shu nomdagi taom allaqachon bo'lsa, u qo'shilmaydi. Rasmlarni egasi o'zi qo'yadi.
+const ONE_TIME_DRINKS_FLAG = path.join(DATA_DIR, 'seed-ichimliklar-2026-10.done');
+const ONE_TIME_DRINKS = [
+  { name: 'Choy choynakda', price: 5000 },
+  { name: 'Limon choy stakanda', price: 5000 },
+  { name: 'Limon choy choynakda', price: 10000 },
+  { name: 'Kofe', price: 8000 },
+  { name: 'Lipton 1L', price: 13000 }
+];
+function addOneTimeDrinks() {
+  if (fs.existsSync(ONE_TIME_DRINKS_FLAG)) return;
+  const owners = loadOwners();
+  const targets = owners.filter(o => /toshkent\s*hot[\s-]*dog/i.test((o.profile && o.profile.name) || ''));
+  if (!targets.length) { console.log('[ichimliklar] "Toshkent Hotdog" egasi topilmadi — hech narsa qo\'shilmadi'); return; }
+  const report = [];
+  for (const owner of targets) {
+    const pools = [owner, ...(owner.branches || []).filter(b => Array.isArray(b.menu))];
+    let added = 0;
+    for (const pool of pools) {
+      if (!Array.isArray(pool.menu)) pool.menu = [];
+      const cats = ensureOwnerCategories(pool);
+      let cat = cats.find(c => /ichimlik/i.test(c.name)) || cats.find(c => /напит|napit|drink|sharbat|sok\b/i.test(c.name));
+      if (!cat) {
+        cat = { id: crypto.randomBytes(4).toString('hex'), name: 'Ichimliklar', order: cats.reduce((m, c) => Math.max(m, c.order), -1) + 1 };
+        cats.push(cat);
+      }
+      for (const d of ONE_TIME_DRINKS) {
+        if (pool.menu.some(m => String(m.name || '').trim().toLowerCase() === d.name.toLowerCase())) continue;
+        pool.menu.push({
+          id: crypto.randomBytes(4).toString('hex'), name: d.name, price: d.price, category: cat.name,
+          description: null, imageUrl: null, available: true, directStockId: null, addedAt: new Date().toISOString()
+        });
+        added++;
+      }
+    }
+    report.push({ owner, added });
+  }
+  saveOwners(owners);
+  fs.writeFileSync(ONE_TIME_DRINKS_FLAG, new Date().toISOString());
+  for (const { owner, added } of report) {
+    console.log(`[ichimliklar] owner=${owner.id}: ${added} ta qo'shildi`);
+    sendMessage(owner.id, `🥤 <b>Menyuga ichimliklar qo'shildi</b> (${added} ta)\n\n` +
+      ONE_TIME_DRINKS.map(d => `• ${d.name} — ${fmtNum(d.price)} so'm`).join('\n') +
+      `\n\nRasmlarini Menyu bo'limida qo'yishingiz mumkin.`).catch(() => {});
+  }
+}
+
 server.listen(PORT, async () => {
   console.log(`Server ${PORT}-portda ishga tushdi`);
 
@@ -12016,6 +12065,7 @@ server.listen(PORT, async () => {
   }
 
   rotateWeakOwnerPasswords().catch(e => console.error('Standart parollarni almashtirishda xatolik:', e.message));
+  try { addOneTimeDrinks(); } catch (e) { console.error('[ichimliklar] xatolik:', e.message); }
 
   try {
     seedDefaultTariffsIfEmpty();
