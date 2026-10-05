@@ -2020,7 +2020,10 @@ function kitchenGroupBaseText(order, creatorLabel) {
     order.extraPhone ? `📞 Qo'shimcha tel: ${escapeHtmlServer(order.extraPhone)}` : null,
   ].filter(Boolean).join('\n');
   const headerEmoji = order.orderType === 'dostavka' ? '🚚' : '👨‍🍳';
-  return `${headerEmoji} <b>Yangi buyurtma</b> (${typeLabel})${creatorLabel ? '\n' + creatorLabel : ''}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm\nTo'lov: ${PAYMENT_TYPES[order.paymentType] || order.paymentType}${commentLine}${autoPromoLine}` +
+  const editedLine = order.editedAt
+    ? `\n✏️ <b>Tahrirlandi</b> (${kitchenTashkentDate(order.editedAt).toISOString().slice(11, 16)})`
+    : '';
+  return `${headerEmoji} <b>Yangi buyurtma</b> (${typeLabel})${editedLine}${creatorLabel ? '\n' + creatorLabel : ''}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm\nTo'lov: ${PAYMENT_TYPES[order.paymentType] || order.paymentType}${commentLine}${autoPromoLine}` +
     (addressLines ? `\n\n${addressLines}` : '');
 }
 
@@ -2189,8 +2192,7 @@ function notifyDeliveryGroupOrderReady(owner, order) {
   if (!groups.deliveryGroupId) return;
   if (!ownerCanUseFeature(owner, 'delivery-group')) return;
   if (order.orderType !== 'dostavka') return;
-  const itemsText = orderItemsTextWithPrices(order);
-  const text = `🚚 <b>Buyurtma tayyor — yetkazishga oling</b>\n${orderCustomerContactLabel(order)}\n${itemsText}\n\nJami: ${fmtNum(order.total)} so'm\nTo'lov: ${PAYMENT_TYPES[order.paymentType] || order.paymentType}`;
+  const text = deliveryReadyGroupText(order);
   sendMessage(groups.deliveryGroupId, text, {
     inline_keyboard: [[
       { text: '✅ Yetkazildi', callback_data: `dgdelivered:${owner.id}:${order.id}` }
@@ -2208,6 +2210,35 @@ function notifyDeliveryGroupOrderReady(owner, order) {
   }).catch(err => {
     console.error(`[notifyDeliveryGroupOrderReady xatosi] owner=${owner.id} order=${order.id}: ${(err && err.message) || err}`);
   });
+}
+
+function deliveryReadyGroupText(order) {
+  const editedLine = order.editedAt ? '\n✏️ <b>Tahrirlandi</b>' : '';
+  return `🚚 <b>Buyurtma tayyor — yetkazishga oling</b>${editedLine}\n${orderCustomerContactLabel(order)}\n${orderItemsTextWithPrices(order)}\n\nJami: ${fmtNum(order.total)} so'm\nTo'lov: ${PAYMENT_TYPES[order.paymentType] || order.paymentType}`;
+}
+
+// Buyurtma tahrirlanganda guruhlarga YANGI xabar yuborilmaydi — avval yuborilgan
+// xabarning o'zi yangi tarkib, summa va to'lov turi bilan tahrirlanadi.
+// kitchenBaseText ham yangilanadi, aks holda 20 soniyalik taymer eski matnni
+// qaytarib yozib qo'yardi.
+function refreshOrderGroupMessages(owner, order) {
+  const groups = resolveOrderGroupIds(owner, order);
+  const report = where => result => {
+    if (result && result.ok !== false) return;
+    const why = result ? String(result.description || '') : 'tarmoq xatosi';
+    if (/not modified/i.test(why)) return;
+    console.error(`[buyurtma tahriri] ${where} guruhidagi xabar yangilanmadi: owner=${owner.id} order=${order.id} sabab=${why}`);
+  };
+  if (groups.kitchenGroupId && order.kitchenGroupMsgId && ownerCanUseFeature(owner, 'kitchen-group')) {
+    order.kitchenBaseText = kitchenGroupBaseText(order, order.kitchenCreatorLabel);
+    const active = order.status === 'yangi' || order.status === 'tayyorlanmoqda';
+    const kb = active ? { inline_keyboard: [[{ text: '✅ Tayyor', callback_data: `kgready:${owner.id}:${order.id}` }]] } : null;
+    editMessageText(groups.kitchenGroupId, order.kitchenGroupMsgId, kitchenGroupFinalText(order), kb).then(report('oshxona'));
+  }
+  if (groups.deliveryGroupId && order.deliveryReadyGroupMsgId && !order.deliveredBy && ownerCanUseFeature(owner, 'delivery-group')) {
+    const kb = { inline_keyboard: [[{ text: '✅ Yetkazildi', callback_data: `dgdelivered:${owner.id}:${order.id}` }]] };
+    editMessageText(groups.deliveryGroupId, order.deliveryReadyGroupMsgId, deliveryReadyGroupText(order), kb).then(report('dostavka'));
+  }
 }
 
 function syncGroupMessagesForOrder(owner, order, opts) {
@@ -7510,6 +7541,7 @@ authed('/api/edit-order', async (payload, res, { userId }) => {
   order.editedBy = userId;
 
   logStaffAction(ctx.owner, { userId, role: ctx.role, action: 'buyurtma_tahrirlandi', orderId: order.id, note: `Yangi: ${fmtNum(newTotal)} so'm (avvalgi: ${oldItemsSummary})` });
+  refreshOrderGroupMessages(ctx.owner, order);
   saveOwners(owners);
 
   const itemsText = newOrderItems.map(it => `• ${escapeHtmlServer(it.name)} x${it.qty}`).join('\n');
