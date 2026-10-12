@@ -4818,9 +4818,9 @@ async function sendAiWeeklyDirectorDigest(owner, force) {
 // uchun hali Z-hisobot qo'lda yopilmagan bo'lsa — buni ham avtomatik
 // owner.zReports tarixiga yozib qo'yadi, shunda egasi "Kunni yopish"
 // tugmasini bosishni unutib qo'yса ham tarix uzilib qolmaydi.
-function buildDailyReportData(owner, dateKey) {
-  const dayStart = aiDirDayStartFromKey(dateKey);
-  const dayEnd = new Date(dayStart.getTime() + 86400000);
+function buildDailyReportData(owner, dateKey, range) {
+  const dayStart = range ? range.from : aiDirDayStartFromKey(dateKey);
+  const dayEnd = range ? range.to : new Date(dayStart.getTime() + 86400000);
 
   const orders = (owner.orders || []).filter(o => {
     const t = new Date(o.createdAt);
@@ -4863,9 +4863,11 @@ function buildDailyReportData(owner, dateKey) {
   };
 }
 
-function buildDailyReportText(owner, dateKey) {
-  const r = buildDailyReportData(owner, dateKey);
-  const lines = [`📊 <b>Kunlik hisobot</b> — ${r.date}`, ''];
+function buildDailyReportText(owner, dateKey, range) {
+  const r = buildDailyReportData(owner, dateKey, range);
+  const lines = [range && range.label
+    ? `📊 <b>Smena hisoboti</b> — ${r.date} (${range.label})`
+    : `📊 <b>Kunlik hisobot</b> — ${r.date}`, ''];
   lines.push(`💰 Tushum: <b>${fmtNum(r.income)} so'm</b>`);
   lines.push(`📦 Buyurtmalar: ${r.orderCount} ta` + (r.cancelledCount ? ` (${r.cancelledCount} ta bekor qilingan)` : ''));
   lines.push('');
@@ -4888,9 +4890,10 @@ function buildDailyReportText(owner, dateKey) {
 }
 
 async function sendDailyReportDigest(owner, force) {
-  const yesterdayKey = aiDirDateKey(new Date(Date.now() - 86400000));
+  const period = lastClosedReportPeriod(owner);
+  const yesterdayKey = period.dateKey;
   if (!force && owner.dailyReportLastSent === yesterdayKey) return false;
-  const text = buildDailyReportText(owner, yesterdayKey);
+  const text = buildDailyReportText(owner, yesterdayKey, period);
   for (const recipientId of ownerReportRecipientIds(owner)) {
     await sendMessage(recipientId, text);
   }
@@ -4901,7 +4904,7 @@ async function sendDailyReportDigest(owner, force) {
   if (!force) {
     if (!owner.zReports) owner.zReports = [];
     if (!owner.zReports.some(z => z.date === yesterdayKey)) {
-      const built = buildDailyReportData(owner, yesterdayKey);
+      const built = buildDailyReportData(owner, yesterdayKey, period);
       owner.zReports.unshift(Object.assign({
         id: crypto.randomBytes(4).toString('hex'),
         createdAt: new Date().toISOString(),
@@ -4948,8 +4951,8 @@ function buildFullHisobotText(owner) {
   const sections = [];
   sections.push(`📋 <b>To'liq hisobot</b> — ${escapeHtmlServer((owner.profile && owner.profile.name) || 'Oshxona')}`);
 
-  const yesterdayKey = aiDirDateKey(new Date(Date.now() - 86400000));
-  sections.push(buildDailyReportText(owner, yesterdayKey));
+  const lastPeriod = lastClosedReportPeriod(owner);
+  sections.push(buildDailyReportText(owner, lastPeriod.dateKey, lastPeriod));
 
   if (ownerCanUseFeature(owner, 'ai-analytics')) {
     sections.push(buildAiDirectorText(owner));
@@ -7868,7 +7871,7 @@ authed('/api/my-stats', (payload, res, { userId }) => {
     return sendFail(res, 'Bu bo\'lim faqat xodimlarga ko\'rinadi');
   }
 
-  const fromDate = resolvePeriodStart(period);
+  const fromDate = resolvePeriodStart(period, ctx.owner);
   const orders = ctx.owner.orders || [];
   const stats = { period: period || 'today' };
 
@@ -8588,6 +8591,92 @@ function tzMonthStart(input) {
   return tzDayStartFromKey(monthKey);
 }
 
+// ---- ISH SMENASI DAVRI ----
+// Hisobotlardagi "Bugun" endi kalendar kuni (00:00) emas, SMENA: smena 10:00 da
+// ochilib 03:00 da yopilsa, yarim tundan keyingi savdo ham shu smenaga kiradi va
+// 00:00 da summalar nolga tushmaydi. Bir vaqtda ochiq turgan smenalar (ega, kassir,
+// oshpaz) bitta smena hisoblanadi; smena yopilib qayta ochilsa — hisob yangidan.
+// Smena ma'lumoti bo'lmasa, avvalgidek kalendar kuni ishlatiladi.
+const SHIFT_MAX_SPAN_MS = 30 * 60 * 60 * 1000;     // uzluksiz almashinuvda "smena" cheksiz o'smasin
+const SHIFT_STALE_AFTER_MS = 18 * 60 * 60 * 1000;  // yopilganiga 18 soatdan oshsa — kalendar kuniga qaytamiz
+
+function shiftSessions(owner, now) {
+  const nowMs = now.getTime();
+  const iv = [];
+  for (const h of (owner.shiftHistory || [])) {
+    const s = Date.parse(h.startedAt), e = Date.parse(h.endedAt || h.startedAt);
+    if (Number.isFinite(s) && Number.isFinite(e) && e >= s && s <= nowMs) iv.push({ s, e, active: false });
+  }
+  for (const t of [owner, ...(owner.staff || [])]) {
+    if (!t.shiftActive) continue;
+    const s = Date.parse(t.shiftStartedAt || '');
+    if (Number.isFinite(s) && s <= nowMs) iv.push({ s, e: nowMs, active: true });
+  }
+  iv.sort((a, b) => a.s - b.s);
+  const out = [];
+  for (const x of iv) {
+    const last = out[out.length - 1];
+    if (last && x.s < last.e) {
+      if (x.e > last.e) last.e = x.e;
+      last.active = last.active || x.active;
+      last.parts.push(x);
+    } else {
+      out.push({ s: x.s, e: x.e, active: x.active, parts: [x] });
+    }
+  }
+  return out;
+}
+
+function shiftSessionStart(sess) {
+  if (sess.e - sess.s <= SHIFT_MAX_SPAN_MS) return sess.s;
+  return Math.max(...sess.parts.map(p => p.s)); // eng oxirgi boshlangan smena
+}
+
+function tzClock(ms) {
+  return new Date(ms + TASHKENT_OFFSET_MS).toISOString().slice(11, 16);
+}
+
+// Joriy (yoki hozirgina yopilgan) smena: { start, prevStart, dateKey, byShift }
+function currentShiftPeriod(owner, now) {
+  now = now || new Date();
+  const sessions = shiftSessions(owner, now);
+  const cur = sessions[sessions.length - 1];
+  if (!cur || (!cur.active && now.getTime() - cur.e > SHIFT_STALE_AFTER_MS)) {
+    const start = tzDayStart(now);
+    return { start, prevStart: new Date(start.getTime() - 86400000), dateKey: tzDateKey(start), byShift: false };
+  }
+  const start = new Date(shiftSessionStart(cur));
+  const prev = sessions[sessions.length - 2];
+  return {
+    start,
+    prevStart: prev ? new Date(shiftSessionStart(prev)) : new Date(start.getTime() - 86400000),
+    dateKey: tzDateKey(start),
+    byShift: true
+  };
+}
+
+// Ertalabki avtomatik hisobot uchun: oxirgi YOPILGAN smena (bo'lmasa — kalendar kecha).
+function lastClosedReportPeriod(owner, now) {
+  now = now || new Date();
+  const sessions = shiftSessions(owner, now);
+  for (let i = sessions.length - 1; i >= 0; i--) {
+    const sess = sessions[i];
+    if (sess.active) continue;
+    if (now.getTime() - sess.e > 30 * 60 * 60 * 1000) break;
+    const from = shiftSessionStart(sess);
+    const next = sessions[i + 1];
+    return {
+      dateKey: tzDateKey(new Date(from)),
+      from: new Date(from),
+      to: next ? new Date(shiftSessionStart(next)) : now,
+      label: `${tzClock(from)} – ${tzClock(sess.e)}`
+    };
+  }
+  const key = tzDateKey(new Date(now.getTime() - 86400000));
+  const from = tzDayStartFromKey(key);
+  return { dateKey: key, from, to: new Date(from.getTime() + 86400000), label: null };
+}
+
 // branchId === undefined -> barcha joylashuvlar (markaziy + filiallar) birga.
 // branchId === null -> faqat markaziy. branchId === '<id>' -> faqat shu filial.
 function matchesBranchFilter(item, branchId) {
@@ -8653,7 +8742,7 @@ function computeCashflow(owner, branchId) {
   }
 
   return {
-    today: cashflowBucket(owner, todayStart, branchId),
+    today: cashflowBucket(owner, currentShiftPeriod(owner, now).start, branchId),
     week: cashflowBucket(owner, weekStart, branchId),
     month: cashflowBucket(owner, monthStart, branchId),
     dailySeries
@@ -8738,8 +8827,9 @@ authed('/api/dashboard-summary', (payload, res, { userId }) => {
   const branchId = Object.prototype.hasOwnProperty.call(payload, 'branchId') ? payload.branchId : undefined;
 
   const now = new Date();
-  const todayStart = tzDayStart(now);
-  const yesterdayStart = new Date(todayStart.getTime() - 86400000);
+  const shift = currentShiftPeriod(owner, now);
+  const todayStart = shift.start;
+  const yesterdayStart = shift.prevStart;
 
   const today = cashflowBucket(owner, todayStart, branchId);
 
@@ -8762,6 +8852,8 @@ authed('/api/dashboard-summary', (payload, res, { userId }) => {
   }).length;
 
   const summary = {
+    byShift: shift.byShift,
+    shiftStartedAt: shift.start.toISOString(),
     todaySales: today.income,
     yesterdaySales: yesterdayIncome,
     todayNetProfit: today.net,
@@ -8785,7 +8877,7 @@ authed('/api/order-status-counts', (payload, res, { userId }) => {
   const branchId = Object.prototype.hasOwnProperty.call(payload, 'branchId') ? payload.branchId : undefined;
 
   const now = new Date();
-  const todayStart = tzDayStart(now);
+  const todayStart = currentShiftPeriod(owner, now).start;
   const thresholdMs = ORDER_DELAY_THRESHOLD_MINUTES * 60 * 1000;
 
   const todaysOrders = (owner.orders || []).filter(o => new Date(o.createdAt) >= todayStart && matchesBranchFilter(o, branchId));
@@ -8834,7 +8926,8 @@ authed('/api/dashboard-alerts', (payload, res, { userId }) => {
   }
 
   const now = new Date();
-  const todayStart = tzDayStart(now);
+  const curShift = currentShiftPeriod(owner, now);
+  const todayStart = curShift.start;
   const thresholdMs = ORDER_DELAY_THRESHOLD_MINUTES * 60 * 1000;
   const todaysOrders = (owner.orders || []).filter(o => new Date(o.createdAt) >= todayStart && matchesBranchFilter(o, branchId));
   let delayedCount = 0;
@@ -8849,11 +8942,11 @@ authed('/api/dashboard-alerts', (payload, res, { userId }) => {
     });
   }
 
-  const todayDateKey = tzDateKey(now);
+  const todayDateKey = curShift.dateKey;
   const dailyReportClosed = (owner.zReports || []).some(z => z.date === todayDateKey && (branchId === undefined || (z.branchId || null) === (branchId || null)));
   if (!dailyReportClosed) {
     alerts.push({
-      type: 'daily_report_open', level: 'info', text: 'Bugungi kun yakuni uchun hisob yopilmagan',
+      type: 'daily_report_open', level: 'info', text: 'Smena yakuni uchun hisob (Z) yopilmagan',
       count: null, screen: 'zreport'
     });
   }
@@ -8861,12 +8954,12 @@ authed('/api/dashboard-alerts', (payload, res, { userId }) => {
   return sendOk(res, { alerts });
 });
 
-function resolvePeriodStart(period) {
+function resolvePeriodStart(period, owner) {
   const now = new Date();
   if (period === 'week') return tzWeekStart(now);
   if (period === 'month') return tzMonthStart(now);
   if (period === 'all') return new Date(0);
-  return tzDayStart(now);
+  return owner ? currentShiftPeriod(owner, now).start : tzDayStart(now);
 }
 
 authed('/api/branch-report', (payload, res, { userId }) => {
@@ -8877,7 +8970,7 @@ authed('/api/branch-report', (payload, res, { userId }) => {
   if (!isOwnerRole(ownerCtx)) return denyAccess(res, owners, userId, 'Bu bo\'lim faqat oshxona egasiga ko\'rinadi');
   const owner = ownerCtx.owner;
 
-  const fromDate = resolvePeriodStart(period);
+  const fromDate = resolvePeriodStart(period, owner);
   const orders = (owner.orders || []).filter(o => new Date(o.createdAt) >= fromDate);
 
   const buckets = new Map();
@@ -8984,9 +9077,9 @@ authed('/api/toggle-customer-restriction', (payload, res, { userId }) => {
   return sendOk(res, { restricted: customerIsCardOnlyRestricted(owner, customerId) });
 });
 
-function buildZReport(owner, dateKey, branchId) {
-  const dayStart = tzDayStartFromKey(dateKey);
-  const dayEnd = new Date(dayStart.getTime() + 86400000);
+function buildZReport(owner, dateKey, branchId, range) {
+  const dayStart = range ? range.from : tzDayStartFromKey(dateKey);
+  const dayEnd = range ? range.to : new Date(dayStart.getTime() + 86400000);
 
   const orders = (owner.orders || []).filter(o => {
     const t = new Date(o.createdAt);
@@ -9028,7 +9121,8 @@ function buildZReport(owner, dateKey, branchId) {
   return {
     date: dateKey,
     income, kassaIncome, dostavkaIncome, orderCount: orders.length,
-    paymentBreakdown, expense, expenseByCategory, net: income - expense, kassaBreakdown
+    paymentBreakdown, expense, expenseByCategory, net: income - expense, kassaBreakdown,
+    periodFrom: dayStart.toISOString(), periodTo: dayEnd.toISOString()
   };
 }
 
@@ -9040,8 +9134,10 @@ authed('/api/z-report-create', (payload, res, { userId }) => {
   if (!ownerCanUseFeature(owner, 'z-report')) return sendFeatureBlocked(res, 'z-report');
 
   const branchId = payload.branchId ? (findBranch(owner, payload.branchId) ? payload.branchId : null) : null;
-  const dateKey = tzDateKey(new Date());
-  const built = buildZReport(owner, dateKey, branchId);
+  const now = new Date();
+  const shift = currentShiftPeriod(owner, now);
+  const dateKey = shift.dateKey;
+  const built = buildZReport(owner, dateKey, branchId, { from: shift.start, to: new Date(now.getTime() + 1000) });
 
   if (!owner.zReports) owner.zReports = [];
   const existing = owner.zReports.find(z => z.date === dateKey && (z.branchId || null) === (branchId || null));
@@ -9220,7 +9316,7 @@ authed('/api/ai-analytics', (payload, res, { userId }) => {
   const owner = ownerCtx.owner;
   if (!ownerCanUseFeature(owner, 'ai-analytics')) return sendFeatureBlocked(res, 'ai-analytics');
 
-  const fromDate = resolvePeriodStart(period || 'week');
+  const fromDate = resolvePeriodStart(period || 'week', owner);
   const topItems = computeTopItems(owner, fromDate, 8);
   const peak = computePeakTimes(owner, fromDate);
   const forecast = computeStockForecast(owner, branchId || null);
@@ -9243,9 +9339,10 @@ authed('/api/daily-report-preview', (payload, res, { userId }) => {
   const owner = ownerCtx.owner;
   if (!ownerCanUseFeature(owner, 'z-report')) return sendFeatureBlocked(res, 'z-report');
 
-  const yesterdayKey = aiDirDateKey(new Date(Date.now() - 86400000));
+  const lastPeriod = lastClosedReportPeriod(owner);
+  const yesterdayKey = lastPeriod.dateKey;
   return sendOk(res, {
-    text: buildDailyReportText(owner, yesterdayKey),
+    text: buildDailyReportText(owner, yesterdayKey, lastPeriod),
     enabled: owner.dailyReportEnabled !== false,
     sentToday: owner.dailyReportLastSent === yesterdayKey,
     hour: AI_DIRECTOR_HOUR
@@ -9516,7 +9613,7 @@ authed('/api/staff-performance-report', (payload, res, { userId }) => {
   const owner = ownerCtx.owner;
   if (!ownerCanUseFeature(owner, 'staff-performance')) return sendFeatureBlocked(res, 'staff-performance');
 
-  const fromDate = resolvePeriodStart(period || 'month');
+  const fromDate = resolvePeriodStart(period || 'month', owner);
   const log = (owner.staffActionLog || []).filter(e => new Date(e.createdAt) >= fromDate);
 
   const report = (owner.staff || []).map(staff => {

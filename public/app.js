@@ -3241,7 +3241,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   }
 
   function koKpiGridSkeletonHtml() {
-    const labels = ['Bugungi savdo', 'Sof foyda', 'Buyurtmalar', 'Kuryer hisoboti'];
+    const labels = ['Smena savdosi', 'Sof foyda', 'Buyurtmalar', 'Kuryer hisoboti'];
     return `<div class="ko-kpi-grid" id="koKpiGrid">${labels.map(koKpiSkeletonCardHtml).join('')}</div>`;
   }
 
@@ -3256,7 +3256,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
 
   function koKpiGridHtml(summary) {
     const cards = [
-      koKpiCardHtml('wallet', 'Bugungi savdo',
+      koKpiCardHtml('wallet', 'Smena savdosi',
         koFormatCompact(summary.todaySales),
         koFormatDelta(summary.todaySales, summary.yesterdaySales)),
       koKpiCardHtml('trending-up', 'Sof foyda',
@@ -4646,7 +4646,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
   let myStatsState = { period: 'today' };
 
   function myStatsPeriodLabel(period) {
-    return { today: 'Bugun', week: 'Bu hafta', month: 'Bu oy', all: 'Hammasi' }[period] || period;
+    return { today: 'Smena', week: 'Bu hafta', month: 'Bu oy', all: 'Hammasi' }[period] || period;
   }
 
   function myStatsBodyHtml(stats) {
@@ -4698,7 +4698,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <div class="salom" style="font-size:20px;">Statistikam</div>
         <button class="btn ikkinchi" id="msBackBtn" style="margin-bottom:12px;">← Orqaga</button>
         <div class="tab-row">
-          <div class="tab-opt ${myStatsState.period === 'today' ? 'selected' : ''}" data-ms-period="today">Bugun</div>
+          <div class="tab-opt ${myStatsState.period === 'today' ? 'selected' : ''}" data-ms-period="today">Smena</div>
           <div class="tab-opt ${myStatsState.period === 'week' ? 'selected' : ''}" data-ms-period="week">Hafta</div>
           <div class="tab-opt ${myStatsState.period === 'month' ? 'selected' : ''}" data-ms-period="month">Oy</div>
         </div>
@@ -7290,7 +7290,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <select id="cfBranchSelect">${cashflowLocationOptionsHtml(cashflowState.branchId)}</select>
         </div>` : ''}
         <div class="tab-row">
-          <div class="tab-opt ${cashflowState.period === 'today' ? 'selected' : ''}" data-cf-period="today">Bugun</div>
+          <div class="tab-opt ${cashflowState.period === 'today' ? 'selected' : ''}" data-cf-period="today">Smena</div>
           <div class="tab-opt ${cashflowState.period === 'week' ? 'selected' : ''}" data-cf-period="week">Hafta</div>
           <div class="tab-opt ${cashflowState.period === 'month' ? 'selected' : ''}" data-cf-period="month">Oy</div>
         </div>
@@ -8477,17 +8477,17 @@ const tg = window.Telegram && window.Telegram.WebApp;
   function renderZReportScreen(profile, onBack) {
     ekran(`
       <div class="panel">
-        <div class="salom" style="font-size:20px;">Kunlik Z-hisobot</div>
+        <div class="salom" style="font-size:20px;">Smena Z-hisoboti</div>
         <button class="btn ikkinchi" id="zrBackBtn" style="margin-bottom:12px;">← Orqaga</button>
         ${branchState.branches.length ? `
         <div class="kartochka">
           <h2>Joylashuv</h2>
           <select id="zrBranchSelect">${cashflowLocationOptionsHtml(zReportState.branchId)}</select>
-          <div class="bosh" style="margin-top:6px;">"Bugungi kunni yopish" tanlangan joylashuv uchun alohida yopiladi.</div>
+          <div class="bosh" style="margin-top:6px;">"Smenani yopish" tanlangan joylashuv uchun alohida yopiladi.</div>
         </div>` : ''}
         <div class="kartochka">
-          <div class="bosh">Kunni yopib, bugungi savdo/xarajat/sof foydani rasmiy hisobot sifatida saqlaydi.</div>
-          <button class="btn" id="zrCreateBtn" style="margin-top:10px;">Bugungi kunni yopish</button>
+          <div class="bosh">Smena ochilgan vaqtdan hozirgacha bo'lgan savdo/xarajat/sof foydani rasmiy hisobot sifatida saqlaydi (yarim tundan keyingi savdo ham shu smenaga kiradi).</div>
+          <button class="btn" id="zrCreateBtn" style="margin-top:10px;">Smenani yopish (Z-hisobot)</button>
           <div class="xabar" id="zrMsg"></div>
         </div>
         ${profile && profile.isSuperAdmin ? `
@@ -8526,7 +8526,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       setMsg(msgEl, 'Yopilmoqda...');
       const res = await apiPost('/api/z-report-create', { branchId: zReportState.branchId || null });
       if (res.ok) {
-        setMsg(msgEl, res.wasUpdate ? 'Bugungi hisobot yangilandi.' : 'Bugungi kun yopildi.', 'ok');
+        setMsg(msgEl, res.wasUpdate ? 'Smena hisoboti yangilandi.' : 'Smena hisoboti saqlandi.', 'ok');
         loadZReportList();
       } else {
         handleFeatureBlocked(res);
