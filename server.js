@@ -1392,7 +1392,9 @@ const PREP_TIME_MINUTES = {
   'HOT-LET': 10,
   'ASSORTI': 15,
   'SHASHLIK ASSORTI': 20,
-  'GAMBURGER': 10
+  'GAMBURGER': 10,
+  'MONSTER': 25,
+  'QARSILDOQ': 10
 };
 const PREP_TIME_MINUTES_NORMALIZED = Object.fromEntries(
   Object.entries(PREP_TIME_MINUTES).map(([k, v]) => [k.trim().toLowerCase(), v])
@@ -1424,7 +1426,9 @@ const PREP_TIME_MIX_EXTRA_SHARE = 0.5;
 function orderPrepTargetSeconds(order) {
   const byKey = new Map();
   for (const it of (order.items || [])) {
-    const key = normalizeItemNameForPrepMatch(it.name);
+    let key = normalizeItemNameForPrepMatch(it.name);
+    // Aniq nom topilmasa — birinchi so'z bo'yicha ("Monster burger" -> MONSTER)
+    if (!PREP_TIME_MINUTES_NORMALIZED[key]) key = key.split(/\s+/)[0];
     const minutes = PREP_TIME_MINUTES_NORMALIZED[key];
     if (minutes) byKey.set(key, minutes);
   }
