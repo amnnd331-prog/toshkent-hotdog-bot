@@ -1423,14 +1423,21 @@ const DEFAULT_PREP_TIME_MINUTES = 10;
 // oshirmaydi. Ro'yxatda yo'q taomlar (ichimlik va h.k.) hisobga olinmaydi; hech biri
 // mos kelmasa DEFAULT_PREP_TIME_MINUTES ishlatiladi.
 const PREP_TIME_MIX_EXTRA_SHARE = 0.5;
+// Nomlar jadvalidan vaqt: aniq nom, topilmasa birinchi so'z ("Monster burger" -> MONSTER).
+function prepMinutesFromName(name) {
+  const key = normalizeItemNameForPrepMatch(name);
+  return PREP_TIME_MINUTES_NORMALIZED[key] || PREP_TIME_MINUTES_NORMALIZED[key.split(/\s+/)[0]] || null;
+}
+
+// Menyuda taomga "Tayyorlanish vaqti" yozilgan bo'lsa — o'sha (buyurtmaga nusxasi
+// tushadi), aks holda nomlar jadvali.
 function orderPrepTargetSeconds(order) {
   const byKey = new Map();
   for (const it of (order.items || [])) {
-    let key = normalizeItemNameForPrepMatch(it.name);
-    // Aniq nom topilmasa — birinchi so'z bo'yicha ("Monster burger" -> MONSTER)
-    if (!PREP_TIME_MINUTES_NORMALIZED[key]) key = key.split(/\s+/)[0];
-    const minutes = PREP_TIME_MINUTES_NORMALIZED[key];
-    if (minutes) byKey.set(key, minutes);
+    if (it.isCombo) continue;
+    const own = Number(it.prepMinutes) > 0 ? Number(it.prepMinutes) : null;
+    const minutes = own || prepMinutesFromName(it.name);
+    if (minutes) byKey.set(own ? 'id:' + it.id : normalizeItemNameForPrepMatch(it.name), minutes);
   }
   const times = Array.from(byKey.values()).sort((a, b) => b - a);
   if (!times.length) return DEFAULT_PREP_TIME_MINUTES * 60;
@@ -1517,6 +1524,14 @@ setInterval(() => {
 
 function isValidRole(role) {
   return Object.prototype.hasOwnProperty.call(STAFF_ROLES, role);
+}
+
+// Taomning tayyorlanish vaqti (daqiqa): bo'sh -> null (nomlar jadvali ishlatiladi).
+function normalizePrepMinutes(v) {
+  if (v === undefined || v === null || String(v).trim() === '') return { ok: true, value: null };
+  const n = Number(String(v).replace(',', '.'));
+  if (!Number.isFinite(n) || n <= 0 || n > 240) return { ok: false, reason: 'Tayyorlanish vaqtini 1 dan 240 daqiqagacha kiriting.' };
+  return { ok: true, value: Math.round(n * 2) / 2 };
 }
 
 const MAX_MENU_IMAGE_BASE64_CHARS = 3_000_000;
@@ -5428,7 +5443,7 @@ authed('/api/menu-list', (payload, res, { userId }) => {
   if (!pool) return sendFail(res, 'Bunday filial topilmadi');
   const stockPool = resolveStockPool(ctx.owner, branchId) || ctx.owner;
 
-  const menuWithStock = (pool.menu || []).map(m => Object.assign({}, m, { outOfStock: menuItemOutOfStock(stockPool, m) }));
+  const menuWithStock = (pool.menu || []).map(m => Object.assign({}, m, { outOfStock: menuItemOutOfStock(stockPool, m), prepMinutesAuto: prepMinutesFromName(m.name) }));
   return sendOk(res, { menu: menuWithStock, categories: sortedOwnerCategories(pool), role: ctx.role, branchId, branches: ctx.owner.branches || [] });
 });
 
@@ -5526,7 +5541,7 @@ authed('/api/category-reorder', (payload, res, { userId }) => {
 });
 
 authed('/api/menu-add', (payload, res, { userId }) => {
-  const { name, price, prices, category, description, imageUrl, directStockId } = payload;
+  const { name, price, prices, category, description, imageUrl, directStockId, prepMinutes } = payload;
 
   const owners = loadOwners();
   const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
@@ -5564,10 +5579,14 @@ authed('/api/menu-add', (payload, res, { userId }) => {
     directStockIdVal = directStockId;
   }
 
+  const prep = normalizePrepMinutes(prepMinutes);
+  if (!prep.ok) return sendFail(res, prep.reason);
+
   if (!pool.menu) pool.menu = [];
   const item = {
     id: crypto.randomBytes(4).toString('hex'),
     name: nameTrim,
+    prepMinutes: prep.value,
     price: priceNum,
     prices: pricesResult.list.length ? pricesResult.list : undefined,
     category: String(category || '').trim() || null,
@@ -5584,7 +5603,7 @@ authed('/api/menu-add', (payload, res, { userId }) => {
 });
 
 authed('/api/menu-update', (payload, res, { userId }) => {
-  const { id, name, price, prices, category, description, imageUrl, available, directStockId } = payload;
+  const { id, name, price, prices, category, description, imageUrl, available, directStockId, prepMinutes } = payload;
 
   const owners = loadOwners();
   const ctx = resolveOwnerContext(owners, userId, { targetOwnerId: payload.targetOwnerId });
@@ -5623,6 +5642,11 @@ authed('/api/menu-update', (payload, res, { userId }) => {
   }
   if (category !== undefined) item.category = String(category || '').trim() || null;
   if (description !== undefined) item.description = String(description || '').trim() || null;
+  if (prepMinutes !== undefined) {
+    const prep = normalizePrepMinutes(prepMinutes);
+    if (!prep.ok) return sendFail(res, prep.reason);
+    item.prepMinutes = prep.value;
+  }
   if (imageUrl !== undefined) {
     const imageTrim = String(imageUrl || '').trim();
     if (!isValidImageValue(imageTrim)) {
@@ -6913,7 +6937,7 @@ authed('/api/customer-order', async (payload, res, { user, userId }) => {
     if (!menuItem) return sendFail(res, 'Menyuda mavjud bo\'lmagan taom tanlangan.');
     const priceOpt = resolveMenuItemPriceOption(menuItem, it.priceId);
     if (!priceOpt.ok) return sendFail(res, priceOpt.reason);
-    orderItems.push({ id: menuItem.id, name: priceOpt.label ? `${menuItem.name} (${priceOpt.label})` : menuItem.name, price: priceOpt.price, priceId: priceOpt.priceId, qty, directStockId: menuItem.directStockId || null, category: menuItem.category || null });
+    orderItems.push({ id: menuItem.id, name: priceOpt.label ? `${menuItem.name} (${priceOpt.label})` : menuItem.name, price: priceOpt.price, priceId: priceOpt.priceId, qty, directStockId: menuItem.directStockId || null, category: menuItem.category || null, prepMinutes: menuItem.prepMinutes || null });
   }
   const subtotal = orderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
 
@@ -7256,7 +7280,7 @@ authed('/api/create-order', async (payload, res, { user, userId }) => {
     if (!menuItem) return sendFail(res, 'Menyuda mavjud bo\'lmagan taom tanlangan.');
     const priceOpt = resolveMenuItemPriceOption(menuItem, it.priceId);
     if (!priceOpt.ok) return sendFail(res, priceOpt.reason);
-    orderItems.push({ id: menuItem.id, name: priceOpt.label ? `${menuItem.name} (${priceOpt.label})` : menuItem.name, price: priceOpt.price, priceId: priceOpt.priceId, qty, directStockId: menuItem.directStockId || null, category: menuItem.category || null });
+    orderItems.push({ id: menuItem.id, name: priceOpt.label ? `${menuItem.name} (${priceOpt.label})` : menuItem.name, price: priceOpt.price, priceId: priceOpt.priceId, qty, directStockId: menuItem.directStockId || null, category: menuItem.category || null, prepMinutes: menuItem.prepMinutes || null });
   }
   const subtotal = orderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
   const buy4get1 = computeBuy4Get1FreePromo(orderItems);
@@ -7424,7 +7448,7 @@ authed('/api/edit-order', async (payload, res, { userId }) => {
     if (!menuItem) return sendFail(res, 'Menyuda mavjud bo\'lmagan taom tanlangan.');
     const priceOpt = resolveMenuItemPriceOption(menuItem, it.priceId);
     if (!priceOpt.ok) return sendFail(res, priceOpt.reason);
-    newOrderItems.push({ id: menuItem.id, name: priceOpt.label ? `${menuItem.name} (${priceOpt.label})` : menuItem.name, price: priceOpt.price, priceId: priceOpt.priceId, qty, directStockId: menuItem.directStockId || null, category: menuItem.category || null });
+    newOrderItems.push({ id: menuItem.id, name: priceOpt.label ? `${menuItem.name} (${priceOpt.label})` : menuItem.name, price: priceOpt.price, priceId: priceOpt.priceId, qty, directStockId: menuItem.directStockId || null, category: menuItem.category || null, prepMinutes: menuItem.prepMinutes || null });
   }
   const newSubtotal = newOrderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
   const newBuy4get1 = computeBuy4Get1FreePromo(newOrderItems);

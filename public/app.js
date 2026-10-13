@@ -4371,6 +4371,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
           <div class="m-name">${escapeHtml(m.name)} ${m.available === false ? '<span class="badge unpaid">Nofaol</span>' : ''}</div>
           ${m.category ? `<div class="m-cat">${escapeHtml(m.category)}</div>` : ''}
           <div class="m-price">${Array.isArray(m.prices) && m.prices.length ? m.prices.map((p, idx) => `${escapeHtml(variantLabel(p, idx))}: ${fmtNum(p.price)} so'm`).join(' · ') : `${fmtNum(m.price)} so'm`}${m.directStockId ? ` · to'g'ridan sklad ${icon('check', 'icon-xs icon-success')}` : (m.recipe && m.recipe.length ? ` · retsept ${icon('check', 'icon-xs icon-success')}` : '')}</div>
+          ${m.directStockId ? '' : (m.prepMinutes || m.prepMinutesAuto
+            ? `<div class="m-cat">⏱ ${fmtNum(m.prepMinutes || m.prepMinutesAuto)} daq tayyorlanadi</div>`
+            : `<div class="m-cat" style="color:#B26A00;">⏱ Tayyorlanish vaqti belgilanmagan</div>`)}
         </div>
         <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px;">
           <button data-edit-menu-id="${escapeHtml(m.id)}" class="row-action-btn brand">Tahrirlash</button>
@@ -4440,6 +4443,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <button type="button" class="row-action-btn" id="addPriceOptionAddBtn" style="margin-top:6px;">+ Narx varianti qo'shish</button>
         <label class="field-label">Bo'lim (ixtiyoriy)</label>
         <select id="menuCategoryInput"><option value="">— Bo'lim tanlanmagan —</option></select>
+        <label class="field-label">Tayyorlanish vaqti, daqiqa (oshxona taymeri uchun)</label>
+        <input type="text" id="menuPrepInput" placeholder="Masalan: 10 — ichimlik bo'lsa bo'sh qoldiring" inputmode="decimal">
         <textarea id="menuDescriptionInput" placeholder="Tavsif (ixtiyoriy, mijozlar menyusida ko'rinadi)"></textarea>
         <input type="file" id="menuImageFileInput" accept="image/*" style="margin-top:8px;">
         <div class="staff-hint" style="margin-top:4px;">Rasmni telefon galereyasidan tanlang (ixtiyoriy)</div>
@@ -4493,6 +4498,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const price = document.getElementById('menuPriceInput').value.trim();
       const category = document.getElementById('menuCategoryInput').value.trim();
       const description = document.getElementById('menuDescriptionInput').value.trim();
+      const prepMinutes = document.getElementById('menuPrepInput').value.trim();
       const imageUrl = document.getElementById('menuImageInput').value.trim();
       const menuType = document.getElementById('menuTypeInput').value;
       const directStockId = menuType === 'direct' ? document.getElementById('menuDirectStockInput').value : '';
@@ -4515,7 +4521,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         return;
       }
       setMsg(msgEl, 'Qo\'shilmoqda...');
-      const res = await apiPost('/api/menu-add', { name, price, prices: priceOptions, category, description, imageUrl, directStockId, branchId: currentStockBranchId });
+      const res = await apiPost('/api/menu-add', { name, price, prices: priceOptions, category, description, prepMinutes, imageUrl, directStockId, branchId: currentStockBranchId });
       if (res.ok) {
         setMsg(msgEl, 'Qo\'shildi.', 'ok');
         document.getElementById('menuNameInput').value = '';
@@ -4523,6 +4529,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
         document.getElementById('menuPriceOptionsAdd').innerHTML = '';
         document.getElementById('menuCategoryInput').value = '';
         document.getElementById('menuDescriptionInput').value = '';
+        document.getElementById('menuPrepInput').value = '';
         document.getElementById('menuImageInput').value = '';
         document.getElementById('menuImageFileInput').value = '';
         document.getElementById('menuImagePreview').style.display = 'none';
@@ -8725,6 +8732,9 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <button type="button" class="row-action-btn" id="addPriceOptionEditBtn" style="margin-top:6px;">+ Narx varianti qo'shish</button>
         <label class="field-label">Bo'lim (ixtiyoriy)</label>
         <select id="editMenuCategoryInput">${categoryOptionsHtml}</select>
+        <label class="field-label">Tayyorlanish vaqti, daqiqa (oshxona taymeri uchun)</label>
+        <input type="text" id="editMenuPrepInput" inputmode="decimal" value="${escapeHtml(String(menuItem.prepMinutes || ''))}"
+          placeholder="${menuItem.prepMinutesAuto ? `Hozir: ${menuItem.prepMinutesAuto} daq (standart)` : 'Masalan: 10 — ichimlik bo\'lsa bo\'sh qoldiring'}">
         <textarea id="editMenuDescriptionInput" placeholder="Tavsif (ixtiyoriy)">${escapeHtml(menuItem.description || '')}</textarea>
         <div class="staff-hint" style="margin-top:8px;">Rasm (galereyadan yangisini tanlash ixtiyoriy):</div>
         <img id="editMenuImagePreview" src="${escapeHtml(pendingImage)}" class="logo-preview" style="${pendingImage ? '' : 'display:none;'} width:120px; height:120px; display:block;">
@@ -8777,6 +8787,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       const price = document.getElementById('editMenuPriceInput').value.trim();
       const category = document.getElementById('editMenuCategoryInput').value.trim();
       const description = document.getElementById('editMenuDescriptionInput').value.trim();
+      const prepMinutes = document.getElementById('editMenuPrepInput').value.trim();
       const menuType = document.getElementById('editMenuTypeInput').value;
       const directStockId = menuType === 'direct' ? document.getElementById('editMenuDirectStockInput').value : '';
       const msgEl = document.getElementById('editMenuMsg');
@@ -8799,7 +8810,7 @@ const tg = window.Telegram && window.Telegram.WebApp;
       }
       setMsg(msgEl, 'Saqlanmoqda...');
       const res = await apiPost('/api/menu-update', {
-        id: menuItem.id, name, price, prices: priceOptions, category, description, imageUrl: pendingImage, directStockId, branchId: overlayBranchId
+        id: menuItem.id, name, price, prices: priceOptions, category, description, prepMinutes, imageUrl: pendingImage, directStockId, branchId: overlayBranchId
       });
       if (res.ok) {
         overlay.remove();
