@@ -1414,19 +1414,24 @@ function normalizeItemNameForPrepMatch(name) {
 // hatto uning taomi PREP_TIME_MINUTES ro'yxatida bo'lmasa ham.
 const DEFAULT_PREP_TIME_MINUTES = 10;
 
-// Buyurtma tarkibidagi taomlar nomiga qarab eng uzoq tayyorlanish
-// vaqtini (soniyada) topadi. Nomi PREP_TIME_MINUTES'da yo'q taomlar
-// hisobga olinmaydi; hech biri mos kelmasa DEFAULT_PREP_TIME_MINUTES
-// ishlatiladi (taymer baribir ko'rsatiladi va sanaydi).
+// Buyurtma uchun tayyorlanish limiti (soniyada). Bitta taom bo'lsa — o'sha taom
+// vaqti. ARALASH (mix) buyurtmada: eng uzoq taom vaqti + qolgan har xil taomlar
+// vaqtining yarmi (oshxona ularni parallel tayyorlaydi). Masalan, Salat (5) +
+// Gamburger (10) = 10 + 2.5 = 12.5 daqiqa. Bir xil taomdan bir nechta dona vaqtni
+// oshirmaydi. Ro'yxatda yo'q taomlar (ichimlik va h.k.) hisobga olinmaydi; hech biri
+// mos kelmasa DEFAULT_PREP_TIME_MINUTES ishlatiladi.
+const PREP_TIME_MIX_EXTRA_SHARE = 0.5;
 function orderPrepTargetSeconds(order) {
-  let maxMinutes = 0;
+  const byKey = new Map();
   for (const it of (order.items || [])) {
     const key = normalizeItemNameForPrepMatch(it.name);
     const minutes = PREP_TIME_MINUTES_NORMALIZED[key];
-    if (minutes && minutes > maxMinutes) maxMinutes = minutes;
+    if (minutes) byKey.set(key, minutes);
   }
-  if (maxMinutes === 0) maxMinutes = DEFAULT_PREP_TIME_MINUTES;
-  return maxMinutes * 60;
+  const times = Array.from(byKey.values()).sort((a, b) => b - a);
+  if (!times.length) return DEFAULT_PREP_TIME_MINUTES * 60;
+  const total = times[0] + times.slice(1).reduce((s, m) => s + m * PREP_TIME_MIX_EXTRA_SHARE, 0);
+  return Math.round(total * 60);
 }
 
 
@@ -1452,9 +1457,9 @@ function kitchenTimerStatus(order) {
 }
 
 const KITCHEN_TIMER_LABELS = {
-  green: { emoji: '🟢', text: 'Vaqt ichida' },
-  yellow: { emoji: '🟡', text: 'Vaqtdan oshdi' },
-  red: { emoji: '🔴', text: 'Ancha kechikdi' }
+  green: { emoji: '🟢', text: 'Tez' },
+  yellow: { emoji: '🟡', text: 'Sekin' },
+  red: { emoji: '🔴', text: 'Juda kech qoldi' }
 };
 
 // Xabarga qo'shiladigan taymer qatori. O'tgan vaqt (elapsed) / maqsad
