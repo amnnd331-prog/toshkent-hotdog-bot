@@ -1722,8 +1722,18 @@ function isTashkentFridayNow() {
   return kitchenTashkentDate().getUTCDay() === 5;
 }
 
-function computeBuy4Get1FreePromo(orderItems) {
-  if (!isTashkentFridayNow()) return { discountAmount: 0, noteHtml: null };
+// Juma aksiyasi SMENA bo'yicha: juma kuni ochilgan smena yarim tundan keyin ham
+// (smena yopilguncha) juma hisoblanadi. Smena ochiq bo'lmasa — kalendar kuni.
+function isOwnerFridayNow(owner) {
+  if (owner) {
+    const shift = currentShiftPeriod(owner);
+    if (shift.byShift && shift.active) return kitchenTashkentDate(shift.start).getUTCDay() === 5;
+  }
+  return isTashkentFridayNow();
+}
+
+function computeBuy4Get1FreePromo(orderItems, owner) {
+  if (!isOwnerFridayNow(owner)) return { discountAmount: 0, noteHtml: null };
   const groups = new Map();
   (orderItems || []).forEach(it => {
     if (isDrinkCategoryName(it.category)) return;
@@ -6040,7 +6050,7 @@ function activeOwnerBanners(owner) {
   // qo'shilib chiqadi — boshqa bannerlarni boshqarishga hech qanday
   // ta'sir qilmaydi.
   const fb = owner.fridayBanner;
-  if (fb && fb.imageUrl && fb.active !== false && isTashkentFridayNow()) {
+  if (fb && fb.imageUrl && fb.active !== false && isOwnerFridayNow(owner)) {
     regular.unshift({ id: 'friday-banner', imageUrl: fb.imageUrl, title: fb.title, link: fb.link });
   }
   return regular;
@@ -6972,7 +6982,7 @@ authed('/api/customer-order', async (payload, res, { user, userId }) => {
   const subtotal = orderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
 
   const { promo, discountAmount: manualDiscountAmount } = applyPromoDiscount(owner, promoId, subtotal);
-  const buy4get1 = computeBuy4Get1FreePromo(orderItems);
+  const buy4get1 = computeBuy4Get1FreePromo(orderItems, owner);
   const discountAmount = manualDiscountAmount + buy4get1.discountAmount;
   let total = Math.max(0, subtotal - discountAmount);
 
@@ -7313,7 +7323,7 @@ authed('/api/create-order', async (payload, res, { user, userId }) => {
     orderItems.push({ id: menuItem.id, name: priceOpt.label ? `${menuItem.name} (${priceOpt.label})` : menuItem.name, price: priceOpt.price, priceId: priceOpt.priceId, qty, directStockId: menuItem.directStockId || null, category: menuItem.category || null, prepMinutes: menuItem.prepMinutes || null });
   }
   const subtotal = orderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
-  const buy4get1 = computeBuy4Get1FreePromo(orderItems);
+  const buy4get1 = computeBuy4Get1FreePromo(orderItems, ctx.owner);
   const total = Math.max(0, subtotal - buy4get1.discountAmount);
 
   if (!ctx.owner.stock) ctx.owner.stock = [];
@@ -7481,7 +7491,7 @@ authed('/api/edit-order', async (payload, res, { userId }) => {
     newOrderItems.push({ id: menuItem.id, name: priceOpt.label ? `${menuItem.name} (${priceOpt.label})` : menuItem.name, price: priceOpt.price, priceId: priceOpt.priceId, qty, directStockId: menuItem.directStockId || null, category: menuItem.category || null, prepMinutes: menuItem.prepMinutes || null });
   }
   const newSubtotal = newOrderItems.reduce((sum, it) => sum + it.price * it.qty, 0);
-  const newBuy4get1 = computeBuy4Get1FreePromo(newOrderItems);
+  const newBuy4get1 = computeBuy4Get1FreePromo(newOrderItems, ctx.owner);
   const newTotal = Math.max(0, newSubtotal - newBuy4get1.discountAmount);
 
   // Buyurtma allaqachon "Tayyor" bo'lgan bo'lsa-yu, kassir shu tahrirlashda
@@ -8714,7 +8724,8 @@ function currentShiftPeriod(owner, now) {
     start,
     prevStart: prev ? new Date(shiftSessionStart(prev)) : new Date(start.getTime() - 86400000),
     dateKey: tzDateKey(start),
-    byShift: true
+    byShift: true,
+    active: cur.active
   };
 }
 
