@@ -1480,6 +1480,8 @@
   }
 
   .tab-row { display: flex; gap: var(--sp-2); margin-bottom: var(--sp-4); }
+  .branch-switch-row { flex-wrap: wrap; margin-bottom: 10px; }
+  .branch-switch-row .tab-opt { font-family: inherit; border: 0; flex: 1 1 auto; }
   .tab-opt {
     flex: 1; text-align: center; padding: 10px 6px; min-height: 44px;
     display: flex; align-items: center; justify-content: center; box-sizing: border-box;

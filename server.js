@@ -5307,8 +5307,16 @@ authed('/api/set-staff-roles', (payload, res, { userId }) => {
   return sendOk(res, { staff: publicStaff(staff) });
 });
 
+// Xodim bir nechta joylashuvda ishlashi mumkin: staff.branchIds — ruxsat etilgan
+// joylashuvlar ('' = markaziy), staff.branchId — hozir ishlayotgani (zakaz oynasidagi
+// tugma bilan almashtiriladi). Eski yozuvlarda branchIds yo'q — faqat branchId.
+function staffAllowedBranchIds(staff) {
+  const list = Array.isArray(staff.branchIds) && staff.branchIds.length ? staff.branchIds : [staff.branchId || ''];
+  return Array.from(new Set(list.map(x => String(x || ''))));
+}
+
 authed('/api/set-staff-branch', (payload, res, { userId }) => {
-  const { id, branchId } = payload;
+  const { id, branchId, branchIds } = payload;
 
   const owners = loadOwners();
   const ownerCtx = resolveOwnerContext(owners, userId);
@@ -5319,15 +5327,32 @@ authed('/api/set-staff-branch', (payload, res, { userId }) => {
   const staff = (owner.staff || []).find(s => String(s.id) === String(id));
   if (!staff) return sendFail(res, 'Bunday xodim topilmadi');
 
-  if (branchId) {
-    if (!findBranch(owner, branchId)) return sendFail(res, 'Bunday filial topilmadi.');
-    staff.branchId = branchId;
-  } else {
-    staff.branchId = null;
+  const list = Array.from(new Set((Array.isArray(branchIds) ? branchIds : [branchId]).map(x => String(x || ''))));
+  if (!list.length) return sendFail(res, 'Kamida bitta joylashuvni tanlang.');
+  for (const b of list) {
+    if (b && !findBranch(owner, b)) return sendFail(res, 'Bunday filial topilmadi.');
   }
+  staff.branchIds = list;
+  if (!list.includes(String(staff.branchId || ''))) staff.branchId = list[0] || null;
   saveOwners(owners);
 
   return sendOk(res, { staff: publicStaff(staff) });
+});
+
+// Xodim zakaz oynasidagi tugma bilan o'zi ishlayotgan filialni almashtiradi
+// (faqat egasi ruxsat bergan filiallar orasida).
+authed('/api/switch-my-branch', (payload, res, { userId }) => {
+  const owners = loadOwners();
+  const ctx = resolveOwnerContext(owners, userId);
+  if (!ctx) return denyAccess(res, owners, userId, 'Ruxsatingiz yo\'q');
+  if (ctx.role === 'egasi') return sendOk(res, { branchId: payload.branchId || null });
+  const staff = (ctx.owner.staff || []).find(s => String(s.id) === String(userId));
+  if (!staff) return sendFail(res, 'Xodim topilmadi');
+  const target = String(payload.branchId || '');
+  if (!staffAllowedBranchIds(staff).includes(target)) return sendFail(res, 'Bu filialda ishlashga ruxsatingiz yo\'q.');
+  staff.branchId = target || null;
+  saveOwners(owners);
+  return sendOk(res, { branchId: staff.branchId });
 });
 
 authed('/api/remove-staff', (payload, res, { userId }) => {
@@ -5444,7 +5469,12 @@ authed('/api/menu-list', (payload, res, { userId }) => {
   const stockPool = resolveStockPool(ctx.owner, branchId) || ctx.owner;
 
   const menuWithStock = (pool.menu || []).map(m => Object.assign({}, m, { outOfStock: menuItemOutOfStock(stockPool, m), prepMinutesAuto: prepMinutesFromName(m.name) }));
-  return sendOk(res, { menu: menuWithStock, categories: sortedOwnerCategories(pool), role: ctx.role, branchId, branches: ctx.owner.branches || [] });
+  const meStaff = ctx.role === 'egasi' ? null : (ctx.owner.staff || []).find(s => String(s.id) === String(userId));
+  return sendOk(res, {
+    menu: menuWithStock, categories: sortedOwnerCategories(pool), role: ctx.role, branchId, branches: ctx.owner.branches || [],
+    allowedBranchIds: meStaff ? staffAllowedBranchIds(meStaff) : null,
+    centralBranchName: ctx.owner.centralBranchName || null
+  });
 });
 
 authed('/api/category-list', (payload, res, { userId }) => {

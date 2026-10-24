@@ -2949,7 +2949,19 @@ const tg = window.Telegram && window.Telegram.WebApp;
   function staffListHtml(staff) {
     if (!staff || !staff.length) return `<div class="bosh">Hozircha xodimlar yo'q.</div>`;
     return staff.map(s => {
-      const branch = branchState.branches.find(b => b.id === s.branchId);
+      const allowedIds = Array.isArray(s.branchIds) && s.branchIds.length ? s.branchIds.map(x => x || '') : [s.branchId || ''];
+      const locs = [{ id: '', name: centralLocationLabel() }, ...branchState.branches.map(b => ({ id: b.id, name: b.name }))];
+      const locName = id => (locs.find(l => l.id === id) || { name: 'Markaziy' }).name;
+      const branchText = allowedIds.length > 1
+        ? `${allowedIds.map(locName).map(escapeHtml).join(', ')} <span style="opacity:.7;">(hozir: ${escapeHtml(locName(s.branchId || ''))})</span>`
+        : escapeHtml(locName(allowedIds[0]));
+      const branchCheckboxes = branchState.branches.length ? `
+        <div class="staff-hint" style="margin-top:8px;">Qaysi filiallarda ishlaydi (bir nechtasini belgilash mumkin):</div>
+        <div class="staff-role-grid">${locs.map(l => `
+          <label class="check-label" style="font-size:var(--fs-xs);">
+            <input type="checkbox" data-staff-branch-checkbox="${escapeHtml(s.id)}" value="${escapeHtml(l.id)}" ${allowedIds.includes(l.id) ? 'checked' : ''}>
+            ${escapeHtml(l.name)}
+          </label>`).join('')}</div>` : '';
       const roles = staffRoles(s);
       const roleBadges = roles.map(r => `<span class="role-badge">${escapeHtml(ROLE_LABELS[r] || r)}</span>`).join(' ');
       const roleCheckboxes = Object.entries(ROLE_LABELS).map(([key, label]) => `
@@ -2963,8 +2975,8 @@ const tg = window.Telegram && window.Telegram.WebApp;
         <div>
           <div class="owner-id">${escapeHtml(s.id)}</div>
           ${s.username ? `<div class="owner-username">@${escapeHtml(s.username)}</div>` : ''}
-          <div class="owner-expiry">${roleBadges} · ${branch ? escapeHtml(branch.name) : 'Markaziy'}</div>
-          <select data-staff-branch-id="${escapeHtml(s.id)}" style="margin-top:8px;">${branchOptionsHtml(s.branchId)}</select>
+          <div class="owner-expiry">${roleBadges} · ${branchText}</div>
+          ${branchCheckboxes}
           <div class="staff-role-grid">${roleCheckboxes}</div>
         </div>
         <button data-remove-staff-id="${escapeHtml(s.id)}">O'chirish</button>
@@ -5309,14 +5321,20 @@ const tg = window.Telegram && window.Telegram.WebApp;
   // aks holda buyurtma har doim MARKAZIY (filialsiz) hisoblanib, filialga
   // biriktirilgan guruhga hech qachon yetib bormaydi. Oddiy kassir uchun bu
   // panel ko'rsatilmaydi — server ularning o'z ctx.branchId'sidan foydalanadi.
+  // Bir nechta filialda ishlaydigan xodim ham shu tugmalar bilan filialni almashtiradi
+  // (faqat egasi ruxsat bergan filiallar ko'rinadi).
   function cashierBranchBarHtml() {
-    if (cashierState.role !== 'egasi' || !(cashierState.branches || []).length || cashierState.editingOrderId) return '';
+    if (cashierState.editingOrderId) return '';
+    const all = [{ id: '', name: cashierState.centralBranchName || 'Markaziy' },
+      ...(cashierState.branches || []).map(b => ({ id: b.id, name: b.name }))];
+    const locs = cashierState.role === 'egasi' ? all : all.filter(l => (cashierState.allowedBranchIds || []).includes(l.id));
+    if (locs.length < 2) return '';
+    const cur = cashierState.branchId || '';
     return `
-      <div class="bosh" style="margin-top:10px;">Qaysi filial nomidan buyurtma yaratyapsiz?</div>
-      <select id="cashierBranchSelect" style="margin-bottom:10px;">
-        <option value="">— Markaziy (filialsiz) —</option>
-        ${(cashierState.branches || []).map(b => `<option value="${escapeHtml(b.id)}" ${cashierState.branchId === b.id ? 'selected' : ''}>${escapeHtml(b.name)}</option>`).join('')}
-      </select>
+      <div class="bosh" style="margin-top:10px;">Filial:</div>
+      <div class="tab-row branch-switch-row">
+        ${locs.map(l => `<button type="button" class="tab-opt ${l.id === cur ? 'selected' : ''}" data-cashier-branch="${escapeHtml(l.id)}">${escapeHtml(l.name)}</button>`).join('')}
+      </div>
     `;
   }
 
@@ -5333,6 +5351,11 @@ const tg = window.Telegram && window.Telegram.WebApp;
     cashierState.categories = res.ok ? (res.categories || []) : [];
     cashierState.role = res.ok ? res.role : cashierState.role;
     cashierState.branches = res.ok ? (res.branches || []) : cashierState.branches;
+    if (res.ok) {
+      cashierState.allowedBranchIds = res.allowedBranchIds || null;
+      cashierState.centralBranchName = res.centralBranchName || null;
+      if (res.role !== 'egasi') cashierState.branchId = res.branchId || null; // xodimda server hal qiladi
+    }
     el.innerHTML = cashierMenuHtml();
     attachQtyHandlers(restaurantName);
     attachSectionedMenuTabHandlers('cashierCatRow');
@@ -5340,14 +5363,26 @@ const tg = window.Telegram && window.Telegram.WebApp;
     const branchBarEl = document.getElementById('cashierBranchBar');
     if (branchBarEl) {
       branchBarEl.innerHTML = cashierBranchBarHtml();
-      const selectEl = document.getElementById('cashierBranchSelect');
-      if (selectEl) {
-        selectEl.addEventListener('change', (e) => {
-          cashierState.branchId = e.target.value || null;
-          cashierState.cart = {};
-          loadCashierMenu(restaurantName);
-        });
-      }
+      branchBarEl.querySelectorAll('[data-cashier-branch]').forEach(btn => btn.onclick = async () => {
+        const target = btn.getAttribute('data-cashier-branch') || '';
+        if (target === (cashierState.branchId || '')) return;
+        const hasItems = Object.values(cashierState.cart || {}).some(q => q > 0);
+        if (hasItems && !confirm('Savatdagi taomlar tozalanadi. Filialni almashtirasizmi?')) return;
+        branchBarEl.querySelectorAll('[data-cashier-branch]').forEach(b => { b.disabled = true; });
+        if (cashierState.role !== 'egasi') {
+          const r = await apiPost('/api/switch-my-branch', { branchId: target });
+          if (!r.ok) {
+            alert(r.reason || 'Filialni almashtirib bo\'lmadi.');
+            branchBarEl.querySelectorAll('[data-cashier-branch]').forEach(b => { b.disabled = false; });
+            return;
+          }
+        }
+        cashierState.branchId = target || null;
+        cashierState.cart = {};
+        if (typeof updateCashierCartItemsList === 'function') updateCashierCartItemsList();
+        if (typeof updateCartTotal === 'function') updateCartTotal();
+        loadCashierMenu(restaurantName);
+      });
     }
   }
 
@@ -7965,10 +8000,18 @@ const tg = window.Telegram && window.Telegram.WebApp;
     });
 
     document.getElementById('staffList').addEventListener('change', async (e) => {
-      const branchStaffId = e.target.getAttribute('data-staff-branch-id');
+      const branchStaffId = e.target.getAttribute('data-staff-branch-checkbox');
       if (branchStaffId) {
-        e.target.disabled = true;
-        await apiPost('/api/set-staff-branch', { id: branchStaffId, branchId: e.target.value });
+        const boxes = document.querySelectorAll(`[data-staff-branch-checkbox="${branchStaffId}"]`);
+        const branchIds = Array.from(boxes).filter(cb => cb.checked).map(cb => cb.value);
+        if (!branchIds.length) {
+          e.target.checked = true;
+          alert('Xodim kamida bitta filialda ishlashi kerak.');
+          return;
+        }
+        boxes.forEach(cb => { cb.disabled = true; });
+        const res = await apiPost('/api/set-staff-branch', { id: branchStaffId, branchIds });
+        if (!res.ok) alert(res.reason || 'Xatolik yuz berdi.');
         loadStaffAndRender();
         return;
       }
